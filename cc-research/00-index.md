@@ -23,8 +23,9 @@
 | 15 | [15-sandbox.md](15-sandbox.md) | 命令沙箱与边界控制 | ~632 |
 | 16 | [16-skills-and-extensibility.md](16-skills-and-extensibility.md) | 技能、插件与扩展点 | ~641 |
 | 17 | [17-end-to-end-flow.md](17-end-to-end-flow.md) | 端到端运行流程 | ~650 |
+| 18 | [18-image-and-media-processing.md](18-image-and-media-processing.md) | 图片与媒体文件内容识别机制 | ~704 |
 
-**总计**: ~15,000+ 行深度分析
+**总计**: ~16,000+ 行深度分析
 
 ## 建议阅读顺序
 

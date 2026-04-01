@@ -27,9 +27,9 @@
 repo/
 ├── cc-research/
 │   ├── 00-index.md
-│   ├── 01-17 共 17 篇专题文档
+│   ├── 01-18 共 18 篇专题文档
 │   └── html/
-│       └── 00-17 对应 HTML 页面
+│       └── 00-18 对应 HTML 页面
 └── openclaw/
     ├── 00-index.md
     ├── 01-context-orchestration.md
@@ -95,6 +95,8 @@ repo/
   [cc-research/10-sse-and-streaming.md](cc-research/10-sse-and-streaming.md)、
   [cc-research/11-state.md](cc-research/11-state.md)、
   [cc-research/13-observability.md](cc-research/13-observability.md)
+- 图片与媒体处理：
+  [cc-research/18-image-and-media-processing.md](cc-research/18-image-and-media-processing.md)
 
 HTML 镜像位于 [cc-research/html](cc-research/html)。
 
