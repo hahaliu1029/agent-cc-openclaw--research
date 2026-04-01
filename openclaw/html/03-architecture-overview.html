@@ -1,0 +1,2083 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>03-architecture-overview</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1 id="openclaw-整体架构详细分析">OpenClaw 整体架构详细分析</h1>
+<h2 id="目录">目录</h2>
+<ol>
+<li><a href="#1-项目概览">项目概览</a></li>
+<li><a href="#2-入口与启动流程">入口与启动流程</a></li>
+<li><a href="#3-cli-程序构建">CLI 程序构建</a></li>
+<li><a href="#4-依赖注入系统">依赖注入系统</a></li>
+<li><a href="#5-gateway-系统">Gateway 系统</a></li>
+<li><a href="#6-agent-系统">Agent 系统</a></li>
+<li><a href="#7-模型选择与标准化">模型选择与标准化</a></li>
+<li><a href="#8-模型目录-catalog">模型目录 (Catalog)</a></li>
+<li><a href="#9-agent-工作空间">Agent 工作空间</a></li>
+<li><a href="#10-skills-系统">Skills 系统</a></li>
+<li><a href="#11-超时策略">超时策略</a></li>
+<li><a href="#12-channel-dock-系统">Channel Dock 系统</a></li>
+<li><a href="#13-插件-sdk">插件 SDK</a></li>
+<li><a href="#14-插件运行时注册表">插件运行时注册表</a></li>
+<li><a href="#15-配置系统">配置系统</a></li>
+<li><a href="#16-acp-协议">ACP 协议</a></li>
+<li><a href="#17-媒体管线">媒体管线</a></li>
+<li><a href="#18-扩展-extensions-生态">扩展 (Extensions) 生态</a></li>
+<li><a href="#19-原生应用-apps">原生应用 (Apps)</a></li>
+<li><a href="#20-完整数据流">完整数据流</a></li>
+<li><a href="#21-安全考量">安全考量</a></li>
+<li><a href="#22-关键架构决策">关键架构决策</a></li>
+</ol>
+<hr />
+<h2 id="1-项目概览">1. 项目概览</h2>
+<p>OpenClaw 是一个多 channel AI 网关系统，用 TypeScript/ESM 编写。核心能力：</p>
+<ul>
+<li><strong>多 Channel 消息集成</strong>：10+ 消息平台（Telegram、Discord、Slack、WhatsApp、iMessage、Signal 等）</li>
+<li><strong>多 LLM 后端</strong>：Claude、OpenAI、Google、Bedrock 等</li>
+<li><strong>Agent 执行引擎</strong>：工具调用、技能系统、沙箱执行</li>
+<li><strong>插件化架构</strong>：70 个扩展包</li>
+<li><strong>原生应用</strong>：macOS、iOS、Android</li>
+<li><strong>记忆系统</strong>：语义搜索 + 全文搜索</li>
+</ul>
+<h3 id="项目结构">项目结构</h3>
+<pre><code>openclaw/
+├── src/                    # 核心源代码
+│   ├── cli/                # CLI 入口和命令框架
+│   ├── commands/           # CLI 命令实现
+│   ├── agents/             # Agent 运行时
+│   ├── gateway/            # WebSocket 网关
+│   ├── channels/           # Channel 抽象层
+│   ├── routing/            # 路由系统
+│   ├── context-engine/     # 上下文引擎
+│   ├── memory/             # 记忆系统
+│   ├── media/              # 媒体管线
+│   ├── config/             # 配置管理
+│   ├── plugins/            # 插件框架
+│   ├── plugin-sdk/         # 插件 SDK
+│   ├── acp/                # Agent Control Protocol
+│   ├── auto-reply/         # 自动回复
+│   ├── hooks/              # Hook 系统
+│   └── providers/          # LLM Provider
+├── extensions/             # 70 个插件包
+├── apps/                   # 原生应用
+│   ├── macos/              # SwiftUI macOS 应用
+│   ├── ios/                # Swift iOS 应用
+│   └── android/            # Kotlin Android 应用
+├── ui/                     # Web UI
+├── docs/                   # Mintlify 文档站
+├── scripts/                # 构建/发布/工具脚本
+└── test/                   # 测试 fixtures
+</code></pre>
+<h3 id="技术栈">技术栈</h3>
+<table>
+<thead>
+<tr>
+<th>层面</th>
+<th>技术</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>运行时</td>
+<td>Node 22+ (ESM)</td>
+</tr>
+<tr>
+<td>语言</td>
+<td>TypeScript (strict)</td>
+</tr>
+<tr>
+<td>包管理</td>
+<td>pnpm (primary), bun (alternative)</td>
+</tr>
+<tr>
+<td>构建</td>
+<td>tsdown (bundling), tsgo (type-check)</td>
+</tr>
+<tr>
+<td>测试</td>
+<td>Vitest + V8 coverage</td>
+</tr>
+<tr>
+<td>Lint/Format</td>
+<td>Oxlint + Oxfmt</td>
+</tr>
+<tr>
+<td>CLI</td>
+<td>Commander.js</td>
+</tr>
+<tr>
+<td>WebSocket</td>
+<td>ws</td>
+</tr>
+<tr>
+<td>HTTP</td>
+<td>Express</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="2-入口与启动流程">2. 入口与启动流程</h2>
+<p><strong>文件</strong>: <code>src/entry.ts</code> (219 行)</p>
+<h3 id="启动序列">启动序列</h3>
+<pre><code>1. Node Options 标准化
+   → 通过 --disable-warning 启动子进程抑制 ExperimentalWarning
+
+2. 环境设置
+   → normalizeEnv()                          # 环境变量标准化
+   → normalizeWindowsArgv()                   # Windows 参数解析
+   → ensureOpenClawExecMarkerOnProcess()      # 标记进程为 OpenClaw
+   → installProcessWarningFilter()            # 过滤 Node.js 警告
+   → enableCompileCache()                     # 启用模块编译缓存
+
+3. 快速路径
+   → --version  → 加载 version.js + git commit
+   → --help     → 构建并显示 CLI help
+   → secrets audit → 启用只读 auth store
+
+4. CLI Profile 解析
+   → parseCliProfileArgs()                    # 解析 --profile=&lt;name&gt;
+   → applyCliProfileEnv()                     # 应用 profile 环境覆盖
+
+5. 主执行
+   → lazy import ./cli/run-main.js
+   → runCli(process.argv)
+</code></pre>
+<h3 id="安全守卫">安全守卫</h3>
+<ul>
+<li>仅当此文件是入口点时运行（非 import）</li>
+<li>防止 bundled 场景下重复启动 gateway</li>
+<li>子进程桥接处理信号</li>
+</ul>
+<h3 id="主索引-srcindexts-58-行">主索引 (<code>src/index.ts</code>, 58 行)</h3>
+<p><code>src/index.ts</code> 主要作为 re-export 层，从 <code>src/library.ts</code> 导出 SDK 函数，并包含 legacy CLI 入口点。实际的初始化逻辑和 SDK 导出定义在 <code>src/library.ts</code> 中。</p>
+<p>初始化顺序（在 <code>library.ts</code> 中）：</p>
+<pre><code>1. loadDotEnv({ quiet: true })        # .env 加载
+2. normalizeEnv()                      # 环境标准化
+3. ensureOpenClawCliOnPath()           # CLI 路径设置
+4. enableConsoleCapture()              # 控制台捕获 → 结构化日志
+5. assertSupportedRuntime()            # 运行时验证
+6. buildProgram()                      # 创建 CLI 命令树
+</code></pre>
+<h3 id="sdk-导出">SDK 导出</h3>
+<pre><code class="language-typescript">// Config
+export { loadConfig, resolveSessionKey, loadSessionStore, saveSessionStore }
+
+// Utils
+export { promptYesNo, waitForever, runCommandWithTimeout, runExec,
+         normalizeE164, toWhatsappJid, assertWebChannel }
+
+// Ports
+export { ensurePortAvailable, handlePortError, PortInUseError, describePortOwner }
+</code></pre>
+<blockquote>
+<p><strong>注意</strong>: Channel 特定的发送函数（如 sendMessageWhatsApp、sendMessageTelegram 等）不通过 <code>src/index.ts</code> 直接导出，而是通过插件 SDK 或 CLI 依赖注入系统 (<code>src/cli/deps.ts</code>) 访问。</p>
+</blockquote>
+<hr />
+<h2 id="3-cli-程序构建">3. CLI 程序构建</h2>
+<p><strong>文件</strong>: <code>src/cli/program/build-program.ts</code> (20 行)</p>
+<h3 id="构建流程">构建流程</h3>
+<pre><code class="language-typescript">buildProgram() {
+  const program = new Command()
+  const ctx = createProgramContext()        // 初始化上下文
+  setProgramContext(program, ctx)           // 附加到程序
+  configureProgramHelp(program, ctx)        // 设置 help 输出
+  registerPreActionHooks(program, ...)      // 全局 pre-action hooks
+  registerProgramCommands(program, ctx)     // 注册所有命令
+  return program
+}
+</code></pre>
+<h3 id="命令注册">命令注册</h3>
+<p>通过 <code>command-registry.ts</code> 动态加载 <code>src/cli/</code> 下的所有命令模块。</p>
+<h3 id="主要命令分类">主要命令分类</h3>
+<table>
+<thead>
+<tr>
+<th>命令</th>
+<th>文件</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agent</code></td>
+<td><code>src/commands/agent.ts</code></td>
+<td>运行嵌入式 Pi Agent 或 ACP Agent</td>
+</tr>
+<tr>
+<td><code>gateway</code></td>
+<td><code>src/commands/gateway.ts</code></td>
+<td>启动 WebSocket 网关守护进程</td>
+</tr>
+<tr>
+<td><code>message</code></td>
+<td><code>src/commands/message.ts</code></td>
+<td>直接发送消息到 channel</td>
+</tr>
+<tr>
+<td><code>channels</code></td>
+<td><code>src/cli/channels-cli.ts</code></td>
+<td>Channel 列表/认证/状态/配置</td>
+</tr>
+<tr>
+<td><code>config</code></td>
+<td><code>src/cli/config-cli.ts</code></td>
+<td>配置管理 (set/get/validate)</td>
+</tr>
+<tr>
+<td><code>agents</code></td>
+<td>(agent management)</td>
+<td>Agent 工作空间管理</td>
+</tr>
+<tr>
+<td><code>auth</code></td>
+<td><code>src/commands/auth*.ts</code></td>
+<td>Provider 认证设置</td>
+</tr>
+<tr>
+<td><code>skills</code></td>
+<td><code>src/commands/skills*.ts</code></td>
+<td>技能安装/列表/移除</td>
+</tr>
+<tr>
+<td><code>hooks</code></td>
+<td><code>src/cli/hooks-cli.ts</code></td>
+<td>消息转换器</td>
+</tr>
+<tr>
+<td><code>browser</code></td>
+<td><code>src/cli/browser-cli.ts</code></td>
+<td>Playwright 浏览器自动化</td>
+</tr>
+<tr>
+<td><code>tui</code></td>
+<td><code>src/cli/tui-cli.ts</code></td>
+<td>终端 UI 仪表板</td>
+</tr>
+<tr>
+<td><code>secrets</code></td>
+<td>(admin)</td>
+<td>配置密钥审计</td>
+</tr>
+<tr>
+<td><code>doctor</code></td>
+<td>(admin)</td>
+<td>诊断工具</td>
+</tr>
+<tr>
+<td><code>wizard</code></td>
+<td>(admin)</td>
+<td>设置向导</td>
+</tr>
+<tr>
+<td><code>onboard</code></td>
+<td>(admin)</td>
+<td>交互式设置</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="4-依赖注入系统">4. 依赖注入系统</h2>
+<p><strong>文件</strong>: <code>src/cli/deps.ts</code> (74 行)</p>
+<h3 id="设计模式">设计模式</h3>
+<p><strong>惰性加载</strong>: 通过独立的 <code>.runtime.js</code> 文件按需加载</p>
+<h3 id="channel-发送器">Channel 发送器</h3>
+<pre><code class="language-typescript">createDefaultDeps() {
+  return {
+    sendMessageWhatsApp: (...args) =&gt; loadWhatsAppSenderRuntime().then(call),
+    sendMessageTelegram: (...args) =&gt; loadTelegramSenderRuntime().then(call),
+    sendMessageDiscord:  (...args) =&gt; loadDiscordSenderRuntime().then(call),
+    sendMessageSlack:    (...args) =&gt; loadSlackSenderRuntime().then(call),
+    sendMessageSignal:   (...args) =&gt; loadSignalSenderRuntime().then(call),
+    sendMessageIMessage: (...args) =&gt; loadIMessageSenderRuntime().then(call),
+  }
+}
+
+createOutboundSendDeps(deps) {
+  // 将 CLI deps 映射为 OutboundSendDeps 用于交付层
+}
+</code></pre>
+<hr />
+<h2 id="5-gateway-系统">5. Gateway 系统</h2>
+<h3 id="51-gateway-client-srcgatewayclientts-752-行">5.1 Gateway Client (<code>src/gateway/client.ts</code>, 752 行)</h3>
+<h4 id="连接生命周期">连接生命周期</h4>
+<pre><code>1. 初始化
+   → 创建 WebSocket 连接
+   → 设备身份自动加载或生成
+   → TLS 指纹验证（可选）
+
+2. WebSocket 处理器
+   → open:    触发 queueConnect()（可配置延迟）
+   → message: 解析 JSON 帧，处理 connect.challenge
+   → close:   token 不匹配时清理设备认证
+   → error:   记录并触发重连
+
+3. 握手流程
+   → Gateway 发送 connect.challenge（含 nonce）
+   → Client 响应 ConnectParams:
+      {
+        minProtocol, maxProtocol,
+        client: { id, displayName, version, platform, mode, instanceId },
+        caps: string[],           // 能力列表
+        commands: string[],       // 支持的命令
+        permissions: Record&lt;string, boolean&gt;,
+        pathEnv: string,
+        auth: { token?, deviceToken?, password? },
+        role: &quot;operator&quot;,
+        scopes: string[],         // 权限作用域
+        device: { id, publicKey, signature, signedAt, nonce }
+      }
+   → Gateway 响应 HelloOk:
+      { policy: { tickIntervalMs, features } }
+</code></pre>
+<h4 id="消息帧协议">消息帧协议</h4>
+<table>
+<thead>
+<tr>
+<th>帧类型</th>
+<th>格式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Event</td>
+<td><code>{ type: "event", seq: number, event: string, payload }</code></td>
+</tr>
+<tr>
+<td>Request</td>
+<td><code>{ type: "req", id: UUID, method: string, params }</code></td>
+</tr>
+<tr>
+<td>Response</td>
+<td><code>{ id: UUID, ok: boolean, payload, error }</code></td>
+</tr>
+</tbody>
+</table>
+<h4 id="可靠性机制">可靠性机制</h4>
+<table>
+<thead>
+<tr>
+<th>机制</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>序列号追踪</td>
+<td>检测间隙（onGap 回调）</td>
+</tr>
+<tr>
+<td>Tick 监视</td>
+<td>检测停滞连接（2x tickIntervalMs 无事件）</td>
+</tr>
+<tr>
+<td>指数退避重连</td>
+<td>上限 30s</td>
+</tr>
+<tr>
+<td>待处理请求追踪</td>
+<td>响应到达时解析</td>
+</tr>
+</tbody>
+</table>
+<h4 id="安全特性">安全特性</h4>
+<ul>
+<li><strong>TLS 指纹固定</strong>: 验证服务器证书 SHA256</li>
+<li><strong>设备 Token 认证</strong>: 持久化的设备认证</li>
+<li><strong>速率限制</strong>: 遵循服务器响应头</li>
+<li><strong>作用域访问控制</strong>: Operator 作用域控制权限</li>
+<li><strong>安全阻断</strong>: 阻止明文 ws:// 连接到非 loopback 地址 (CVSS 9.8)</li>
+</ul>
+<h3 id="511-gateway-握手超时2026-03-18-后更新">5.1.1 Gateway 握手超时（2026-03-18 后更新）</h3>
+<p><strong>文件</strong>: <code>src/gateway/server-constants.ts</code> (41 行)</p>
+<p>握手超时从 3s 提升到 10s，并新增环境变量覆盖：</p>
+<pre><code class="language-typescript">export const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;  // 原为 3_000
+export const getHandshakeTimeoutMs = () =&gt; {
+  // 用户级环境变量（所有环境生效）
+  const envKey = process.env.OPENCLAW_HANDSHAKE_TIMEOUT_MS ||
+    (process.env.VITEST &amp;&amp; process.env.OPENCLAW_TEST_HANDSHAKE_TIMEOUT_MS);
+  if (envKey) {
+    const parsed = Number(envKey);
+    if (Number.isFinite(parsed) &amp;&amp; parsed &gt; 0) return parsed;
+  }
+  return DEFAULT_HANDSHAKE_TIMEOUT_MS;
+};
+</code></pre>
+<p><strong>变更原因</strong>：修复高事件循环负载期间的虚假网关关闭错误。</p>
+<h3 id="52-gateway-boot-srcgatewaybootts-203-行">5.2 Gateway Boot (<code>src/gateway/boot.ts</code>, 203 行)</h3>
+<pre><code>1. 加载 BOOT.md（工作空间根目录）
+2. 跳过条件: 缺失、空
+3. 创建 Boot Session:
+   - 唯一 sessionId: boot-YYYY-MM-DD_HH-MM-SS-mmm-&lt;suffix&gt;
+   - 启动前快照主 session 映射
+4. 运行 Agent:
+   - agentCommand({ message, sessionKey, sessionId, deliver: false })
+   - Boot 提示指导 agent 通过 message 工具发送消息
+   - 期望响应: ${SILENT_REPLY_TOKEN}
+5. 恢复 Session 状态: boot 完成后恢复 session 映射
+6. 错误处理: 记录但不崩溃 gateway
+</code></pre>
+<h3 id="53-gateway-rpccall-srcgatewaycallts-957-行">5.3 Gateway RPC/Call (<code>src/gateway/call.ts</code>, 957 行)</h3>
+<h4 id="主入口">主入口</h4>
+<pre><code class="language-typescript">callGateway(opts) {
+  resolveScopes()              // 默认: CLI_DEFAULT_OPERATOR_SCOPES
+  决策: CLI / 最小权限 / 自定义作用域
+  callGatewayWithScopes()
+}
+</code></pre>
+<h4 id="执行流程">执行流程</h4>
+<pre><code>1. 解析调用超时
+2. 解析 gateway 连接上下文
+3. 解析凭证:
+   优先级: explicit &gt; config &gt; env &gt; device-token
+   本地: gateway.auth.{token, password}
+   远程: gateway.remote.{token, password}
+   Legacy Env: OPENCLAW_GATEWAY_TOKEN, OPENCLAW_GATEWAY_PASSWORD
+4. 验证显式 gateway auth（URL 覆盖时）
+5. 验证远程模式已配置 URL
+6. 构建 gateway 连接详情
+7. 带超时保护执行请求
+</code></pre>
+<h4 id="请求执行">请求执行</h4>
+<pre><code>创建临时 GatewayClient 实例
+→ 超时保护 (setTimeout)
+→ 关闭/超时时取消待处理请求
+→ 方法响应到达时解析 Promise
+</code></pre>
+<h3 id="54-gateway-auth-srcgatewayauthts-494-行">5.4 Gateway Auth (<code>src/gateway/auth.ts</code>, 494 行)</h3>
+<h4 id="认证模式">认证模式</h4>
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>none</code></td>
+<td>无需认证</td>
+</tr>
+<tr>
+<td><code>token</code></td>
+<td>Bearer token</td>
+</tr>
+<tr>
+<td><code>password</code></td>
+<td>密码</td>
+</tr>
+<tr>
+<td><code>trusted-proxy</code></td>
+<td>X-Real-IP 头可信代理</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>注意</strong>: <code>tailscale</code> 和 <code>device-token</code> 是认证结果的方法值，不是可配置的模式。</p>
+</blockquote>
+<h4 id="解析优先级">解析优先级</h4>
+<pre><code>override?.mode &gt; config.mode &gt; 从凭证推导 &gt; 默认 &quot;token&quot;
+</code></pre>
+<h4 id="速率限制">速率限制</h4>
+<ul>
+<li>共享密钥作用域：按 IP 限制失败尝试</li>
+<li>成功时重置失败计数</li>
+<li>可配置限制</li>
+</ul>
+<h3 id="55-channel-健康监控-srcgatewaychannel-health-monitorts-203-行">5.5 Channel 健康监控 (<code>src/gateway/channel-health-monitor.ts</code>, 203 行)</h3>
+<pre><code class="language-typescript">evaluateChannelHealth(status, policy) {
+  const stale = now - lastEventTime &gt; staleEventThresholdMs
+  const recentlyConnected = now - connectedAt &lt; channelConnectGraceMs
+  return {
+    healthy: !stale &amp;&amp; (recentlyConnected || status.running),
+    restartReason: ...
+  }
+}
+</code></pre>
+<ul>
+<li>最大 10 次/小时重启限制</li>
+<li>重启间冷却期</li>
+<li>优雅降级</li>
+</ul>
+<h3 id="56-config-热重载-srcgatewayconfig-reloadts-247-行">5.6 Config 热重载 (<code>src/gateway/config-reload.ts</code>, 247 行)</h3>
+<h4 id="重载模式">重载模式</h4>
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>off</code></td>
+<td>不重载</td>
+</tr>
+<tr>
+<td><code>restart</code></td>
+<td>任何变更都完全重启</td>
+</tr>
+<tr>
+<td><code>hot</code></td>
+<td>仅热兼容变更热重载</td>
+</tr>
+<tr>
+<td><code>hybrid</code></td>
+<td>可热重载则热重载，否则重启（默认）</td>
+</tr>
+</tbody>
+</table>
+<h4 id="变更检测">变更检测</h4>
+<pre><code>chokidar 监听配置文件
+去抖 300ms (gateway.reload.debounceMs)
+深度比较 prev/next 配置
+数组用 isDeepStrictEqual() 精确匹配
+</code></pre>
+<hr />
+<h2 id="6-agent-系统">6. Agent 系统</h2>
+<h3 id="61-嵌入式-pi-agent-srcagentspi-embeddedts">6.1 嵌入式 Pi Agent (<code>src/agents/pi-embedded.ts</code>)</h3>
+<p>重新导出 <code>pi-embedded-runner.js</code>:</p>
+<table>
+<thead>
+<tr>
+<th>导出</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>runEmbeddedPiAgent()</code></td>
+<td>主入口</td>
+</tr>
+<tr>
+<td><code>abortEmbeddedPiRun()</code></td>
+<td>中止运行</td>
+</tr>
+<tr>
+<td><code>waitForEmbeddedPiRunEnd()</code></td>
+<td>等待完成</td>
+</tr>
+<tr>
+<td><code>queueEmbeddedPiMessage()</code></td>
+<td>发送消息</td>
+</tr>
+<tr>
+<td><code>isEmbeddedPiRunActive()</code></td>
+<td>活跃状态检查</td>
+</tr>
+<tr>
+<td><code>isEmbeddedPiRunStreaming()</code></td>
+<td>流式状态检查</td>
+</tr>
+<tr>
+<td><code>compactEmbeddedPiSession()</code></td>
+<td>Session 压缩</td>
+</tr>
+<tr>
+<td><code>resolveEmbeddedSessionLane()</code></td>
+<td>Session 队列车道解析</td>
+</tr>
+</tbody>
+</table>
+<h3 id="62-cli-agent-runner-srcagentscli-runnerts-522-行">6.2 CLI Agent Runner (<code>src/agents/cli-runner.ts</code>, 522 行)</h3>
+<p>调用外部 CLI 工具进行 LLM 推理。</p>
+<h4 id="执行流程-1">执行流程</h4>
+<pre><code>1. 工作空间解析
+   → 解析工作空间目录（含 fallback）
+   → 记录工作空间使用（workspace-fallback marker）
+
+2. 后端配置
+   → 加载 CLI 后端配置 (claude-cli, codex-cli, or custom)
+   → 对后端标准化模型 ID
+
+3. Bootstrap 组装
+   → 加载工作空间引导文件 (AGENTS.md, SOUL.md, TOOLS.md 等)
+   → 分析大小预算
+   → 超限时构建截断警告
+
+4. System Prompt 构建
+   → buildSystemPrompt({
+       workspaceDir, config, defaultThinkLevel,
+       extraSystemPrompt: &quot;Tools are disabled in this session.&quot;,
+       ownerNumbers, heartbeatPrompt, docsPath, tools: [],
+       contextFiles, bootstrapTruncationWarningLines,
+       modelDisplay, agentId
+     })
+
+5. CLI 调用
+   → 解析后端参数（含 session 恢复）
+   → 构建 CLI 命令: [backend.command, ...args]
+   → 通过 stdin 或 CLI 参数传入 system prompt
+   → 通过 stdin 或 CLI 参数传入 user prompt
+   → 处理图片附件（写入临时文件或通过 CLI 传递）
+   → 通过进程 supervisor 排队（尊重序列化策略）
+   → 超时保护: 整体 + &quot;无输出&quot; (watchdog)
+
+6. 输出解析
+   → text 模式: 纯文本响应
+   → json 模式: JSON 响应 + usage 元数据
+   → jsonl 模式: JSONL (流式) 响应
+
+7. 错误处理
+   → 超时 → FailoverError(&quot;timeout&quot;)
+   → CLI 非零退出 → FailoverError (分类原因)
+   → Session 过期 → 无 session ID 重试
+
+8. Session 管理
+   → 存储解析后的 sessionId 用于恢复
+   → 处理 session 过期（清除并重试）
+   → 返回: { payloads: [{ text }], meta: { agentMeta, systemPromptReport } }
+</code></pre>
+<hr />
+<h2 id="7-模型选择与标准化">7. 模型选择与标准化</h2>
+<p><strong>文件</strong>: <code>src/agents/model-selection.ts</code> (728 行)</p>
+<h3 id="modelref">ModelRef</h3>
+<pre><code class="language-typescript">{ provider: string, model: string }
+// 例: { provider: &quot;anthropic&quot;, model: &quot;claude-opus-4-6&quot; }
+</code></pre>
+<h3 id="标准化">标准化</h3>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>规则</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Provider</td>
+<td><code>anthropic</code>, <code>openai</code>, <code>google</code>, <code>openrouter</code> 等</td>
+</tr>
+<tr>
+<td>Model</td>
+<td>完整 ID (如 <code>claude-opus-4-6</code>, <code>gpt-5.4</code>)</td>
+</tr>
+<tr>
+<td>Aliases</td>
+<td>配置可定义短别名 (如 <code>fast</code> → <code>claude-sonnet-4-5</code>)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="解析优先级-1">解析优先级</h3>
+<pre><code>1. 别名匹配（不区分大小写）
+2. 显式配置模型 (agents.defaults.model)
+3. 默认 provider + model
+4. 从配置的 providers 中选第一个可用的
+</code></pre>
+<h3 id="allowlist">Allowlist</h3>
+<pre><code>agents.defaults.models 为空 → 允许任何模型
+agents.defaults.models 非空 → 仅允许列出的模型
+为未列出但已配置的模型创建合成 catalog 条目
+</code></pre>
+<h3 id="thinking-默认值">Thinking 默认值</h3>
+<pre><code>Per-model: models[provider/model].params.thinking
+Global: agents.defaults.thinkingDefault
+Catalog 推理支持检测
+Claude 4.6+ → 默认 &quot;adaptive&quot;
+</code></pre>
+<hr />
+<h2 id="8-模型目录-catalog">8. 模型目录 (Catalog)</h2>
+<p><strong>文件</strong>: <code>src/agents/model-catalog.ts</code> (290 行)</p>
+<h3 id="条目结构">条目结构</h3>
+<pre><code class="language-typescript">ModelCatalogEntry {
+  id: string,
+  name: string,
+  provider: string,
+  contextWindow?: number,
+  reasoning?: boolean,
+  input?: (&quot;text&quot; | &quot;image&quot; | &quot;document&quot;)[]
+}
+</code></pre>
+<h3 id="加载流程">加载流程</h3>
+<pre><code>1. 动态导入 pi-model-discovery.js (PI SDK)
+2. ModelRegistry 实例化（auth storage + models.json）
+3. 合并配置的 Opt-In 模型: models.providers[provider].models
+4. 为新模型基于模板创建合成 Fallback 条目
+5. 缓存: 每进程单个 Promise
+</code></pre>
+<h3 id="失败处理">失败处理</h3>
+<ul>
+<li>临时失败不污染缓存</li>
+<li>关键错误返回空数组</li>
+<li>每 session 记录一次日志</li>
+</ul>
+<hr />
+<h2 id="9-agent-工作空间">9. Agent 工作空间</h2>
+<p><strong>文件</strong>: <code>src/agents/workspace.ts</code> (641 行)</p>
+<h3 id="默认路径">默认路径</h3>
+<pre><code>~/.openclaw/workspace           # 标准
+~/.openclaw/workspace-${PROFILE} # 使用 profile 时
+</code></pre>
+<h3 id="bootstrap-文件">Bootstrap 文件</h3>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>AGENTS.md</code></td>
+<td>Agent 指令</td>
+</tr>
+<tr>
+<td><code>SOUL.md</code></td>
+<td>人格设定</td>
+</tr>
+<tr>
+<td><code>TOOLS.md</code></td>
+<td>工具说明</td>
+</tr>
+<tr>
+<td><code>IDENTITY.md</code></td>
+<td>身份信息</td>
+</tr>
+<tr>
+<td><code>USER.md</code></td>
+<td>用户信息</td>
+</tr>
+<tr>
+<td><code>HEARTBEAT.md</code></td>
+<td>心跳提示</td>
+</tr>
+<tr>
+<td><code>BOOTSTRAP.md</code></td>
+<td>引导流程</td>
+</tr>
+<tr>
+<td><code>MEMORY.md</code></td>
+<td>持久化记忆</td>
+</tr>
+</tbody>
+</table>
+<h3 id="初始化流程">初始化流程</h3>
+<pre><code>1. 创建工作空间目录 (mkdir -p)
+2. 缺失时写入模板文件（原子写入）
+3. 通过 .openclaw/workspace-state.json 检测引导状态
+4. 全新时初始化 git 仓库
+</code></pre>
+<h3 id="bootstrap-加载">Bootstrap 加载</h3>
+<pre><code>边界安全打开: 防止目录遍历
+按 inode/dev/size/mtime 身份缓存
+尊重 MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES (2MB)
+从 markdown 文件剥离 YAML front matter
+</code></pre>
+<h3 id="session-过滤">Session 过滤</h3>
+<table>
+<thead>
+<tr>
+<th>Session 类型</th>
+<th>加载的文件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>子 Agent + Cron</td>
+<td>最小: AGENTS, SOUL, TOOLS, IDENTITY, USER</td>
+</tr>
+<tr>
+<td>普通</td>
+<td>完整: 含 HEARTBEAT, BOOTSTRAP, MEMORY</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="10-skills-系统">10. Skills 系统</h2>
+<p><strong>文件</strong>: <code>src/agents/skills.ts</code> (46 行，重新导出)</p>
+<h3 id="导出分类">导出分类</h3>
+<h4 id="配置">配置</h4>
+<pre><code class="language-typescript">hasBinary(), resolveSkillConfig(), resolveBundledAllowlist()
+isConfigPathTruthy(), resolveRuntimePlatform()
+</code></pre>
+<h4 id="工作空间集成">工作空间集成</h4>
+<pre><code class="language-typescript">loadWorkspaceSkillEntries()        // 从工作空间加载
+buildWorkspaceSkillSnapshot()      // 创建技能快照
+buildWorkspaceSkillCommandSpecs()  // 提取工具规格
+filterWorkspaceSkillEntries()      // 按资格过滤
+buildWorkspaceSkillsPrompt()       // 构建提示文本
+syncSkillsToWorkspace()            // 安装到工作空间
+</code></pre>
+<h4 id="环境覆盖">环境覆盖</h4>
+<pre><code class="language-typescript">applySkillEnvOverrides()
+applySkillEnvOverridesFromSnapshot()
+</code></pre>
+<h4 id="安装偏好">安装偏好</h4>
+<pre><code class="language-typescript">{
+  preferBrew: boolean,
+  nodeManager: &quot;npm&quot; | &quot;pnpm&quot; | &quot;yarn&quot; | &quot;bun&quot;
+}
+</code></pre>
+<hr />
+<h2 id="11-超时策略">11. 超时策略</h2>
+<p><strong>文件</strong>: <code>src/agents/timeout.ts</code> (48 行)</p>
+<h3 id="解析逻辑">解析逻辑</h3>
+<pre><code class="language-typescript">resolveAgentTimeoutMs({
+  cfg?: OpenClawConfig,
+  overrideMs?: number,
+  overrideSeconds?: number,
+  minMs?: number
+}): number
+
+// 默认: agents.defaults.timeoutSeconds (600s = 10min)
+// Override: 显式 ms/seconds &gt; 默认
+// 特殊: 0 → NO_TIMEOUT_MS (2147000000ms, 最大安全定时器)
+// 负数: 忽略，使用默认
+// 钳制: [minMs, MAX_SAFE_TIMEOUT_MS]
+</code></pre>
+<hr />
+<h2 id="12-channel-dock-系统">12. Channel Dock 系统</h2>
+<p><strong>文件</strong>: <code>src/channels/dock.ts</code> (636 行)</p>
+<h3 id="dock-结构">Dock 结构</h3>
+<pre><code class="language-typescript">ChannelDock {
+  id: ChannelId,
+  capabilities: ChannelCapabilities,
+  commands?: ChannelCommandAdapter,
+  outbound?: { textChunkLimit? },
+  streaming?: { blockStreamingCoalesceDefaults? },
+  elevated?: ChannelElevatedAdapter,
+  config?: { resolveAllowFrom, formatAllowFrom, resolveDefaultTo },
+  groups?: ChannelGroupAdapter,
+  mentions?: ChannelMentionAdapter,
+  threading?: ChannelThreadingAdapter,
+  agentPrompt?: ChannelAgentPromptAdapter
+}
+</code></pre>
+<h3 id="内建-channel">内建 Channel</h3>
+<table>
+<thead>
+<tr>
+<th>Channel</th>
+<th>特性</th>
+<th>字符限制</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Telegram</td>
+<td>群组、原生命令、阻塞流式</td>
+<td>4000</td>
+</tr>
+<tr>
+<td>WhatsApp</td>
+<td>群组、投票、反应、媒体</td>
+<td>4000</td>
+</tr>
+<tr>
+<td>Discord</td>
+<td>线程、投票、反应、原生命令</td>
+<td>2000</td>
+</tr>
+<tr>
+<td>IRC</td>
+<td>群组、媒体、大小写不敏感、阻塞流式</td>
+<td>350</td>
+</tr>
+<tr>
+<td>Google Chat</td>
+<td>群组、线程、反应、媒体</td>
+<td>4000</td>
+</tr>
+<tr>
+<td>Slack</td>
+<td>线程、反应、原生命令</td>
+<td>4000</td>
+</tr>
+<tr>
+<td>Signal</td>
+<td>群组、反应、媒体</td>
+<td>4000</td>
+</tr>
+<tr>
+<td>iMessage</td>
+<td>群组、反应、媒体</td>
+<td>4000</td>
+</tr>
+<tr>
+<td>LINE</td>
+<td>群组、媒体</td>
+<td>5000</td>
+</tr>
+<tr>
+<td>插件</td>
+<td>从插件注册表动态添加</td>
+<td>可变</td>
+</tr>
+</tbody>
+</table>
+<h3 id="配置解析">配置解析</h3>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>resolveAllowFrom()</code></td>
+<td>提取允许的 JID/ID</td>
+</tr>
+<tr>
+<td><code>formatAllowFrom()</code></td>
+<td>标准化 allowlist（剥离前缀、小写）</td>
+</tr>
+<tr>
+<td><code>resolveDefaultTo()</code></td>
+<td>获取 channel 默认目标</td>
+</tr>
+<tr>
+<td><code>resolveRequireMention()</code></td>
+<td>群组中是否需要 @提及</td>
+</tr>
+<tr>
+<td><code>resolveToolPolicy()</code></td>
+<td>每群组工具执行策略</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="13-插件-sdk">13. 插件 SDK</h2>
+<p><strong>文件</strong>: <code>src/plugin-sdk/index.ts</code> (867 行)</p>
+<h3 id="导出分类-1">导出分类</h3>
+<h4 id="channel-类型与适配器">Channel 类型与适配器</h4>
+<pre><code class="language-typescript">// 所有 ChannelXxxAdapter 类型
+ChannelPlugin, ChannelMeta, ChannelCapabilities, ChannelDock
+ChannelMessagingAdapter, ChannelConfigAdapter, ChannelOutboundAdapter
+ChannelSecurityAdapter, ChannelDirectoryAdapter, ChannelPairingAdapter
+ChannelResolverAdapter, ChannelThreadingAdapter, ChannelMessageActions
+</code></pre>
+<h4 id="channel-实现">Channel 实现</h4>
+<pre><code class="language-typescript">// Discord, Slack, Telegram, Signal, iMessage, WhatsApp, LINE, IRC, GoogleChat
+// 账号解析、引导适配器、状态问题收集器
+// 目标 ID 标准化、线程上下文构建器
+</code></pre>
+<h4 id="agenttools">Agent/Tools</h4>
+<pre><code class="language-typescript">ChannelAgentTool, ChannelAgentToolFactory
+SkillSnapshot, SkillEntry, SkillCommandSpec
+</code></pre>
+<h4 id="配置与验证">配置与验证</h4>
+<pre><code class="language-typescript">OpenClawConfig, SecretInput, SecretRef
+// Zod schemas: channels, core config, agent runtime
+</code></pre>
+<h4 id="gateway-与-rpc">Gateway 与 RPC</h4>
+<pre><code class="language-typescript">GatewayRequestHandler, RespondFn
+AcpRuntime  // 注册 API
+</code></pre>
+<h4 id="插件">插件</h4>
+<pre><code class="language-typescript">PluginRuntime, RuntimeLogger
+SubagentRun, SubagentWait, SubagentSession
+// 插件 HTTP 路由
+</code></pre>
+<h4 id="安全">安全</h4>
+<pre><code class="language-typescript">// Webhook 请求守卫、速率限制、异常追踪
+// SSRF 策略、TLS 指纹验证
+// 文件锁助手、OAuth 工具
+</code></pre>
+<h4 id="媒体">媒体</h4>
+<pre><code class="language-typescript">// 媒体载荷类型、图片/文档检测
+// 出站回复标准化、分块
+// 临时路径助手
+</code></pre>
+<h3 id="npm-导出">NPM 导出</h3>
+<pre><code class="language-json">{
+  &quot;.&quot;: &quot;dist/index.js&quot;,
+  &quot;./plugin-sdk&quot;: &quot;dist/plugin-sdk/index.js&quot;
+}
+</code></pre>
+<blockquote>
+<p><strong>注意</strong>: <code>"./plugin-sdk/*"</code> glob 已替换为 18+ 个明确的按 channel 命名导出（每个 channel 有独立的具名导出路径）。</p>
+</blockquote>
+<hr />
+<h2 id="14-插件运行时注册表">14. 插件运行时注册表</h2>
+<p><strong>文件</strong>: <code>src/plugins/runtime.ts</code> (49 行) 和 <code>src/plugins/registry.ts</code> (876 行)</p>
+<h3 id="注册模式">注册模式</h3>
+<pre><code>单例模式 + 原子交换
+线程安全（单线程 JS 上下文）
+惰性初始化（首次 require 时加载插件）
+</code></pre>
+<h3 id="api">API</h3>
+<table>
+<thead>
+<tr>
+<th>函数</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>requireActivePluginRegistry()</code></td>
+<td>获取当前注册表（无则抛异常）</td>
+</tr>
+<tr>
+<td><code>getActivePluginRegistry()</code></td>
+<td>获取或 undefined</td>
+</tr>
+<tr>
+<td><code>setActivePluginRegistry(registry)</code></td>
+<td>原子更新</td>
+</tr>
+</tbody>
+</table>
+<h3 id="插件加载器改进2026-03-18-后新增">插件加载器改进（2026-03-18 后新增）</h3>
+<p><strong>文件</strong>: <code>src/plugins/loader.ts</code> (1303 行)</p>
+<h4 id="严格加载模式">严格加载模式</h4>
+<p>新增 <code>throwOnLoadError?: boolean</code> 选项，关键路径下插件加载失败会抛出 <code>PluginLoadFailureError</code>（包含失败插件 ID 和注册表引用）。</p>
+<h4 id="sdk-别名作用域隔离">SDK 别名作用域隔离</h4>
+<p>新增 <code>buildPluginLoaderAliasMap(modulePath)</code> 为每个插件模块构建独立别名映射，防止跨插件污染。Jiti loader 缓存基于 <code>tryNative</code> + 别名映射组合 key。插件注册表缓存使用 LRU 驱逐（最大 128 条）。</p>
+<h4 id="版本化插件更新">版本化插件更新</h4>
+<p><strong>文件</strong>: <code>src/cli/plugins-cli.ts</code> (1241 行)</p>
+<p>新增按 npm 包名更新插件的能力：</p>
+<pre><code class="language-typescript">function extractInstalledNpmPackageName(install: PluginInstallRecord): string | undefined
+function resolvePluginUpdateSelection(params: {
+  installs: Record&lt;string, PluginInstallRecord&gt;;
+  rawId?: string;   // 支持 npm spec (name@version)
+  all?: boolean;
+}): { pluginIds: string[]; specOverrides?: Record&lt;string, string&gt; }
+</code></pre>
+<p>依赖新增的 <code>parseRegistryNpmSpec()</code> 进行 npm spec 解析：</p>
+<pre><code class="language-typescript">type ParsedRegistryNpmSpec = {
+  name: string;
+  raw: string;
+  selector?: string;
+  selectorKind: &quot;none&quot; | &quot;exact-version&quot; | &quot;tag&quot;;
+  selectorIsPrerelease: boolean;
+};
+</code></pre>
+<hr />
+<h2 id="15-配置系统">15. 配置系统</h2>
+<p><strong>文件</strong>: <code>src/config/io.ts</code>, <code>src/config/validation.ts</code></p>
+<h3 id="配置文件">配置文件</h3>
+<pre><code>位置: ~/.openclaw/openclaw.json
+格式: JSON5（支持注释和尾逗号，但文件名为 .json）
+</code></pre>
+<h3 id="配置结构">配置结构</h3>
+<pre><code class="language-typescript">OpenClawConfig {
+  gateway: {
+    bind: &quot;loopback&quot; | &quot;0.0.0.0&quot;,
+    port: number,
+    tls?: { cert, key },
+    mode: &quot;local&quot; | &quot;remote&quot;,
+    auth: { mode, token, password },
+    reload: { mode, debounceMs }
+  },
+
+  agents: {
+    defaults: {
+      model?: string,
+      thinkingDefault?: string,
+      timeoutSeconds?: number,
+      models?: Record&lt;string, AgentModelEntryConfig&gt;  // Allowlist
+    },
+    list: AgentConfig[]           // 每条目含 id 字段
+    // AgentConfig: {
+    //   id: string,
+    //   provider: string,
+    //   model?: string,
+    //   thinking?: &quot;off&quot; | &quot;minimal&quot; | &quot;low&quot; | &quot;medium&quot; | &quot;high&quot; | &quot;xhigh&quot; | &quot;adaptive&quot;,
+    //   workspace?: string,
+    //   memorySearch?: { ... }   // 记忆搜索配置
+    // }
+  },
+
+  channels: {
+    telegram?: TelegramConfig,
+    discord?: DiscordConfig,
+    slack?: SlackConfig,
+    whatsapp?: WhatsAppConfig,
+    signal?: SignalConfig,
+    imessage?: IMessageConfig,
+    // ... 其他固定 per-channel 键
+  },
+
+  pairing?: {
+    devices: [{ id, name, thumbprint }]
+  },
+
+  hooks?: {
+    bundled?: string[],
+    custom?: [{ match, action }]
+  },
+
+  session?: {
+    store?: string
+  },
+
+  skills?: {
+    [skillName]: { config }
+  },
+
+  models?: {
+    providers: {
+      [provider]: { models: [...] }
+    },
+    [provider/model]: {
+      contextTokens?: number,
+      params?: { thinking?: string }
+    }
+  }
+}
+</code></pre>
+<h3 id="验证层">验证层</h3>
+<pre><code>1. Raw config   → validateConfigObjectRawWithPlugins()
+2. Typed config  → validateConfigObjectWithPlugins()
+3. 插件验证器    → 自定义每插件验证
+4. 问题格式化   → 人类可读的错误消息
+</code></pre>
+<h3 id="加载流程-1">加载流程</h3>
+<pre><code>JSON5 解析 → 环境变量替换 → 配置包含合并 → Schema 验证
+运行时: 不可变快照 + 刷新处理器用于热重载 + Secret ref 解析
+</code></pre>
+<h3 id="gateway-auth-凭证裁剪2026-03-18-后新增">Gateway Auth 凭证裁剪（2026-03-18 后新增）</h3>
+<p><strong>文件</strong>: <code>src/cli/config-cli.ts</code> (1380 行)</p>
+<p>当 <code>gateway.auth.mode</code> 变更时，自动裁剪不再活跃的凭证字段：</p>
+<pre><code class="language-typescript">function pruneInactiveGatewayAuthCredentials(params: {
+  root: Record&lt;string, unknown&gt;;
+  operations: ConfigSetOperation[];
+}): string[]  // 返回已移除的配置路径
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Auth 模式</th>
+<th>移除的凭证</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>"token"</code></td>
+<td><code>gateway.auth.password</code></td>
+</tr>
+<tr>
+<td><code>"password"</code></td>
+<td><code>gateway.auth.token</code></td>
+</tr>
+<tr>
+<td><code>"trusted-proxy"</code></td>
+<td><code>gateway.auth.token</code> + <code>gateway.auth.password</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="16-acp-协议">16. ACP 协议</h2>
+<p><strong>文件</strong>: <code>src/acp/translator.ts</code></p>
+<h3 id="agent-control-protocol">Agent Control Protocol</h3>
+<pre><code>Client 通过 WebSocket 或 HTTP 连接
+有状态 session 管理 + TTL
+支持: initialize, authenticate, prompt, set config, cancel, list sessions
+</code></pre>
+<h3 id="acp-translator">ACP Translator</h3>
+<pre><code class="language-typescript">// ACP PromptRequest → Agent 运行参数
+prompt(request) {
+  validatePromptSize()         // 2MB DoS 防护
+  resolveSessionMode()         // sandbox/chat/reasoning
+  extractAttachments()
+  extractToolCalls()
+  extractDirectives()
+  return normalizedRunParams
+}
+</code></pre>
+<hr />
+<h2 id="17-媒体管线">17. 媒体管线</h2>
+<p><strong>位置</strong>: <code>src/media/</code></p>
+<h3 id="组件">组件</h3>
+<h4 id="获取与存储">获取与存储</h4>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>fetch.ts</code></td>
+<td>带 auth 头、大小限制的媒体下载</td>
+</tr>
+<tr>
+<td><code>store.ts</code></td>
+<td>保存到工作空间，处理重定向</td>
+</tr>
+<tr>
+<td><code>server.ts</code></td>
+<td>本地媒体文件服务</td>
+</tr>
+</tbody>
+</table>
+<h4 id="媒体分析">媒体分析</h4>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>image-ops.ts</code></td>
+<td>图片缩放、格式转换 (via sharp)</td>
+</tr>
+<tr>
+<td><code>mime.ts</code></td>
+<td>MIME 类型检测和验证</td>
+</tr>
+<tr>
+<td><code>pdf-extract.ts</code></td>
+<td>PDF 文本/元数据提取 (pdfjs)</td>
+</tr>
+</tbody>
+</table>
+<h4 id="输入输出">输入/输出</h4>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>input-files.ts</code></td>
+<td>收集消息附件</td>
+</tr>
+<tr>
+<td><code>outbound-attachment.ts</code></td>
+<td>格式化用于 channel 交付</td>
+</tr>
+<tr>
+<td><code>parse.ts</code></td>
+<td>解析 agent 输出中的媒体块</td>
+</tr>
+</tbody>
+</table>
+<h4 id="编码">编码</h4>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>base64.ts</code></td>
+<td>Base64 编解码</td>
+</tr>
+<tr>
+<td><code>sniff-mime-from-base64.ts</code></td>
+<td>从 base64 检测 MIME</td>
+</tr>
+<tr>
+<td><code>png-encode.ts</code></td>
+<td>PNG 编码工具</td>
+</tr>
+</tbody>
+</table>
+<h4 id="音频">音频</h4>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>audio.ts</code></td>
+<td>音频格式处理</td>
+</tr>
+<tr>
+<td><code>audio-tags.ts</code></td>
+<td>ID3 标签解析</td>
+</tr>
+</tbody>
+</table>
+<h4 id="基础设施">基础设施</h4>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ffmpeg-exec.ts</code></td>
+<td>FFmpeg 封装</td>
+</tr>
+<tr>
+<td><code>host.ts</code></td>
+<td>媒体主机检测</td>
+</tr>
+<tr>
+<td><code>local-roots.ts</code></td>
+<td>工作空间本地文件引用</td>
+</tr>
+</tbody>
+</table>
+<h4 id="策略与限制">策略与限制</h4>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>inbound-path-policy.ts</code></td>
+<td>下载源白名单验证</td>
+</tr>
+<tr>
+<td><code>input-files.fetch-guard.ts</code></td>
+<td>请求安全检查</td>
+</tr>
+<tr>
+<td><code>ffmpeg-limits.ts</code></td>
+<td>FFmpeg 资源限制</td>
+</tr>
+<tr>
+<td><code>load-options.ts</code></td>
+<td>加载配置</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="18-扩展-extensions-生态">18. 扩展 (Extensions) 生态</h2>
+<p><strong>位置</strong>: <code>extensions/</code> (70 个目录)</p>
+<h3 id="核心-channel-扩展">核心 Channel 扩展</h3>
+<table>
+<thead>
+<tr>
+<th>扩展</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>bluebubbles/</code></td>
+<td>BlueBubbles (iMessage 桥接)</td>
+</tr>
+<tr>
+<td><code>discord/</code></td>
+<td>Discord 插件</td>
+</tr>
+<tr>
+<td><code>imessage/</code></td>
+<td>iMessage (PyObjC)</td>
+</tr>
+<tr>
+<td><code>irc/</code></td>
+<td>IRC 协议</td>
+</tr>
+<tr>
+<td><code>line/</code></td>
+<td>LINE 消息（已从 <code>src/line/</code> 迁入）</td>
+</tr>
+<tr>
+<td><code>msteams/</code></td>
+<td>Microsoft Teams</td>
+</tr>
+<tr>
+<td><code>mattermost/</code></td>
+<td>Mattermost</td>
+</tr>
+<tr>
+<td><code>matrix/</code></td>
+<td>Matrix 协议</td>
+</tr>
+<tr>
+<td><code>nextcloud-talk/</code></td>
+<td>Nextcloud Talk</td>
+</tr>
+<tr>
+<td><code>signal/</code></td>
+<td>Signal Messenger</td>
+</tr>
+<tr>
+<td><code>slack/</code></td>
+<td>Slack</td>
+</tr>
+<tr>
+<td><code>telegram/</code></td>
+<td>Telegram</td>
+</tr>
+<tr>
+<td><code>whatsapp/</code></td>
+<td>WhatsApp Web</td>
+</tr>
+<tr>
+<td><code>zalo/</code></td>
+<td>Zalo (越南消息)</td>
+</tr>
+<tr>
+<td><code>zalouser/</code></td>
+<td>Zalo 用户集成</td>
+</tr>
+<tr>
+<td><code>googlechat/</code></td>
+<td>Google Chat</td>
+</tr>
+<tr>
+<td><code>feishu/</code></td>
+<td>飞书 (企业)</td>
+</tr>
+<tr>
+<td><code>synology-chat/</code></td>
+<td>Synology Chat</td>
+</tr>
+<tr>
+<td><code>twitch/</code></td>
+<td>Twitch 集成</td>
+</tr>
+<tr>
+<td><code>tlon/</code></td>
+<td>Tlon 服务</td>
+</tr>
+</tbody>
+</table>
+<h3 id="集成扩展">集成扩展</h3>
+<table>
+<thead>
+<tr>
+<th>扩展</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>copilot-proxy/</code></td>
+<td>GitHub Copilot 集成</td>
+</tr>
+<tr>
+<td><code>llm-task/</code></td>
+<td>LLM 任务执行器</td>
+</tr>
+<tr>
+<td><code>phone-control/</code></td>
+<td>手机自动化</td>
+</tr>
+<tr>
+<td><code>voice-call/</code></td>
+<td>语音通话</td>
+</tr>
+<tr>
+<td><code>talk-voice/</code></td>
+<td>Talk 语音</td>
+</tr>
+<tr>
+<td><code>lobster/</code></td>
+<td>Lobster CLI 集成</td>
+</tr>
+<tr>
+<td><code>diffs/</code></td>
+<td>Diff 查看</td>
+</tr>
+<tr>
+<td><code>diagnostics-otel/</code></td>
+<td>OpenTelemetry 诊断</td>
+</tr>
+<tr>
+<td><code>tavily/</code></td>
+<td>Tavily Web 搜索 + 内容提取（新增捆绑插件）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="provider-认证扩展">Provider 认证扩展</h3>
+<table>
+<thead>
+<tr>
+<th>扩展</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>google-gemini-cli-auth/</code></td>
+<td>Gemini CLI 认证</td>
+</tr>
+<tr>
+<td><code>minimax-portal-auth/</code></td>
+<td>MiniMax 认证</td>
+</tr>
+<tr>
+<td><code>qwen-portal-auth/</code></td>
+<td>Qwen 认证</td>
+</tr>
+</tbody>
+</table>
+<h3 id="记忆扩展">记忆扩展</h3>
+<table>
+<thead>
+<tr>
+<th>扩展</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>memory-core/</code></td>
+<td>核心记忆系统</td>
+</tr>
+<tr>
+<td><code>memory-lancedb/</code></td>
+<td>LanceDB 向量记忆</td>
+</tr>
+</tbody>
+</table>
+<h3 id="llm-provider-扩展">LLM Provider 扩展</h3>
+<table>
+<thead>
+<tr>
+<th>扩展</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>anthropic/</code></td>
+<td>Anthropic Claude</td>
+</tr>
+<tr>
+<td><code>openai/</code></td>
+<td>OpenAI</td>
+</tr>
+<tr>
+<td><code>google/</code></td>
+<td>Google Gemini</td>
+</tr>
+<tr>
+<td><code>ollama/</code></td>
+<td>Ollama 本地模型</td>
+</tr>
+<tr>
+<td><code>openrouter/</code></td>
+<td>OpenRouter 多模型网关</td>
+</tr>
+<tr>
+<td><code>mistral/</code></td>
+<td>Mistral AI</td>
+</tr>
+<tr>
+<td><code>nvidia/</code></td>
+<td>NVIDIA NIM</td>
+</tr>
+<tr>
+<td><code>huggingface/</code></td>
+<td>Hugging Face</td>
+</tr>
+<tr>
+<td><code>minimax/</code></td>
+<td>MiniMax</td>
+</tr>
+<tr>
+<td><code>qianfan/</code></td>
+<td>百度千帆</td>
+</tr>
+<tr>
+<td><code>moonshot/</code></td>
+<td>Moonshot (Kimi)</td>
+</tr>
+<tr>
+<td><code>modelstudio/</code></td>
+<td>阿里 ModelStudio</td>
+</tr>
+<tr>
+<td><code>byteplus/</code></td>
+<td>BytePlus (字节跳动)</td>
+</tr>
+<tr>
+<td><code>perplexity/</code></td>
+<td>Perplexity</td>
+</tr>
+<tr>
+<td><code>cloudflare-ai-gateway/</code></td>
+<td>Cloudflare AI Gateway</td>
+</tr>
+</tbody>
+</table>
+<h3 id="其他">其他</h3>
+<table>
+<thead>
+<tr>
+<th>扩展</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>acpx/</code></td>
+<td>ACP 运行时扩展</td>
+</tr>
+<tr>
+<td><code>device-pair/</code></td>
+<td>设备配对</td>
+</tr>
+<tr>
+<td><code>nostr/</code></td>
+<td>Nostr 协议</td>
+</tr>
+<tr>
+<td><code>open-prose/</code></td>
+<td>散文集成</td>
+</tr>
+<tr>
+<td><code>thread-ownership/</code></td>
+<td>线程所有权</td>
+</tr>
+<tr>
+<td><code>openshell/</code></td>
+<td>OpenShell 沙箱后端</td>
+</tr>
+<tr>
+<td><code>brave/</code></td>
+<td>Brave Search</td>
+</tr>
+<tr>
+<td><code>github-copilot/</code></td>
+<td>GitHub Copilot</td>
+</tr>
+<tr>
+<td><code>opencode/</code></td>
+<td>OpenCode CLI 集成</td>
+</tr>
+<tr>
+<td><code>opencode-go/</code></td>
+<td>OpenCode Go 集成</td>
+</tr>
+<tr>
+<td><code>kilocode/</code></td>
+<td>KiloCode</td>
+</tr>
+<tr>
+<td><code>kimi-coding/</code></td>
+<td>Kimi Coding</td>
+</tr>
+<tr>
+<td><code>shared/</code></td>
+<td>共享工具</td>
+</tr>
+<tr>
+<td><code>test-utils/</code></td>
+<td>测试工具</td>
+</tr>
+</tbody>
+</table>
+<h3 id="扩展结构">扩展结构</h3>
+<pre><code>extensions/&lt;name&gt;/
+  package.json           # 通过 &quot;openclaw.extensions&quot; 声明插件
+  src/
+    index.ts            # 插件入口 (ChannelPlugin 或其他)
+    channel.ts          # Channel 适配器（如适用）
+</code></pre>
+<h3 id="加载机制">加载机制</h3>
+<pre><code>src/plugins/registry.ts → 插件发现和加载
+本地安装或通过 npm
+通过 jiti (ESM 模块加载器) 惰性加载
+插件必须在 package.json 的 &quot;openclaw.extensions&quot; 数组中声明
+</code></pre>
+<hr />
+<h2 id="19-原生应用-apps">19. 原生应用 (Apps)</h2>
+<h3 id="macos-appsmacos">macOS (<code>apps/macos/</code>)</h3>
+<pre><code>SwiftUI 应用
+菜单栏 Gateway 运行器
+本地设置 UI
+版本: Info.plist CFBundleShortVersionString/CFBundleVersion
+</code></pre>
+<h3 id="ios-appsios">iOS (<code>apps/ios/</code>)</h3>
+<pre><code>Swift 应用
+Xcode 项目生成
+Widget + 语音唤醒支持
+版本: Info.plist CFBundleShortVersionString/CFBundleVersion
+</code></pre>
+<h3 id="android-appsandroid">Android (<code>apps/android/</code>)</h3>
+<pre><code>Kotlin + Gradle
+真机/模拟器测试
+集成测试支持
+版本: build.gradle.kts versionName/versionCode
+</code></pre>
+<h3 id="共享-appsshared">共享 (<code>apps/shared/</code>)</h3>
+<pre><code>OpenClawKit 框架
+通用协议
+统一日志
+</code></pre>
+<hr />
+<h2 id="20-完整数据流">20. 完整数据流</h2>
+<h3 id="入站消息流">入站消息流</h3>
+<pre><code>Channel 接收外部消息
+  → 标准化为 ChannelMessage (sender, target, text, attachments)
+  → 通过 RoutePeer 路由 (直接/群组检测)
+  → 记录 session 元数据
+  → 排队到 agent 处理
+  → Agent 启动 (bootstrap + session 上下文)
+  → Agent 响应 (text + media)
+  → 出站交付 (通过 channel 适配器)
+</code></pre>
+<h3 id="gateway-rpc-流">Gateway RPC 流</h3>
+<pre><code>CLI client → callGateway(opts)
+  → 解析凭证 + URL + TLS
+  → 创建临时 GatewayClient
+  → 连接 WebSocket → 握手 → HelloOk
+  → 发送 connect → { ok, auth: { deviceToken, scopes } }
+  → 存储设备 token
+  → 请求方法 → 等待响应
+  → 超时或响应解析
+  → 清理连接
+</code></pre>
+<h3 id="全局数据流">全局数据流</h3>
+<pre><code>┌─────────────────────────────────────────────┐
+│  Native Apps (macOS/iOS/Android)            │
+│  └── WebSocket/ACP 连接                     │
+├─────────────────────────────────────────────┤
+│  Web UI                                     │
+│  └── HTTP/WebSocket 连接                    │
+└──────────────┬──────────────────────────────┘
+               │
+               ▼
+┌──────────────────────────────────────────────┐
+│  Gateway (WebSocket broker)                  │
+│  ├── 设备认证/配对                            │
+│  ├── Channel 健康监控                         │
+│  ├── 配置热重载                               │
+│  └── RPC 方法分发                             │
+├──────────────────────────────────────────────┤
+│  Channel Layer                               │
+│  ├── 70 个扩展插件                            │
+│  ├── Channel Dock (轻量元数据)               │
+│  ├── Routing (多层绑定匹配)                   │
+│  └── Auto-reply (消息处理管线)                │
+├──────────────────────────────────────────────┤
+│  Agent Runtime                               │
+│  ├── Context Engine (上下文组装/压缩)         │
+│  ├── System Prompt Builder                   │
+│  ├── 模型选择 + 多 Provider                  │
+│  ├── 子 Agent 注册表                          │
+│  ├── Skills 系统                              │
+│  └── 工具沙箱                                 │
+├──────────────────────────────────────────────┤
+│  Memory System                               │
+│  ├── SQLite 向量存储 (语义检索)               │
+│  ├── JSONL Session 转录 (原始历史)            │
+│  └── 混合检索 (70% 向量 + 30% 全文)          │
+├──────────────────────────────────────────────┤
+│  Media Pipeline                              │
+│  ├── 下载/存储/服务                           │
+│  ├── 图片处理 (sharp)                        │
+│  ├── 音频/视频 (ffmpeg)                      │
+│  └── PDF 提取 (pdfjs)                        │
+├──────────────────────────────────────────────┤
+│  Plugin SDK                                  │
+│  ├── 867 行类型导出                           │
+│  ├── Channel/Tool/Auth/Config 适配器          │
+│  └── 安全工具 (SSRF/TLS/Rate-limit)          │
+└──────────────────────────────────────────────┘
+</code></pre>
+<hr />
+<h2 id="21-安全考量">21. 安全考量</h2>
+<table>
+<thead>
+<tr>
+<th>层面</th>
+<th>机制</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>SSRF 防护</strong></td>
+<td>白名单主机名验证</td>
+</tr>
+<tr>
+<td><strong>TLS 固定</strong></td>
+<td>可选证书指纹验证</td>
+</tr>
+<tr>
+<td><strong>凭证存储</strong></td>
+<td><code>~/.openclaw/identity/device-auth.json</code>，OS 级加密</td>
+</tr>
+<tr>
+<td><strong>路径遍历守卫</strong></td>
+<td>边界文件读取防止目录逃逸</td>
+</tr>
+<tr>
+<td><strong>速率限制</strong></td>
+<td>每 IP 认证失败限流</td>
+</tr>
+<tr>
+<td><strong>Secret 引用</strong></td>
+<td>配置支持 provider 级密钥解析 (如 1Password)</td>
+</tr>
+<tr>
+<td><strong>只读 Auth Store</strong></td>
+<td><code>secrets audit</code> 命令锁定认证写入</td>
+</tr>
+<tr>
+<td><strong>可信代理</strong></td>
+<td>Header 验证防止 IP 欺骗</td>
+</tr>
+<tr>
+<td><strong>设备配对</strong></td>
+<td>挑战-响应设备注册</td>
+</tr>
+<tr>
+<td><strong>WebSocket 验证</strong></td>
+<td>协议帧 Schema 验证</td>
+</tr>
+<tr>
+<td><strong>DoS 防护</strong></td>
+<td>2MB 提示词限制 (CWE-400)</td>
+</tr>
+<tr>
+<td><strong>明文阻断</strong></td>
+<td>阻止 ws:// 到非 loopback (CVSS 9.8)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="22-关键架构决策">22. 关键架构决策</h2>
+<table>
+<thead>
+<tr>
+<th>决策</th>
+<th>说明</th>
+<th>原因</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>惰性模块加载</strong></td>
+<td><code>.runtime.js</code> 边界</td>
+<td>减少启动时间，管理依赖</td>
+</tr>
+<tr>
+<td><strong>设备 Token 持久化</strong></td>
+<td>每设备认证</td>
+<td>减少认证开销</td>
+</tr>
+<tr>
+<td><strong>Per-Channel Dock</strong></td>
+<td>轻量元数据</td>
+<td>避免插件加载开销</td>
+</tr>
+<tr>
+<td><strong>工作空间模板化</strong></td>
+<td>引导 UX + 安全默认值</td>
+<td>降低上手门槛</td>
+</tr>
+<tr>
+<td><strong>Bootstrap 截断</strong></td>
+<td>管理上下文窗口</td>
+<td>防止上下文溢出</td>
+</tr>
+<tr>
+<td><strong>健康监控</strong></td>
+<td>检测静默 channel 失败</td>
+<td>半死 socket 检测</td>
+</tr>
+<tr>
+<td><strong>配置热重载</strong></td>
+<td>热路径减少停机</td>
+<td>无需重启即可更新</td>
+</tr>
+<tr>
+<td><strong>作用域认证</strong></td>
+<td>细粒度访问控制</td>
+<td>最小权限原则</td>
+</tr>
+<tr>
+<td><strong>Session 压缩</strong></td>
+<td>管理 token 使用</td>
+<td>长对话不中断</td>
+</tr>
+<tr>
+<td><strong>插件注册表</strong></td>
+<td>可扩展性无核心耦合</td>
+<td>新 channel 无需改核心</td>
+</tr>
+<tr>
+<td><strong>ESM 优先</strong></td>
+<td>全面 ESM</td>
+<td>现代 JS 生态对齐</td>
+</tr>
+<tr>
+<td><strong>pnpm + bun 双支持</strong></td>
+<td>灵活包管理</td>
+<td>开发体验 + 生产稳定</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="附录大版本架构更新">附录：大版本架构更新</h2>
+<h3 id="a1-插件-sdk-重组与-provider-迁移">A1. 插件 SDK 重组与 Provider 迁移</h3>
+<p><strong>核心变更</strong>：大量 channel 和 provider 实现从 <code>src/</code> 核心移至 <code>extensions/</code>：
+- LINE channel: <code>src/line/</code> → <code>extensions/line/src/</code>
+- WhatsApp 标准化/路由: <code>src/whatsapp/</code> → 扩展内部
+- Deepgram/Groq 媒体理解 → 扩展
+- GitHub Copilot provider → 扩展
+- MiniMax/Qwen Portal Auth → 扩展内部</p>
+<p><strong>Plugin SDK 新增 Barrel 导出</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>新模块</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>src/plugin-sdk/provider-catalog.ts</code></td>
+<td>Provider 目录构建（20+ provider builder 重导出）</td>
+</tr>
+<tr>
+<td><code>src/plugin-sdk/webhook-ingress.ts</code></td>
+<td>Webhook 入站守卫（限流、异常追踪、管线）</td>
+</tr>
+<tr>
+<td><code>src/plugin-sdk/provider-onboard.ts</code></td>
+<td>Provider 入门配置预设（模型别名、默认值应用）</td>
+</tr>
+<tr>
+<td><code>src/plugin-sdk/account-resolution.ts</code></td>
+<td>共享账号查找与标准化</td>
+</tr>
+<tr>
+<td><code>src/plugin-sdk/oauth-utils.ts</code></td>
+<td>OAuth PKCE + URL 编码工具</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Provider 能力系统</strong>：</p>
+<p><strong>文件</strong>: <code>src/agents/provider-capabilities.ts</code> (226 行，新文件)</p>
+<p>集中管理各 provider 的能力差异：</p>
+<pre><code class="language-typescript">type ProviderCapabilities = {
+  anthropicToolSchemaMode: &quot;native&quot; | &quot;openai-functions&quot;;
+  openAiPayloadNormalizationMode: &quot;default&quot; | &quot;moonshot-thinking&quot;;
+  providerFamily: &quot;default&quot; | &quot;openai&quot; | &quot;anthropic&quot;;
+  preserveAnthropicThinkingSignatures: boolean;
+  openAiCompatTurnValidation: boolean;
+  // ... 更多能力标志
+};
+
+function resolveProviderCapabilities(provider?, options?): ProviderCapabilities
+function shouldDropThinkingBlocksForModel(params): boolean
+</code></pre>
+<h3 id="a2-clawhub-安装系统">A2. ClawHub 安装系统</h3>
+<p>新增的集中式插件/技能分发系统：</p>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>行数</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>src/infra/clawhub.ts</code></td>
+<td>654+</td>
+<td>ClawHub API 客户端（包列表/详情/版本/搜索）</td>
+</tr>
+<tr>
+<td><code>src/plugins/clawhub.ts</code></td>
+<td>250+</td>
+<td>插件安装验证（API 版本兼容、错误码）</td>
+</tr>
+<tr>
+<td><code>src/agents/skills-clawhub.ts</code></td>
+<td>398+</td>
+<td>技能安装/更新（lockfile 管理）</td>
+</tr>
+<tr>
+<td><code>src/config/types.installs.ts</code></td>
+<td>19</td>
+<td>安装记录基础类型</td>
+</tr>
+</tbody>
+</table>
+<pre><code class="language-typescript">type ClawHubPackageFamily = &quot;skill&quot; | &quot;code-plugin&quot; | &quot;bundle-plugin&quot;;
+type ClawHubPackageChannel = &quot;official&quot; | &quot;community&quot; | &quot;private&quot;;
+
+type InstallRecordBase = {
+  source: &quot;npm&quot; | &quot;archive&quot; | &quot;path&quot; | &quot;clawhub&quot;;
+  spec?; sourcePath?; installPath?; version?;
+  clawhubUrl?; clawhubPackage?; clawhubFamily?; clawhubChannel?;
+  // ... 更多字段
+};
+</code></pre>
+<h3 id="a3-tavily-web-搜索插件">A3. Tavily Web 搜索插件</h3>
+<p><strong>位置</strong>: <code>extensions/tavily/</code> (新增捆绑插件)</p>
+<pre><code class="language-typescript">// extensions/tavily/index.ts
+definePluginEntry({
+  id: &quot;tavily&quot;,
+  register(api) {
+    api.registerWebSearchProvider(createTavilyWebSearchProvider());
+    api.registerTool(createTavilySearchTool(api));
+    api.registerTool(createTavilyExtractTool(api));
+  },
+});
+</code></pre>
+<p>包含：搜索工具、内容提取工具、搜索 provider、客户端封装、配置。</p>
+<h3 id="a4-cli-json-模式分离">A4. CLI JSON 模式分离</h3>
+<p><strong>文件</strong>: <code>src/cli/program/json-mode.ts</code> (59 行，新文件)</p>
+<p>将 JSON 有效负载输出与日志分离：</p>
+<pre><code class="language-typescript">function setCommandJsonMode(command: Command, mode: &quot;output&quot; | &quot;parse-only&quot;): Command
+function getCommandJsonMode(command: Command, argv?): JsonMode | null
+function isCommandJsonOutputMode(command: Command, argv?): boolean
+</code></pre>
+<p>40+ CLI 命令文件统一使用此模块处理 JSON 输出。</p>
+<h3 id="a5-共享缓存基础设施">A5. 共享缓存基础设施</h3>
+<p><strong>文件</strong>: <code>src/config/cache-utils.ts</code> (160 行，新文件)</p>
+<p>可复用的过期缓存实现：</p>
+<pre><code class="language-typescript">type ExpiringMapCache&lt;TKey, TValue&gt; = {
+  get; set; delete; clear; keys; size; pruneExpired;
+};
+
+function createExpiringMapCache&lt;TKey, TValue&gt;(options: {
+  ttlMs: CacheTtlResolver;
+  pruneIntervalMs?: CachePruneIntervalResolver;
+}): ExpiringMapCache&lt;TKey, TValue&gt;
+
+function getFileStatSnapshot(filePath: string): FileStatSnapshot | undefined
+</code></pre>
+<p>用于 session store 和其他子系统的缓存去重。</p>
+<h3 id="a6-provider-入门预设系统">A6. Provider 入门预设系统</h3>
+<p><strong>文件</strong>: <code>src/plugins/provider-onboarding-config.ts</code> (87+ 行，新文件)</p>
+<p>标准化 12+ 扩展的入门配置流程：</p>
+<pre><code class="language-typescript">function withAgentModelAliases(existing, aliases: readonly AgentModelAliasEntry[]): Record&lt;string, AgentModelEntryConfig&gt;
+function applyOnboardAuthAgentModelsAndProviders(cfg, params: { agentModels; providers }): OpenClawConfig
+function applyAgentDefaultModelPrimary(cfg, primary: string): OpenClawConfig
+</code></pre>
+<h3 id="a7-设备引导-token-系统">A7. 设备引导 Token 系统</h3>
+<p><strong>文件</strong>: <code>src/infra/device-bootstrap.ts</code> (153 行，新文件)</p>
+<p>设备引导令牌的签发、验证和撤销：</p>
+<pre><code class="language-typescript">const DEVICE_BOOTSTRAP_TOKEN_TTL_MS = 10 * 60 * 1000  // 10 分钟
+
+function issueDeviceBootstrapToken(params): Promise&lt;{ token; expiresAtMs }&gt;
+function verifyDeviceBootstrapToken(params: { token; deviceId; publicKey; role; scopes }): Promise&lt;{ ok } | { ok: false; reason }&gt;
+function revokeDeviceBootstrapToken(params): Promise&lt;{ removed: boolean }&gt;
+function clearDeviceBootstrapTokens(params): Promise&lt;{ removed: number }&gt;
+</code></pre>
+</body>
+</html>

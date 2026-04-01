@@ -1,0 +1,1506 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>01-context-orchestration</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1 id="openclaw-上下文编排方案详细分析">OpenClaw 上下文编排方案详细分析</h1>
+<h2 id="目录">目录</h2>
+<ol>
+<li><a href="#1-架构总览">架构总览</a></li>
+<li><a href="#2-context-engine-插件化接口">Context Engine 插件化接口</a></li>
+<li><a href="#3-context-engine-注册与解析">Context Engine 注册与解析</a></li>
+<li><a href="#4-legacy-context-engine">Legacy Context Engine</a></li>
+<li><a href="#5-上下文窗口管理">上下文窗口管理</a></li>
+<li><a href="#6-system-prompt-组装">System Prompt 组装</a></li>
+<li><a href="#7-agent-执行流程-attempt">Agent 执行流程 (Attempt)</a></li>
+<li><a href="#8-运行循环与重试">运行循环与重试</a></li>
+<li><a href="#9-上下文压缩-compaction">上下文压缩 (Compaction)</a></li>
+<li><a href="#10-嵌入式-compaction-入口">嵌入式 Compaction 入口</a></li>
+<li><a href="#11-上下文裁剪扩展-context-pruning">上下文裁剪扩展 (Context Pruning)</a></li>
+<li><a href="#12-路由系统">路由系统</a></li>
+<li><a href="#13-session-key-构建">Session Key 构建</a></li>
+<li><a href="#14-子-agent-注册表">子 Agent 注册表</a></li>
+<li><a href="#15-子-agent-控制工具">子 Agent 控制工具</a></li>
+<li><a href="#16-插件-hook-体系">插件 Hook 体系</a></li>
+<li><a href="#17-acp-协议翻译层">ACP 协议翻译层</a></li>
+<li><a href="#18-channel-状态机">Channel 状态机</a></li>
+<li><a href="#19-完整数据流图">完整数据流图</a></li>
+<li><a href="#20-关键设计模式总结">关键设计模式总结</a></li>
+<li><a href="#附录-a-插件加载与-sdk-安全改进2026-03-18-后新增">附录 A. 插件加载与 SDK 安全改进</a></li>
+</ol>
+<hr />
+<h2 id="1-架构总览">1. 架构总览</h2>
+<p>OpenClaw 的上下文编排系统是一个分层、可插拔的架构，核心职责：</p>
+<ul>
+<li><strong>上下文组装</strong>：在 token 预算内组装有序的消息序列 + 系统提示词</li>
+<li><strong>上下文压缩</strong>：当 token 超限时，通过 LLM 摘要压缩旧消息</li>
+<li><strong>上下文裁剪</strong>：运行时动态裁剪非关键消息（可选扩展）</li>
+<li><strong>路由分发</strong>：根据 channel/peer/guild 等多维度路由到正确的 Agent 和 Session</li>
+<li><strong>多 Agent 协调</strong>：父-子 Agent 的上下文继承、生命周期管理</li>
+<li><strong>插件拦截</strong>：通过 Hook 体系在上下文生命周期各阶段注入自定义逻辑</li>
+</ul>
+<h3 id="架构分层">架构分层</h3>
+<pre><code>┌─────────────────────────────────────────────────────────────┐
+│  Application Layer (Routing, Channels, Auto-Reply)          │
+├─────────────────────────────────────────────────────────────┤
+│  Plugin Layer (Hooks, Tools, Commands, Providers)           │
+├─────────────────────────────────────────────────────────────┤
+│  Agent Execution (Run Loop, Attempt, System Prompt)         │
+├─────────────────────────────────────────────────────────────┤
+│  Context Engine Layer (Pluggable Interface)                 │
+│  ┌──────────────────────┬──────────────────────────────────┐│
+│  │ LegacyContextEngine  │ Custom Engines (via plugins)     ││
+│  └──────────────────────┴──────────────────────────────────┘│
+├─────────────────────────────────────────────────────────────┤
+│  Compaction &amp; Pruning (Embedded Pi Session)                 │
+├─────────────────────────────────────────────────────────────┤
+│  Session Persistence (SessionManager, Lock Management)      │
+└─────────────────────────────────────────────────────────────┘
+</code></pre>
+<hr />
+<h2 id="2-context-engine-插件化接口">2. Context Engine 插件化接口</h2>
+<p><strong>文件</strong>: <code>src/context-engine/types.ts</code> (232 行)</p>
+<p>Context Engine 是上下文管理的核心抽象，定义了一套完整的生命周期接口：</p>
+<h3 id="核心接口-contextengine">核心接口 <code>ContextEngine</code></h3>
+<pre><code class="language-typescript">interface ContextEngine {
+  readonly info: ContextEngineInfo;
+
+  // 初始化 session 上下文
+  bootstrap?(params: { sessionId: string; sessionKey?: string; sessionFile: string }): Promise&lt;BootstrapResult&gt;;
+
+  // 单条消息摄入
+  ingest(params: { sessionId: string; message: AgentMessage; isHeartbeat?: boolean }): Promise&lt;IngestResult&gt;;
+
+  // 批量消息摄入
+  ingestBatch?(messages): Promise&lt;IngestBatchResult&gt;;
+
+  // 每轮对话后的生命周期钩子（持久化、自动压缩触发等）
+  afterTurn?(params: {
+    sessionId; sessionKey?; sessionFile; messages; prePromptMessageCount;
+    autoCompactionSummary?; isHeartbeat?; tokenBudget?; runtimeContext?;
+  }): Promise&lt;void&gt;;
+
+  // 核心方法：在 token 预算内组装上下文
+  assemble(params: {
+    sessionId: string;
+    sessionKey?: string;
+    messages: AgentMessage[];
+    tokenBudget?: number;
+    model?: string;   // 新增：模型 ID (如 &quot;claude-opus-4&quot;, &quot;gpt-4o&quot;)
+    prompt?: string;  // 新增：用户输入 prompt，用于检索增强
+  }): Promise&lt;AssembleResult&gt;;
+
+  // 压缩旧消息，减少 token 占用
+  compact(params: {
+    sessionId: string; sessionKey?: string; sessionFile: string;
+    tokenBudget?; force?; currentTokenCount?;
+    compactionTarget?: &quot;budget&quot; | &quot;threshold&quot;;
+    customInstructions?; runtimeContext?: ContextEngineRuntimeContext;
+  }): Promise&lt;CompactResult&gt;;
+
+  // 转录维护（压缩后清理/重写）— 新增
+  maintain?(params: {
+    sessionId: string; sessionKey?: string; sessionFile: string;
+    runtimeContext?: ContextEngineRuntimeContext;
+  }): Promise&lt;ContextEngineMaintenanceResult&gt;;
+
+  // 子 Agent 生成前的准备工作（支持回滚）
+  prepareSubagentSpawn?(): Promise&lt;SubagentSpawnPreparation&gt;;
+
+  // 子 Agent 结束后的清理通知
+  onSubagentEnded?(reason: SubagentEndReason): Promise&lt;void&gt;;
+
+  // 资源释放
+  dispose?(): Promise&lt;void&gt;;
+}
+</code></pre>
+<h3 id="关键类型定义">关键类型定义</h3>
+<table>
+<thead>
+<tr>
+<th>类型</th>
+<th>字段</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>AssembleResult</code></td>
+<td><code>messages</code>, <code>estimatedTokens</code>, <code>systemPromptAddition?</code></td>
+<td>组装结果</td>
+</tr>
+<tr>
+<td><code>CompactResult</code></td>
+<td><code>ok</code>, <code>compacted</code>, <code>reason?</code>, <code>result?</code> (containing <code>summary?</code>, <code>firstKeptEntryId?</code>, <code>tokensBefore</code>, <code>tokensAfter?</code>, <code>details?</code>)</td>
+<td>压缩结果</td>
+</tr>
+<tr>
+<td><code>ContextEngineMaintenanceResult</code></td>
+<td>维护操作结果</td>
+<td><strong>新增</strong>：转录维护结果</td>
+</tr>
+<tr>
+<td><code>TranscriptRewriteRequest</code> / <code>TranscriptRewriteResult</code></td>
+<td>转录重写请求/结果</td>
+<td><strong>新增</strong>：通过 <code>runtimeContext.rewriteTranscriptEntries()</code> 触发</td>
+</tr>
+<tr>
+<td><code>IngestResult</code> / <code>IngestBatchResult</code></td>
+<td>消息摄入确认</td>
+<td>消息接收结果</td>
+</tr>
+<tr>
+<td><code>BootstrapResult</code></td>
+<td>session 初始化结果</td>
+<td>启动结果</td>
+</tr>
+<tr>
+<td><code>ContextEngineInfo</code></td>
+<td>引擎元数据和能力描述</td>
+<td>引擎信息</td>
+</tr>
+<tr>
+<td><code>SubagentSpawnPreparation</code></td>
+<td>含回滚支持的准备数据</td>
+<td>子 Agent 准备</td>
+</tr>
+<tr>
+<td><code>SubagentEndReason</code></td>
+<td><code>"deleted"</code> | <code>"completed"</code> | <code>"swept"</code> | <code>"released"</code></td>
+<td>子 Agent 终止原因</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="3-context-engine-注册与解析">3. Context Engine 注册与解析</h2>
+<p><strong>文件</strong>: <code>src/context-engine/registry.ts</code> (144 行)</p>
+<h3 id="注册机制">注册机制</h3>
+<p>使用全局 Symbol 实现跨模块、跨 chunk 的单例注册：</p>
+<pre><code class="language-typescript">// 进程级全局注册表
+Symbol.for(&quot;openclaw.contextEngineRegistryState&quot;)
+</code></pre>
+<h3 id="核心-api">核心 API</h3>
+<table>
+<thead>
+<tr>
+<th>函数</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>registerContextEngine(id, factory)</code></td>
+<td>注册引擎工厂函数</td>
+</tr>
+<tr>
+<td><code>getContextEngineFactory(id)</code></td>
+<td>按 ID 获取工厂</td>
+</tr>
+<tr>
+<td><code>listContextEngineIds()</code></td>
+<td>列出所有已注册 ID</td>
+</tr>
+<tr>
+<td><code>resolveContextEngine(config)</code></td>
+<td>主解析器</td>
+</tr>
+</tbody>
+</table>
+<h3 id="解析优先级">解析优先级</h3>
+<pre><code>1. config.plugins.slots.contextEngine  (配置指定)
+2. defaultSlotIdForKey(&quot;contextEngine&quot;) (默认 slot)
+3. 抛出异常（未注册）
+</code></pre>
+<p>默认回退到 <code>"legacy"</code> 引擎。</p>
+<hr />
+<h2 id="4-legacy-context-engine">4. Legacy Context Engine</h2>
+<p><strong>文件</strong>: <code>src/context-engine/legacy.ts</code> (131 行)</p>
+<p>Legacy 引擎是默认实现，完全向后兼容：</p>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>行为</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ingest()</code></td>
+<td>No-op</td>
+<td>SessionManager 自行处理持久化</td>
+</tr>
+<tr>
+<td><code>assemble()</code></td>
+<td>Pass-through</td>
+<td><code>attempt.ts</code> 中的 sanitize→validate→limit 管线处理</td>
+</tr>
+<tr>
+<td><code>afterTurn()</code></td>
+<td>No-op</td>
+<td>Legacy 流程直接持久化</td>
+</tr>
+<tr>
+<td><code>compact()</code></td>
+<td>委托 <code>compactEmbeddedPiSessionDirect</code></td>
+<td>通过 <code>.runtime.js</code> 动态导入</td>
+</tr>
+<tr>
+<td><code>dispose()</code></td>
+<td>No-op</td>
+<td>无需清理</td>
+</tr>
+</tbody>
+</table>
+<p><strong>设计要点</strong>: 通过 <code>.runtime.js</code> 边界动态导入 compaction 逻辑，保持 lazy-loading 有效性。</p>
+<hr />
+<h2 id="5-上下文窗口管理">5. 上下文窗口管理</h2>
+<h3 id="模型上下文窗口发现-srcagentscontextts-442-行">模型上下文窗口发现 (<code>src/agents/context.ts</code>, 442 行)</h3>
+<h4 id="关键常量">关键常量</h4>
+<pre><code class="language-typescript">ANTHROPIC_1M_MODEL_PREFIXES = [&quot;claude-opus-4&quot;, &quot;claude-sonnet-4&quot;]
+ANTHROPIC_CONTEXT_1M_TOKENS = 1_048_576
+CONFIG_LOAD_RETRY_POLICY: 指数退避 (1s → 60s)
+</code></pre>
+<h4 id="核心函数">核心函数</h4>
+<table>
+<thead>
+<tr>
+<th>函数</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>lookupContextTokens(modelId, options?)</code></td>
+<td>非阻塞缓存查找，支持 <code>allowAsyncLoad</code> 选项</td>
+</tr>
+<tr>
+<td><code>resolveContextTokensForModel(params)</code></td>
+<td>完整解析管线，支持 <code>allowAsyncLoad</code> 参数</td>
+</tr>
+<tr>
+<td><code>applyDiscoveredContextWindows()</code></td>
+<td>应用 pi-coding-agent 模型注册表</td>
+</tr>
+<tr>
+<td><code>applyConfiguredContextWindows()</code></td>
+<td>应用 config 覆盖 (models.json)</td>
+</tr>
+</tbody>
+</table>
+<h4 id="启动路径懒加载控制2026-03-18-后新增">启动路径懒加载控制（2026-03-18 后新增）</h4>
+<p><code>lookupContextTokens</code> 和 <code>resolveContextTokensForModel</code> 新增 <code>allowAsyncLoad?: boolean</code> 选项，控制是否在查找时触发异步缓存加载：</p>
+<pre><code class="language-typescript">// 完整签名
+function lookupContextTokens(
+  modelId?: string,
+  options?: { allowAsyncLoad?: boolean },
+): number | undefined
+
+function resolveContextTokensForModel(params: {
+  cfg?: OpenClawConfig;
+  provider?: string;
+  model?: string;
+  contextTokensOverride?: number;
+  fallbackContextTokens?: number;
+  allowAsyncLoad?: boolean;  // 新增：控制是否触发异步缓存预热
+}): number | undefined
+</code></pre>
+<p><strong>设计目标</strong>：在 <code>status --json</code> 等快速路径中避免触发插件 SDK 库导入和上下文窗口缓存预热，防止不必要的启动副作用。通过 <code>allowAsyncLoad: false</code> 跳过 <code>ensureContextWindowCacheLoaded()</code> 的异步调用。</p>
+<h4 id="智能去重">智能去重</h4>
+<p>当多个 provider 暴露同一模型时，<strong>优先选择较小的窗口</strong>（fail-safe 策略）。使用 provider 限定的缓存 key，回退到裸 key 以保证健壮的模型查找。</p>
+<h3 id="上下文窗口守卫-srcagentscontext-window-guardts-75-行">上下文窗口守卫 (<code>src/agents/context-window-guard.ts</code>, 75 行)</h3>
+<h4 id="常量">常量</h4>
+<pre><code class="language-typescript">CONTEXT_WINDOW_HARD_MIN_TOKENS = 16_000  // 低于此值阻止运行
+CONTEXT_WINDOW_WARN_BELOW_TOKENS = 32_000 // 低于此值发出警告
+</code></pre>
+<h4 id="层级解析">层级解析</h4>
+<pre><code>modelsConfig → model → default → agentContextTokens (作为上限 cap，而非 fallback 层级)
+</code></pre>
+<h4 id="返回类型">返回类型</h4>
+<pre><code class="language-typescript">ContextWindowGuardResult {
+  source: &quot;model&quot; | &quot;modelsConfig&quot; | &quot;agentContextTokens&quot; | &quot;default&quot;
+  tokens: number
+  shouldWarn: boolean   // &lt; 32K
+  shouldBlock: boolean  // &lt; 16K
+}
+</code></pre>
+<hr />
+<h2 id="6-system-prompt-组装">6. System Prompt 组装</h2>
+<h3 id="核心组装-srcagentssystem-promptts-728-行">核心组装 (<code>src/agents/system-prompt.ts</code>, 728 行)</h3>
+<p>System Prompt 由多个段落拼接而成，每个段落对应一个功能域：</p>
+<h4 id="组装段落按顺序">组装段落（按顺序）</h4>
+<table>
+<thead>
+<tr>
+<th>段落</th>
+<th>内容</th>
+<th>条件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Identity</strong></td>
+<td>模型名称、provider、agent 信息</td>
+<td>始终包含</td>
+</tr>
+<tr>
+<td><strong>Skills</strong></td>
+<td>强制技能选择逻辑指令</td>
+<td>Full 模式</td>
+</tr>
+<tr>
+<td><strong>Memory</strong></td>
+<td><code>memory_search</code>/<code>memory_get</code> 使用指南</td>
+<td>启用记忆时</td>
+</tr>
+<tr>
+<td><strong>User Identity</strong></td>
+<td>授权发送者列表、owner 号码</td>
+<td>有授权信息时</td>
+</tr>
+<tr>
+<td><strong>Time</strong></td>
+<td>用户时区提示</td>
+<td>Full 模式</td>
+</tr>
+<tr>
+<td><strong>Reply Tags</strong></td>
+<td><code>[[reply_to_current]]</code> 语法说明</td>
+<td>Channel 支持时</td>
+</tr>
+<tr>
+<td><strong>Messaging</strong></td>
+<td>session_send、subagents 工具、inline 按钮、channel actions</td>
+<td>Full 模式</td>
+</tr>
+<tr>
+<td><strong>Voice/TTS</strong></td>
+<td>文本转语音提示</td>
+<td>TTS 启用时</td>
+</tr>
+<tr>
+<td><strong>Docs</strong></td>
+<td>OpenClaw 文档路径、Discord 链接</td>
+<td>Full 模式</td>
+</tr>
+<tr>
+<td><strong>Runtime</strong></td>
+<td>Host、OS、arch、Node、model、shell、channel、capabilities</td>
+<td>Full 模式</td>
+</tr>
+<tr>
+<td><strong>Tools</strong></td>
+<td>工具名称和摘要列表</td>
+<td>有工具时</td>
+</tr>
+<tr>
+<td><strong>Sandbox</strong></td>
+<td>沙箱环境信息</td>
+<td>沙箱模式时</td>
+</tr>
+<tr>
+<td><strong>Bootstrap Truncation</strong></td>
+<td>截断警告</td>
+<td>初始上下文被截断时</td>
+</tr>
+<tr>
+<td><strong>Thinking</strong></td>
+<td>推理/思考级别提示</td>
+<td>配置推理时</td>
+</tr>
+<tr>
+<td><strong>Reactions</strong></td>
+<td>表情反应级别指南</td>
+<td>Channel 支持时</td>
+</tr>
+</tbody>
+</table>
+<h4 id="提示模式-promptmode">提示模式 (<code>PromptMode</code>)</h4>
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>用途</th>
+<th>包含段落</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>"full"</code></td>
+<td>主 Agent</td>
+<td>所有段落</td>
+</tr>
+<tr>
+<td><code>"minimal"</code></td>
+<td>子 Agent</td>
+<td>通过 isMinimal 检查控制各段落的包含/排除，精简版的多个段落</td>
+</tr>
+<tr>
+<td><code>"none"</code></td>
+<td>极简</td>
+<td>仅基础身份信息</td>
+</tr>
+</tbody>
+</table>
+<h3 id="嵌入式-prompt-构建-srcagentspi-embedded-runnersystem-promptts-108-行">嵌入式 Prompt 构建 (<code>src/agents/pi-embedded-runner/system-prompt.ts</code>, 108 行)</h3>
+<p>封装层，将嵌入式参数映射到通用参数：</p>
+<pre><code class="language-typescript">buildEmbeddedSystemPrompt() {
+  // 提取工具名称/摘要
+  // 构建模型别名行
+  // 委托给核心 buildAgentSystemPrompt()
+}
+</code></pre>
+<h4 id="system-prompt-覆盖机制">System Prompt 覆盖机制</h4>
+<pre><code class="language-typescript">createSystemPromptOverride(systemPrompt: string)      // 创建覆盖函数
+applySystemPromptOverrideToSession(session, override)  // 应用到 session
+</code></pre>
+<p>插件和配置可通过此机制完全替换默认 System Prompt。</p>
+<hr />
+<h2 id="7-agent-执行流程-attempt">7. Agent 执行流程 (Attempt)</h2>
+<p><strong>文件</strong>: <code>src/agents/pi-embedded-runner/run/attempt.ts</code> (2874 行)</p>
+<h3 id="执行流程">执行流程</h3>
+<pre><code>1. 加载 session (从磁盘)
+2. 修复 session 文件 (如有损坏)
+3. 创建 AgentSession (通过 SessionManager)
+4. 调用 Context Engine 的 assemble():
+   - 输入：完整消息历史
+   - 预算：context window - overhead
+   - 输出：有序消息 + token 估算 + systemPromptAddition
+5. 应用 System Prompt
+6. 添加插件/Hook 上下文
+7. 发送到模型
+</code></pre>
+<h3 id="辅助函数">辅助函数</h3>
+<table>
+<thead>
+<tr>
+<th>函数</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>normalizeToolCallNameForDispatch()</code></td>
+<td>通过 allowlist 解析工具别名</td>
+</tr>
+<tr>
+<td><code>isToolCallBlockType()</code></td>
+<td>检测 toolCall/toolUse/functionCall</td>
+</tr>
+<tr>
+<td><code>normalizeToolCallIdsInMessage()</code></td>
+<td>为 Anthropic 清理 ID</td>
+</tr>
+<tr>
+<td><code>isOllamaCompatProvider()</code></td>
+<td>通过 URL 模式检测 Ollama</td>
+</tr>
+<tr>
+<td><code>shouldInjectOllamaCompatNumCtx()</code></td>
+<td>检查 OpenAI-compat 适配器</td>
+</tr>
+<tr>
+<td><code>wrapOllamaCompatNumCtx()</code></td>
+<td>注入 num_ctx 参数</td>
+</tr>
+</tbody>
+</table>
+<h3 id="关键处理">关键处理</h3>
+<ul>
+<li><strong>插件 Hook 执行</strong>: <code>before_prompt_build</code>、<code>before_agent_start</code></li>
+<li><strong>图片检测和加载</strong>: 自动识别消息中的图片</li>
+<li><strong>工具结果上下文守卫</strong>: 防止工具结果溢出</li>
+<li><strong>缓存 TTL 追加</strong>: 为支持的 provider 添加缓存 TTL</li>
+</ul>
+<hr />
+<h2 id="8-运行循环与重试">8. 运行循环与重试</h2>
+<p><strong>文件</strong>: <code>src/agents/pi-embedded-runner/run.ts</code> (1698 行)</p>
+<h3 id="重试常量">重试常量</h3>
+<pre><code class="language-typescript">BASE_RUN_RETRY_ITERATIONS = 24                    // 基础重试次数
+RUN_RETRY_ITERATIONS_PER_PROFILE = 8              // 每个 auth profile 额外重试
+OVERLOAD_FAILOVER_BACKOFF_POLICY = 250ms → 1.5s   // 过载退避，0.2 jitter
+ANTHROPIC_MAGIC_STRING_TRIGGER_REFUSAL             // 投毒防护清洗
+</code></pre>
+<h3 id="usage-累计逻辑">Usage 累计逻辑</h3>
+<pre><code class="language-typescript">// TypeScript type + factory function createUsageAccumulator()
+// 跟踪 input、output、cache read/write（跨重试累计）
+
+mergeUsageIntoAccumulator()  // 合并单次 API 调用 usage
+toNormalizedUsage()          // 归一化（使用最后一次调用的 cache 字段）
+</code></pre>
+<p><strong>关键设计</strong>: 使用<strong>最后一次</strong> API 调用的 cache 字段（而非累计值），避免多轮工具调用时 <code>N × context_size</code> 的膨胀。</p>
+<hr />
+<h2 id="9-上下文压缩-compaction">9. 上下文压缩 (Compaction)</h2>
+<p><strong>文件</strong>: <code>src/agents/compaction.ts</code> (464 行)</p>
+<h3 id="算法常量">算法常量</h3>
+<pre><code class="language-typescript">BASE_CHUNK_RATIO = 0.4           // 40% 上下文大小作为 chunk 尺寸
+MIN_CHUNK_RATIO = 0.15           // chunk 最小不低于 15%
+SAFETY_MARGIN = 1.2              // 20% 安全余量（补偿 token 估算不准确）
+SUMMARIZATION_OVERHEAD_TOKENS = 4_096  // 摘要提示词预留 token
+MAX_COMPACTION_SUMMARY_CHARS = 16_000  // 新增：摘要字符上限
+MAX_FILE_OPS_SECTION_CHARS = 2_000     // 新增：文件操作段字符上限
+</code></pre>
+<h3 id="核心函数-1">核心函数</h3>
+<h4 id="token-估算">Token 估算</h4>
+<pre><code class="language-typescript">estimateMessagesTokens(messages)
+// 安全处理：剥离 toolResult.details（不可信的冗长载荷）
+// 对剩余内容求和估算 token
+</code></pre>
+<h4 id="消息分块">消息分块</h4>
+<table>
+<thead>
+<tr>
+<th>函数</th>
+<th>策略</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>splitMessagesByTokenShare()</code></td>
+<td>按 token 分布等分为 N 份</td>
+</tr>
+<tr>
+<td><code>chunkMessagesByMaxTokens()</code></td>
+<td>按固定大小分块，含超大消息保护</td>
+</tr>
+<tr>
+<td><code>computeAdaptiveChunkRatio()</code></td>
+<td>根据平均消息大小动态调整 chunk 尺寸</td>
+</tr>
+</tbody>
+</table>
+<h4 id="摘要生成渐进降级">摘要生成（渐进降级）</h4>
+<pre><code class="language-typescript">summarizeWithFallback(messages) {
+  // 1. 完整摘要 → 尝试对全部消息生成摘要
+  // 2. 部分摘要 → 截取部分消息生成摘要
+  // 3. 文本回退 → 仅记录消息数量的简短文本
+}
+
+summarizeInStages(messages) {
+  // 多阶段摘要：分块摘要后合并
+}
+</code></pre>
+<h4 id="历史裁剪">历史裁剪</h4>
+<pre><code class="language-typescript">pruneHistoryForContextShare(messages, budget) {
+  // 丢弃最旧的 chunk 直到符合预算
+}
+</code></pre>
+<h3 id="标识符保留策略">标识符保留策略</h3>
+<p>压缩时严格保留的标识符类型：
+- UUID
+- 哈希值
+- IP 地址和端口
+- URL
+- API Key
+- 主机名</p>
+<p>策略可配置：<code>"strict"</code> | <code>"off"</code> | <code>"custom"</code></p>
+<hr />
+<h2 id="10-嵌入式-compaction-入口">10. 嵌入式 Compaction 入口</h2>
+<p><strong>文件</strong>: <code>src/agents/pi-embedded-runner/compact.ts</code> (1200 行)</p>
+<h3 id="参数类型-compactembeddedpisessionparams35-个字段">参数类型 <code>CompactEmbeddedPiSessionParams</code>（35 个字段）</h3>
+<p>涵盖：Session/Run 标识、模型和认证覆盖、预算和触发配置、工作空间和技能配置。</p>
+<h3 id="执行阶段">执行阶段</h3>
+<pre><code>Phase 1: 模型解析 (279-328行)
+  → 支持独立的 compaction 模型覆盖（与运行时模型分离）
+
+Phase 2: 工作空间和认证设置 (357-375行)
+  → 初始化沙箱，确保 session header
+
+Phase 3: 工具和 Channel 解析 (424-514行)
+  → 清理 Google 兼容性，收集 allowlist，解析能力
+
+Phase 4: System Prompt 组装 (549-577行)
+  → 完整嵌入式提示词 + skills + docs + reactions
+
+Phase 5: Session 锁和修复 (580-603行)
+  → 获取锁，修复损坏的 session，预热缓存
+
+Phase 6: 转录清理 (664-700行)
+  → 验证、限制历史、修复工具配对
+
+Phase 7: Pre-Compaction Hooks (727-763行)
+  → 发射内部/插件 hooks
+
+Phase 8: 核心压缩 (790-827行)
+  → 调用 session.compact()，估算 token
+
+Phase 9: Post-Compaction Hooks (831-872行)
+  → 发射完成 hooks
+
+Phase 10: 清理 (885-901行)
+  → 刷新待处理的工具结果，释放 session
+</code></pre>
+<h3 id="指标收集">指标收集</h3>
+<ul>
+<li>消息计数：原始、限制前、压缩后</li>
+<li>字符/token 计数：历史、工具结果、估算值</li>
+<li>Top 3 贡献角色/工具</li>
+</ul>
+<hr />
+<h2 id="11-上下文裁剪扩展-context-pruning">11. 上下文裁剪扩展 (Context Pruning)</h2>
+<h3 id="扩展入口-srcagentspi-extensionscontext-pruningextensionts-41-行">扩展入口 (<code>src/agents/pi-extensions/context-pruning/extension.ts</code>, 41 行)</h3>
+<p>作为 Pi Extension 运行，监听 <code>"context"</code> 事件：</p>
+<pre><code class="language-typescript">// 事件处理逻辑
+onContextEvent() {
+  if (&quot;cache-ttl&quot; mode &amp;&amp; !expired) return  // TTL 模式下未过期则跳过
+  pruneContextMessages(messages)          // 执行裁剪
+  updateLastTouch()                       // 更新触摸时间
+}
+</code></pre>
+<h3 id="裁剪算法-srcagentspi-extensionscontext-pruningprunerts-360-行">裁剪算法 (<code>src/agents/pi-extensions/context-pruning/pruner.ts</code>, 360 行)</h3>
+<h4 id="常量-1">常量</h4>
+<pre><code class="language-typescript">CHARS_PER_TOKEN_ESTIMATE = 4     // 字符到 token 的估算比率
+IMAGE_CHAR_ESTIMATE = 8_000      // 图片的字符估算值
+</code></pre>
+<h4 id="核心算法-prunecontextmessages">核心算法 <code>pruneContextMessages()</code></h4>
+<pre><code>1. 从 context tokens 计算字符窗口
+2. 找到 assistant 消息截断点（保护最后 N 个 assistant 消息）
+3. 保护 bootstrap 阶段（保留第一个 user 消息之前的所有消息）
+4. 软裁剪超大 tool results（保留首尾 N 字符 + 说明）
+5. 如果仍超预算，丢弃可裁剪的 tool 消息
+6. 返回裁剪后的数组（无变更则返回原数组）
+</code></pre>
+<h4 id="消息估算">消息估算</h4>
+<p>按角色区分：
+- <strong>user</strong>: text + image 估算
+- <strong>assistant</strong>: text + thinking + toolCall args
+- <strong>toolResult</strong>: text + image
+- 其他角色：text 估算</p>
+<p><strong>特征</strong>: 只影响当前请求的内存中上下文，<strong>不重写历史记录</strong>。</p>
+<hr />
+<h2 id="12-路由系统">12. 路由系统</h2>
+<p><strong>文件</strong>: <code>src/routing/resolve-route.ts</code> (804 行)</p>
+<h3 id="输入类型">输入类型</h3>
+<pre><code class="language-typescript">ResolveAgentRouteInput {
+  cfg: OpenClawConfig            // required
+  channel: string
+  accountId?: string | null
+  peer?: RoutePeer | null
+  parentPeer?: RoutePeer | null
+  guildId?: string
+  teamId?: string
+  memberRoleIds?: string[]
+}
+</code></pre>
+<h3 id="输出类型">输出类型</h3>
+<pre><code class="language-typescript">ResolvedAgentRoute {
+  agentId: string
+  channel: string
+  accountId: string
+  sessionKey: string
+  mainSessionKey: string
+  lastRoutePolicy: &quot;main&quot; | &quot;session&quot;
+  matchedBy: string  // binding 类型或 &quot;default&quot;
+}
+</code></pre>
+<h3 id="多层绑定匹配按优先级">多层绑定匹配（按优先级）</h3>
+<pre><code>1. binding.peer           → 直接线程/DM 匹配
+2. binding.peer.parent    → 线程父级继承
+3. binding.guild + roles  → Discord 角色匹配
+4. binding.guild          → Discord 服务器匹配
+5. binding.team           → Teams 租户匹配
+6. binding.account        → 账号模式匹配
+7. binding.channel        → Channel 回退
+8. default agent          → 默认代理
+</code></pre>
+<h3 id="缓存策略">缓存策略</h3>
+<table>
+<thead>
+<tr>
+<th>缓存</th>
+<th>容量</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>已评估绑定缓存</td>
+<td>2000 keys</td>
+<td>避免重复解析绑定</td>
+</tr>
+<tr>
+<td>已解析路由缓存</td>
+<td>4000 keys</td>
+<td>避免重复路由解析</td>
+</tr>
+</tbody>
+</table>
+<h3 id="绑定索引">绑定索引</h3>
+<p>按以下维度建立索引以加速查找：
+- peer
+- guild + roles
+- guild
+- team
+- account
+- channel</p>
+<hr />
+<h2 id="13-session-key-构建">13. Session Key 构建</h2>
+<p><strong>文件</strong>: <code>src/routing/session-key.ts</code> (253 行)</p>
+<h3 id="常量-2">常量</h3>
+<pre><code class="language-typescript">DEFAULT_AGENT_ID = &quot;main&quot;
+DEFAULT_MAIN_KEY = &quot;main&quot;
+VALID_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i
+</code></pre>
+<h3 id="session-key-格式">Session Key 格式</h3>
+<pre><code>agent:agentId:channel:accountId:peer:dmScope:peerId
+</code></pre>
+<p>注意：Session Key 以 <code>agent:</code> 前缀开头，具体格式根据 dmScope 的不同而有所变化。</p>
+<h3 id="构建函数">构建函数</h3>
+<table>
+<thead>
+<tr>
+<th>函数</th>
+<th>格式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>buildAgentMainSessionKey()</code></td>
+<td><code>agent:{agentId}:{mainKey}</code></td>
+</tr>
+<tr>
+<td><code>buildAgentPeerSessionKey()</code></td>
+<td>按 dmScope 和 peerKind 变化</td>
+</tr>
+<tr>
+<td><code>buildGroupHistoryKey()</code></td>
+<td>群组 session</td>
+</tr>
+<tr>
+<td><code>resolveThreadSessionKeys()</code></td>
+<td>线程后缀处理</td>
+</tr>
+<tr>
+<td><code>resolveLinkedPeerId()</code></td>
+<td>身份链接解析</td>
+</tr>
+</tbody>
+</table>
+<h3 id="dm-作用域选项">DM 作用域选项</h3>
+<table>
+<thead>
+<tr>
+<th>作用域</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>"main"</code></td>
+<td>单个共享 DM session</td>
+</tr>
+<tr>
+<td><code>"per-peer"</code></td>
+<td>每个对等方一个 session</td>
+</tr>
+<tr>
+<td><code>"per-channel-peer"</code></td>
+<td>每个 channel+对等方一个</td>
+</tr>
+<tr>
+<td><code>"per-account-channel-peer"</code></td>
+<td>每个账号+channel+对等方一个</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="14-子-agent-注册表">14. 子 Agent 注册表</h2>
+<p><strong>文件</strong>: <code>src/agents/subagent-registry.ts</code> (44KB)</p>
+<h3 id="数据结构">数据结构</h3>
+<pre><code class="language-typescript">subagentRuns: Map&lt;runId, SubagentRunRecord&gt;           // 活跃运行
+sweeper: NodeJS.Timeout | null                         // 清理定时器
+pendingLifecycleErrorByRunId: Map&lt;string, { timer: NodeJS.Timeout; error?: string; endedAt: number }&gt;  // 延迟错误
+resumedRuns: Set&lt;string&gt;                               // 已恢复运行
+</code></pre>
+<h3 id="生命周期常量">生命周期常量</h3>
+<pre><code class="language-typescript">SUBAGENT_ANNOUNCE_TIMEOUT_MS = 120_000  // 最大通告等待 120s
+MAX_ANNOUNCE_RETRY_COUNT = 3           // 防止无限循环
+ANNOUNCE_EXPIRY_MS = 5 * 60_000        // 非完成超时 5min
+ANNOUNCE_COMPLETION_HARD_EXPIRY_MS = 30 * 60_000  // 完成最大等待 30min
+LIFECYCLE_ERROR_RETRY_GRACE_MS = 15_000  // 终端错误前的宽限期 15s
+</code></pre>
+<h3 id="关键操作">关键操作</h3>
+<table>
+<thead>
+<tr>
+<th>操作</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>reconcileOrphanedRun()</code></td>
+<td>标记缺失的子 Agent 为错误</td>
+</tr>
+<tr>
+<td><code>schedulePendingLifecycleError()</code></td>
+<td>在终端错误前添加宽限期</td>
+</tr>
+<tr>
+<td><code>notifyContextEngineSubagentEnded()</code></td>
+<td>通知 Context Engine 的集成钩子</td>
+</tr>
+<tr>
+<td><code>cascadeKillChildren()</code></td>
+<td>递归终止所有后代（位于 <code>src/agents/tools/subagents-tool.ts</code>）</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="15-子-agent-控制工具">15. 子 Agent 控制工具</h2>
+<p><strong>文件</strong>: <code>src/agents/tools/subagents-tool.ts</code> (182 行)</p>
+<h3 id="操作">操作</h3>
+<table>
+<thead>
+<tr>
+<th>操作</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>list</code></td>
+<td>列出活跃子 Agent</td>
+</tr>
+<tr>
+<td><code>kill</code></td>
+<td>终止指定子 Agent</td>
+</tr>
+<tr>
+<td><code>steer</code></td>
+<td>向活跃子 Agent 发送指令</td>
+</tr>
+</tbody>
+</table>
+<h3 id="schema">Schema</h3>
+<pre><code class="language-typescript">SubagentsToolSchema {
+  action?: &quot;list&quot; | &quot;kill&quot; | &quot;steer&quot;  // 可选，默认 &quot;list&quot;
+  target?: string       // 目标 Agent ID
+  message?: string      // 指令消息
+  recentMinutes?: number // 时间过滤
+}
+</code></pre>
+<h3 id="编排逻辑">编排逻辑</h3>
+<ul>
+<li><strong>叶子 Agent</strong> 看到的是父级的子代（兄弟节点）</li>
+<li><strong>编排者 Agent</strong> 看到的是自己的直接子代</li>
+<li><code>cascadeKillChildren()</code> 递归终止所有后代</li>
+</ul>
+<hr />
+<h2 id="16-插件-hook-体系">16. 插件 Hook 体系</h2>
+<p><strong>文件</strong>: <code>src/plugins/hooks.ts</code> (962 行) 和 <code>src/plugins/types.ts</code> (1638 行)</p>
+<h3 id="hook-类型总览">Hook 类型总览</h3>
+<table>
+<thead>
+<tr>
+<th>分类</th>
+<th>Hook</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Agent</strong></td>
+<td><code>before_model_resolve</code></td>
+<td>模型选择前拦截</td>
+</tr>
+<tr>
+<td></td>
+<td><code>before_prompt_build</code></td>
+<td>System Prompt 构建前</td>
+</tr>
+<tr>
+<td></td>
+<td><code>before_agent_start</code></td>
+<td>Agent 启动前</td>
+</tr>
+<tr>
+<td></td>
+<td><code>agent_end</code></td>
+<td>Agent 结束</td>
+</tr>
+<tr>
+<td></td>
+<td><code>before_compaction</code></td>
+<td>压缩前（void 通知，不可否决）</td>
+</tr>
+<tr>
+<td></td>
+<td><code>after_compaction</code></td>
+<td>压缩后</td>
+</tr>
+<tr>
+<td><strong>Message</strong></td>
+<td><code>inbound_claim</code></td>
+<td>入站消息认领（路由前）</td>
+</tr>
+<tr>
+<td></td>
+<td><code>message_received</code></td>
+<td>消息接收</td>
+</tr>
+<tr>
+<td></td>
+<td><code>before_message_write</code></td>
+<td>消息写入前（可修改）</td>
+</tr>
+<tr>
+<td></td>
+<td><code>message_sending</code></td>
+<td>消息发送前</td>
+</tr>
+<tr>
+<td></td>
+<td><code>message_sent</code></td>
+<td>消息已发送</td>
+</tr>
+<tr>
+<td><strong>Tool</strong></td>
+<td><code>before_tool_call</code></td>
+<td>工具调用前（可修改）</td>
+</tr>
+<tr>
+<td></td>
+<td><code>after_tool_call</code></td>
+<td>工具调用后</td>
+</tr>
+<tr>
+<td></td>
+<td><code>tool_result_persist</code></td>
+<td>工具结果持久化</td>
+</tr>
+<tr>
+<td><strong>Session</strong></td>
+<td><code>session_start</code></td>
+<td>Session 初始化</td>
+</tr>
+<tr>
+<td></td>
+<td><code>before_reset</code></td>
+<td>Session 重置前</td>
+</tr>
+<tr>
+<td></td>
+<td><code>session_end</code></td>
+<td>Session 清理</td>
+</tr>
+<tr>
+<td><strong>Subagent</strong></td>
+<td><code>subagent_spawning</code></td>
+<td>子 Agent 生成中</td>
+</tr>
+<tr>
+<td></td>
+<td><code>subagent_spawned</code></td>
+<td>子 Agent 已生成</td>
+</tr>
+<tr>
+<td></td>
+<td><code>subagent_ended</code></td>
+<td>子 Agent 已结束</td>
+</tr>
+<tr>
+<td></td>
+<td><code>subagent_delivery_target</code></td>
+<td>交付目标</td>
+</tr>
+<tr>
+<td><strong>Gateway</strong></td>
+<td><code>gateway_start</code></td>
+<td>网关启动</td>
+</tr>
+<tr>
+<td></td>
+<td><code>gateway_stop</code></td>
+<td>网关停止</td>
+</tr>
+<tr>
+<td><strong>LLM</strong></td>
+<td><code>llm_input</code></td>
+<td>发送到模型前（只读）</td>
+</tr>
+<tr>
+<td></td>
+<td><code>llm_output</code></td>
+<td>模型响应后</td>
+</tr>
+</tbody>
+</table>
+<h3 id="执行模式">执行模式</h3>
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>函数</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Fire-and-forget</td>
+<td><code>runVoidHook()</code></td>
+<td>并行执行，等待 Promise.all</td>
+</tr>
+<tr>
+<td>修改型</td>
+<td><code>runModifyingHook()</code></td>
+<td>顺序执行，合并结果</td>
+</tr>
+</tbody>
+</table>
+<h3 id="合并策略">合并策略</h3>
+<table>
+<thead>
+<tr>
+<th>Hook</th>
+<th>合并逻辑</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>before_model_resolve</code></td>
+<td>保留第一个覆盖</td>
+</tr>
+<tr>
+<td><code>before_prompt_build</code></td>
+<td>追加系统上下文</td>
+</tr>
+<tr>
+<td><code>subagent_spawning</code></td>
+<td>遇到错误立即停止</td>
+</tr>
+<tr>
+<td><code>subagent_delivery_target</code></td>
+<td>保留第一个 origin</td>
+</tr>
+<tr>
+<td><code>before_message_write</code></td>
+<td>写入前拦截（可修改）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="插件-api">插件 API</h3>
+<pre><code class="language-typescript">PluginKind = &quot;memory&quot; | &quot;context-engine&quot;
+
+// 注册方法
+registerTool, registerHook, registerHttpRoute, registerChannel
+registerGatewayMethod, registerCli, registerService, registerProvider
+registerCommand, registerContextEngine (独占 slot)
+</code></pre>
+<hr />
+<h2 id="17-acp-协议翻译层">17. ACP 协议翻译层</h2>
+<p><strong>文件</strong>: <code>src/acp/translator.ts</code> (1100 行)</p>
+<h3 id="安全常量">安全常量</h3>
+<pre><code class="language-typescript">MAX_PROMPT_BYTES = 2 * 1024 * 1024    // 2 MiB = 2,097,152 bytes DoS 防护 (CWE-400)
+ACP_LOAD_SESSION_REPLAY_LIMIT = 1_000_000  // 防 DoS 重放限制
+SESSION_CREATE_RATE_LIMIT_DEFAULT_MAX_REQUESTS = 120  // 每窗口最大请求数
+SESSION_CREATE_RATE_LIMIT_DEFAULT_WINDOW_MS = 10_000  // 窗口时长 10s
+</code></pre>
+<h3 id="配置-id">配置 ID</h3>
+<pre><code class="language-typescript">thought_level     // 思考级别
+verbose_level     // 详细级别
+reasoning_level   // 推理级别
+response_usage    // 响应用量
+elevated_level    // 提升级别
+</code></pre>
+<h3 id="翻译流程">翻译流程</h3>
+<pre><code class="language-typescript">// ACP PromptRequest → Agent 运行参数
+translatePromptRequest(request) {
+  validatePromptSize()         // DoS 防护
+  resolveSessionMode()         // sandbox/chat/reasoning
+  extractAttachments()         // 提取附件
+  extractToolCalls()           // 提取工具调用
+  extractDirectives()          // 提取指令
+  return normalizedRunParams
+}
+</code></pre>
+<h3 id="session-展示构建">Session 展示构建</h3>
+<pre><code class="language-typescript">buildSessionPresentation()     // 配置选项 + 模式状态
+buildSessionMetadata()         // 标题、更新时间
+buildSessionUsageSnapshot()    // token 用量 (size/used)
+</code></pre>
+<h3 id="思考级别格式化">思考级别格式化</h3>
+<pre><code>xhigh → &quot;Extra High&quot;
+adaptive → &quot;Adaptive&quot;
+</code></pre>
+<hr />
+<h2 id="18-channel-状态机">18. Channel 状态机</h2>
+<p><strong>文件</strong>: <code>src/channels/run-state-machine.ts</code> (99 行)</p>
+<h3 id="状态追踪">状态追踪</h3>
+<p>状态变量为闭包局部变量（在 <code>createRunStateMachine</code> 内部），而非类属性：</p>
+<pre><code class="language-typescript">activeRuns: number                       // 活跃运行计数器
+runActivityHeartbeat: ReturnType&lt;typeof setInterval&gt; | null  // 心跳定时器
+lifecycleActive: boolean                 // 生命周期标志
+</code></pre>
+<h3 id="常量-3">常量</h3>
+<pre><code class="language-typescript">DEFAULT_RUN_ACTIVITY_HEARTBEAT_MS = 60_000  // 60s 心跳间隔
+</code></pre>
+<h3 id="api">API</h3>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>onRunStart()</code></td>
+<td>递增计数器，发布状态，启动心跳</td>
+</tr>
+<tr>
+<td><code>onRunEnd()</code></td>
+<td>递减计数器，零时清除心跳</td>
+</tr>
+<tr>
+<td><code>deactivate()</code></td>
+<td>停止心跳，标记不活跃</td>
+</tr>
+<tr>
+<td><code>isActive()</code></td>
+<td>返回当前状态</td>
+</tr>
+</tbody>
+</table>
+<p><strong>模式</strong>: 在心跳间隔发布状态更新，首次运行时惰性启动心跳。</p>
+<hr />
+<h2 id="19-完整数据流图">19. 完整数据流图</h2>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│ INBOUND: Channel (Telegram/Discord/Slack/etc.) → MsgContext        │
+└────────────────────────┬────────────────────────────────────────────┘
+                         │
+                         ▼
+        ┌────────────────────────────────────┐
+        │ Routing: resolveAgentRoute()        │
+        │ 多层绑定匹配（peer→guild→team→...） │
+        │ → agentId, sessionKey, accountId    │
+        └────────────┬───────────────────────┘
+                     │
+                     ▼
+        ┌────────────────────────────────────┐
+        │ Session 管理                        │
+        │ - 加载/创建 session                 │
+        │ - 检查 reset 触发器                 │
+        │ - 应用 session hooks                │
+        └────────────┬───────────────────────┘
+                     │
+                     ▼
+    ┌────────────────────────────────────────┐
+    │ Plugin Hooks: before_agent_start()     │
+    │ → 模型/提示词覆盖                      │
+    └────────────┬──────────────────────────┘
+                 │
+                 ▼
+  ┌──────────────────────────────────────────┐
+  │ Context Engine: assemble()               │
+  │ - 从 session 加载消息                     │
+  │ - 在 token 预算内组装                     │
+  │ - 返回 messages + systemPromptAddition   │
+  └────────────┬─────────────────────────────┘
+               │
+               ▼
+  ┌──────────────────────────────────────────┐
+  │ 构建 System Prompt                       │
+  │ - 合并 engine addition                   │
+  │ - 应用 plugins (before_prompt_build)     │
+  │ - Channel capabilities, skills, etc.     │
+  └────────────┬─────────────────────────────┘
+               │
+               ▼
+  ┌──────────────────────────────────────────┐
+  │ Run Agent (Attempt)                      │
+  │ - 流式发送到模型                          │
+  │ - 执行工具调用                            │
+  │ - 检查溢出条件                            │
+  │ - 重试逻辑 (24次基础 + 8次/profile)       │
+  └────────────┬─────────────────────────────┘
+               │
+        ┌──────▼──────────┐
+        │  OVERFLOW?      │
+        └──────┬──────────┘
+               │
+           ┌───┴────────────────────────────┐
+           │                                │
+         NO                                YES
+           │                                │
+           │                ┌───────────────▼────────────┐
+           │                │ Compaction 触发             │
+           │                │ - 自适应分块                │
+           │                │ - 渐进降级摘要              │
+           │                │ - 保留标识符                │
+           │                │ - 替换历史消息              │
+           │                │ - 重试运行                  │
+           │                └────────────────┬──────────┘
+           │                                 │
+           │    ┌────────────────────────────┘
+           │    │
+           ▼    ▼
+  ┌──────────────────────────────────────────┐
+  │ Context Engine: afterTurn()              │
+  │ - 持久化上下文                            │
+  │ - 触发后台压缩                            │
+  └────────────┬─────────────────────────────┘
+               │
+               ▼
+  ┌──────────────────────────────────────────┐
+  │ 格式化回复                                │
+  │ - 提取指令 (think, reasoning)            │
+  │ - 剥离 reply tags                        │
+  │ - 应用 channel 格式化                     │
+  └────────────┬─────────────────────────────┘
+               │
+               ▼
+  ┌──────────────────────────────────────────┐
+  │ Plugin Hooks: message_sending()          │
+  │ → 最终回复修改                            │
+  └────────────┬─────────────────────────────┘
+               │
+               ▼
+┌─────────────────────────────────────────────────────┐
+│ OUTBOUND: 路由到 channel，交付回复                    │
+│ (message 工具, channel action, 跨 session)           │
+└─────────────────────────────────────────────────────┘
+</code></pre>
+<hr />
+<h2 id="20-关键设计模式总结">20. 关键设计模式总结</h2>
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>说明</th>
+<th>体现</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>插件化引擎</strong></td>
+<td>接口驱动、注册表加载</td>
+<td>Context Engine 可完全替换</td>
+</tr>
+<tr>
+<td><strong>Token 安全余量</strong></td>
+<td>1.2× 乘数</td>
+<td>补偿 token 估算不准确性</td>
+</tr>
+<tr>
+<td><strong>自适应分块</strong></td>
+<td>chunk 大小随消息大小调整</td>
+<td><code>computeAdaptiveChunkRatio()</code></td>
+</tr>
+<tr>
+<td><strong>渐进降级</strong></td>
+<td>完整摘要 → 部分 → 文本回退</td>
+<td><code>summarizeWithFallback()</code></td>
+</tr>
+<tr>
+<td><strong>身份链接解析</strong></td>
+<td>跨 channel 对等方映射</td>
+<td>配置驱动的 <code>resolveLinkedPeerId()</code></td>
+</tr>
+<tr>
+<td><strong>速率限制</strong></td>
+<td>120 req/10s</td>
+<td>防止 DoS</td>
+</tr>
+<tr>
+<td><strong>延迟错误处理</strong></td>
+<td>15s 宽限期</td>
+<td>允许重试后再报终端错误</td>
+</tr>
+<tr>
+<td><strong>最后调用缓存</strong></td>
+<td>仅用最后一次 API 调用的 cache 字段</td>
+<td>防止 context_size 膨胀</td>
+</tr>
+<tr>
+<td><strong>Bootstrap 保护</strong></td>
+<td>不裁剪首个 user 消息前的内容</td>
+<td>保护初始化上下文</td>
+</tr>
+<tr>
+<td><strong>孤儿协调</strong></td>
+<td>检测 + 标记缺失子 Agent</td>
+<td><code>reconcileOrphanedRun()</code></td>
+</tr>
+<tr>
+<td><strong>动态导入边界</strong></td>
+<td><code>.runtime.js</code> 文件</td>
+<td>保持 lazy-loading 有效</td>
+</tr>
+<tr>
+<td><strong>多层缓存</strong></td>
+<td>绑定缓存 + 路由缓存</td>
+<td>避免重复解析</td>
+</tr>
+<tr>
+<td><strong>启动路径隔离</strong></td>
+<td><code>allowAsyncLoad</code> 选项</td>
+<td>快速路径避免插件预热副作用</td>
+</tr>
+<tr>
+<td><strong>插件加载严格模式</strong></td>
+<td><code>throwOnLoadError</code> 选项</td>
+<td>关键路径下插件加载失败立即中断</td>
+</tr>
+<tr>
+<td><strong>SDK 别名作用域隔离</strong></td>
+<td><code>buildPluginLoaderAliasMap(modulePath)</code></td>
+<td>防止跨插件别名污染</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="附录-a-插件加载与-sdk-安全改进2026-03-18-后新增">附录 A. 插件加载与 SDK 安全改进（2026-03-18 后新增）</h2>
+<h3 id="插件加载错误处理强化">插件加载错误处理强化</h3>
+<p><strong>文件</strong>: <code>src/plugins/loader.ts</code> (1303 行)</p>
+<p>新增 <code>PluginLoadFailureError</code> 类和 <code>throwOnLoadError</code> 选项，允许关键路径在插件加载失败时立即抛出异常而非静默降级：</p>
+<pre><code class="language-typescript">class PluginLoadFailureError extends Error {
+  readonly pluginIds: string[];
+  readonly registry: PluginRegistry;
+}
+
+type PluginLoadOptions = {
+  // ... 其他选项
+  throwOnLoadError?: boolean;  // 新增：为 true 时，加载失败直接抛出异常
+}
+</code></pre>
+<h3 id="sdk-别名作用域隔离">SDK 别名作用域隔离</h3>
+<p><strong>文件</strong>: <code>src/plugins/loader.ts</code></p>
+<p>新增 <code>buildPluginLoaderAliasMap(modulePath)</code> 函数，为每个插件模块路径构建独立的 SDK 别名映射，防止跨插件的别名污染：</p>
+<pre><code class="language-typescript">function buildPluginLoaderAliasMap(modulePath: string): Record&lt;string, string&gt;
+// 返回: { &quot;openclaw/plugin-sdk&quot;: sdkAlias路径, ...scopedAliases }
+</code></pre>
+<p>Jiti loader 缓存现使用基于 <code>tryNative</code> 和别名映射的缓存 key，插件注册表缓存使用 LRU 驱逐策略（最大 128 条目）。</p>
+<h3 id="plugin-sdk-根别名懒解析守卫">Plugin SDK 根别名懒解析守卫</h3>
+<p><strong>文件</strong>: <code>src/plugin-sdk/root-alias.cjs</code> (219 行)</p>
+<p>新增 <code>shouldResolveMonolithic()</code> 函数，防止 Plugin SDK Proxy 被误认为 Promise-like 对象：</p>
+<pre><code class="language-typescript">function shouldResolveMonolithic(prop: string | symbol): boolean {
+  if (typeof prop !== &quot;string&quot;) return false;
+  return prop !== &quot;then&quot;;  // 排除 &quot;then&quot; 以防止 Promise 行为
+}
+</code></pre>
+<p>快速导出（<code>emptyPluginConfigSchema</code>、<code>resolveControlCommandGate</code>）始终可用；其余导出按需从 monolithic SDK 懒加载。</p>
+<h3 id="plugin-sdk-setup-runtime-导出">Plugin SDK Setup Runtime 导出</h3>
+<p><strong>文件</strong>: <code>src/plugin-sdk/setup-runtime.ts</code> (26 行，新文件)</p>
+<p>新增纯 barrel/re-export 文件，为插件提供设置时的运行时 API 访问，避免循环依赖：</p>
+<pre><code class="language-typescript">// 类型导出
+export type { OpenClawConfig, WizardPrompter, ChannelSetupAdapter,
+  ChannelSetupDmPolicy, ChannelSetupWizard, ChannelSetupWizardAllowFromEntry }
+
+// 值导出
+export { DEFAULT_ACCOUNT_ID }
+export { createEnvPatchedAccountSetupAdapter }
+export { createAccountScopedAllowFromSection, createAccountScopedGroupAccessSection,
+  createLegacyCompatChannelDmPolicy, parseMentionOrPrefixedId,
+  patchChannelConfigForAccount, promptLegacyChannelAllowFromForAccount,
+  resolveEntriesWithOptionalToken, setSetupChannelEnabled }
+export { createAllowlistSetupWizardProxy }
+</code></pre>
+<h3 id="hook-加载改进">Hook 加载改进</h3>
+<p><strong>文件</strong>: <code>src/hooks/workspace.ts</code> (390 行)</p>
+<p><code>loadHooksFromDir()</code> 重命名为 <code>loadHookEntriesFromDir()</code>，返回类型从 <code>Hook[]</code> 改为 <code>HookEntry[]</code>，包含更丰富的元数据：</p>
+<pre><code class="language-typescript">type HookEntry = {
+  hook: Hook;
+  frontmatter: ParsedHookFrontmatter;
+  metadata: ResolvedOpenClawMetadata;
+  invocation: HookInvocationPolicy;
+}
+
+function loadHookEntriesFromDir(params: {
+  dir: string;
+  source: HookSource;
+  pluginId?: string;
+}): HookEntry[]
+</code></pre>
+<p><strong>改进</strong>：前置解析 frontmatter，支持 <code>package.json</code> 中的 <code>[MANIFEST_KEY].hooks</code> 多 Hook 包清单，通过 <code>isPathInsideWithRealpath()</code> 验证 Hook 路径沙箱安全。</p>
+<p>Hook 优先级（合并时）：extra dirs &lt; bundled &lt; plugin &lt; managed &lt; workspace（workspace 在名称冲突时优先）。</p>
+<h3 id="hook-策略统一模块">Hook 策略统一模块</h3>
+<p><strong>文件</strong>: <code>src/hooks/policy.ts</code> (144 行，新文件)</p>
+<p>集中管理 Hook 启用/禁用策略和冲突解析：</p>
+<pre><code class="language-typescript">type HookSourcePolicy = {
+  precedence: number;             // 10=bundled, 20=plugin, 30=managed, 40=workspace
+  trustedLocalCode: boolean;
+  defaultEnableMode: &quot;default-on&quot; | &quot;explicit-opt-in&quot;;
+  canOverride: HookSource[];
+  canBeOverriddenBy: HookSource[];
+};
+
+function resolveHookEnableState(params: {
+  entry: HookEntry; config?; hookConfig?;
+}): HookEnableState
+
+function resolveHookEntries(entries: HookEntry[], opts?): HookEntry[]
+</code></pre>
+<p><strong>关键规则</strong>：workspace hook 默认 <code>explicit-opt-in</code>（禁用），其余来源默认 <code>default-on</code>。冲突时高优先级来源胜出。</p>
+<hr />
+<h2 id="附录-b-转录重写与-session-截断大版本更新后新增">附录 B. 转录重写与 Session 截断（大版本更新后新增）</h2>
+<h3 id="转录重写系统">转录重写系统</h3>
+<p><strong>文件</strong>: <code>src/agents/pi-embedded-runner/transcript-rewrite.ts</code> (233 行，新文件)</p>
+<p>允许 Context Engine 通过 <code>runtimeContext.rewriteTranscriptEntries()</code> 安全地重写转录内容：</p>
+<pre><code class="language-typescript">function rewriteTranscriptEntriesInSessionManager(params: {
+  sessionManager: SessionManagerLike;
+  replacements: TranscriptRewriteReplacement[];
+}): TranscriptRewriteResult
+
+async function rewriteTranscriptEntriesInSessionFile(params: {
+  sessionFile: string; sessionId?; sessionKey?;
+  request: TranscriptRewriteRequest;
+}): Promise&lt;TranscriptRewriteResult&gt;
+</code></pre>
+<p><strong>安全机制</strong>：采用 branch-and-reappend 策略——从第一个被重写消息的父级分支，然后重新追加后续条目。支持所有条目类型（message, compaction, thinking_level_change, model_change, custom, session_info, branch_summary, label）。修改时发射 <code>SessionTranscriptUpdate</code> 事件。</p>
+<h3 id="session-jsonl-截断">Session JSONL 截断</h3>
+<p><strong>文件</strong>: <code>src/agents/pi-embedded-runner/session-truncation.ts</code> (227 行，新文件)</p>
+<p>压缩后截断 JSONL 文件，防止无限增长：</p>
+<pre><code class="language-typescript">async function truncateSessionAfterCompaction(params: {
+  sessionFile: string;
+  archivePath?: string;
+}): Promise&lt;TruncationResult&gt;
+
+type TruncationResult = {
+  truncated: boolean;
+  entriesRemoved: number;
+  bytesBefore?: number;
+  bytesAfter?: number;
+  reason?: string;
+};
+</code></pre>
+<p><strong>策略</strong>：仅移除压缩已摘要的 message 条目；保留非 message 状态（custom, model_change, session_info 等）；重新挂载条目到最近保留的祖先以维护树连通性。可选归档截断前的文件。原子写入（临时文件 + rename）。</p>
+<p>配置选项：<code>quality.sessionTruncationAfterCompaction</code>。</p>
+<h3 id="压缩安全守卫摘要预算">压缩安全守卫摘要预算</h3>
+<p><strong>文件</strong>: <code>src/agents/pi-extensions/compaction-safeguard.ts</code> (1140 行)</p>
+<p>新增摘要字符上限和必要段落校验：</p>
+<pre><code class="language-typescript">MAX_COMPACTION_SUMMARY_CHARS = 16_000    // 摘要总字符上限
+MAX_FILE_OPS_SECTION_CHARS = 2_000       // 文件操作段字符上限
+MAX_FILE_OPS_LIST_CHARS = 900            // 文件列表字符上限
+SUMMARY_TRUNCATED_MARKER = &quot;\n\n[Compaction summary truncated to fit budget]&quot;
+REQUIRED_SUMMARY_SECTIONS = [
+  &quot;## Decisions&quot;, &quot;## Open TODOs&quot;, &quot;## Constraints/Rules&quot;,
+  &quot;## Pending user asks&quot;, &quot;## Exact identifiers&quot;
+]
+</code></pre>
+<p>通过 <code>capCompactionSummary()</code> 和 <code>auditSummaryQuality()</code> 确保摘要不超预算且包含必要结构。</p>
+</body>
+</html>

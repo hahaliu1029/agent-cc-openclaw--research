@@ -132,25 +132,28 @@
 <h3>1.2 main() → run() → 默认 Action</h3>
 <pre><code>main()
   ├─ eagerLoadSettings()                // 尽早加载设置
-  ├─ runMigrations()                    // 同步迁移 (v1-v11)
   └─ run()
        ├─ Commander.parseAsync()         // CLI 解析
+       ├─ preAction hook:               // 每个命令执行前
+       │    ├─ ensureMdmSettingsLoaded()
+       │    └─ ensureKeychainPrefetchCompleted()
+       │
        └─ 默认 action:
             ├─ initializeEntrypoint()    // 设置 clientType, sessionSource 等
             ├─ init()                    // 核心初始化 (memoized)
             │    ├─ enableConfigs()
             │    ├─ applySafeConfigEnvironmentVariables()
             │    ├─ applyExtraCACertsFromConfig()
-            │    ├─ setupGracefulShutdown()
-            │    ├─ configureGlobalAgents() (proxy)
             │    ├─ configureGlobalMTLS()
-            │    ├─ ensureMdmSettingsLoaded()
-            │    ├─ Trust Dialog (交互模式)
-            │    ├─ applyConfigEnvironmentVariables() (trust 后)
+            │    ├─ configureGlobalAgents() (proxy)
+            │    ├─ setupGracefulShutdown()
             │    ├─ preconnectAnthropicApi()  // 🚀 TCP 预连接
-            │    ├─ initializeTelemetryAfterTrust()
             │    └─ ensureScratchpadDir()
             │
+            ├─ runMigrations()           // 同步迁移 (v1-v11, init 之后)
+            ├─ Trust Dialog (交互模式)
+            ├─ applyConfigEnvironmentVariables() (trust 后)
+            ├─ initializeTelemetryAfterTrust()
             ├─ 模型解析 &amp; 验证
             ├─ 权限模式初始化 (initializeToolPermissionContext)
             ├─ MCP 配置加载 (getClaudeCodeMcpConfigs)
@@ -196,19 +199,20 @@ skillChangeDetector.initialize()
 </code></pre>
 <h3>2.2 上下文装配</h3>
 <pre><code>getUserContext() → { [k: string]: string }
-  ├─ CLAUDE.md 内容
+  ├─ claudeMd: CLAUDE.md 内容
   │    ├─ ~/.claude/CLAUDE.md (全局)
   │    ├─ .claude/CLAUDE.md (项目)
   │    ├─ CLAUDE.md (工作目录)
   │    └─ --add-dir 额外目录
-  ├─ MEMORY.md 内容 (前 200 行)
-  └─ 语言偏好
+  └─ currentDate: 当前日期 (本地 ISO 格式)
 
 getSystemContext() → { [k: string]: string }
-  ├─ Git status (branch, status --short, log -5, user.name)
+  ├─ gitStatus: Git status (branch, status --short, log -5, user.name)
   │    └─ 截断至 MAX_STATUS_CHARS = 2000
-  ├─ 当前日期
-  └─ system prompt injection (ant-only debug)
+  └─ cacheBreaker: system prompt injection (ant-only debug)
+
+注意: MEMORY.md 内容通过 getSystemPrompt() 中的 memory section 注入，
+语言偏好通过 language section 注入，两者不在 getUserContext/getSystemContext 中
 </code></pre>
 <h3>2.3 System Prompt 拼装</h3>
 <pre><code>buildEffectiveSystemPrompt()
@@ -317,7 +321,7 @@ else:
 </code></pre>
 <h3>4.3 Bash 工具安全检查 (特殊路径)</h3>
 <pre><code>Bash 工具执行前:
-  ├─ bashSecurity.ts: 26+ 验证器链
+  ├─ src/tools/BashTool/bashSecurity.ts: ~22 个验证器链
   │    ├─ 危险命令检测
   │    ├─ 命令注入防护
   │    └─ 路径遍历检测
@@ -378,12 +382,12 @@ needsFollowUp = true (模型调用了工具)
 <p><strong>文件</strong>: <code>src/services/extractMemories/extractMemories.ts</code></p>
 <pre><code>initExtractMemories() → extractMemories(context)
   │
-  ├─ Gate 检查 (5 条件全部满足才执行):
-  │    ├─ isAutoMemoryEnabled()
+  ├─ Gate 检查 (4 条件全部满足才执行):
+  │    ├─ tengu_passport_quail 特性门控
   │    ├─ 主 agent (非 subagent)
-  │    ├─ 非远程模式
-  │    ├─ token 数 ≥ 阈值
-  │    └─ tool call 数 ≥ 阈值
+  │    ├─ isAutoMemoryEnabled()
+  │    └─ 非远程模式
+  │  （节流: 每 N 轮执行一次，由 tengu_bramble_lintel 控制）
   │
   ├─ runForkedAgent()
   │    // 完美 fork 主对话，共享 prompt cache
@@ -446,12 +450,7 @@ needsFollowUp = true (模型调用了工具)
 <h3>8.1 gracefulShutdown 流程</h3>
 <pre><code>触发: Ctrl+C / SIGINT / SIGTERM / process.exit()
   │
-  ├─ 1. logEvent(&#39;tengu_session_end&#39;, { ... })  // 会话结束事件
-  │      ├─ totalCostUSD, totalAPIDuration
-  │      ├─ totalLinesAdded/Removed
-  │      └─ modelUsage 统计
-  │
-  ├─ 2. cleanupTerminalModes()                   // 终端恢复 (同步)
+  ├─ 1. cleanupTerminalModes()                   // 终端恢复 (同步, writeSync)
   │      ├─ DISABLE_MOUSE_TRACKING
   │      ├─ Ink unmount (退出 alt screen)
   │      ├─ DISABLE_MODIFY_OTHER_KEYS
@@ -460,25 +459,27 @@ needsFollowUp = true (模型调用了工具)
   │      ├─ CLEAR_ITERM2_PROGRESS
   │      └─ CLEAR_TERMINAL_TITLE
   │
-  ├─ 3. printResumeHint()
+  ├─ 2. printResumeHint()
   │      └─ &quot;Resume this session with: claude --resume &lt;id&gt;&quot;
   │
-  ├─ 4. runCleanupFunctions()                    // 注册的清理回调
+  ├─ 3. runCleanupFunctions() (带 2s 超时)       // 注册的清理回调
   │      ├─ MCP 连接关闭 (closeAllMcpClients)
   │      ├─ LSP server 关闭
   │      ├─ 临时文件清理
   │      └─ sessionCreatedTeams 清理
   │
-  ├─ 5. 遥测 flush
-  │      ├─ shutdownDatadog()                    // flush + 网络超时
-  │      ├─ shutdown1PEventLogging()             // OTel batch flush
-  │      ├─ meterProvider.forceFlush()
-  │      └─ tracerProvider.forceFlush()
+  ├─ 4. executeSessionEndHooks()                 // 会话结束 hooks
   │
-  ├─ 6. profileReport()                          // 启动性能报告 (采样)
+  ├─ 5. profileReport()                          // 启动性能报告 (采样)
   │
-  └─ 7. process.exit(0)
-         └─ 5 秒 failsafe timer 兜底 (防止 flush hang)
+  ├─ 6. tengu_cache_eviction_hint 事件           // 缓存驱逐提示
+  │
+  ├─ 7. 遥测 flush (带 500ms 限制)
+  │      ├─ shutdownDatadog()
+  │      └─ shutdown1PEventLogging()
+  │
+  └─ 8. forceExit()
+         └─ failsafe timer 兜底 (最低 5s, 动态扩展)
 </code></pre>
 <hr>
 <h2>10. 完整数据流图</h2>
@@ -775,5 +776,5 @@ needsFollowUp = true (模型调用了工具)
 <td><code>src/utils/gracefulShutdown.ts</code>, <code>src/utils/cleanupRegistry.ts</code></td>
 </tr>
 </tbody></table>
-</body>
-</html>
+
+</body></html>
