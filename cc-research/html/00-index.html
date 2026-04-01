@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>00-index</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1>Claude Code 源码深度研究索引</h1>
+<p>本目录聚焦 <code>Claude Code v2.1.88</code> TypeScript 源码的深度分析，每篇文档包含 ASCII 架构图、完整类型定义、伪代码、常量表和设计模式总结。</p>
+<h2>文档列表</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>文件</th>
+<th>主题</th>
+<th>行数</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>01</td>
+<td><a href="01-architecture-runtime.html">01-architecture-runtime.md</a></td>
+<td>运行时架构与模块边界</td>
+<td>~724</td>
+</tr>
+<tr>
+<td>02</td>
+<td><a href="02-agent-loop.html">02-agent-loop.md</a></td>
+<td>主 Agent Loop 与回环控制</td>
+<td>~724</td>
+</tr>
+<tr>
+<td>03</td>
+<td><a href="03-system-prompt.html">03-system-prompt.md</a></td>
+<td>System Prompt 拼装机制</td>
+<td>~769</td>
+</tr>
+<tr>
+<td>04</td>
+<td><a href="04-context.html">04-context.md</a></td>
+<td>上下文装配、压缩与预算</td>
+<td>~1424</td>
+</tr>
+<tr>
+<td>05</td>
+<td><a href="05-memory.html">05-memory.md</a></td>
+<td>记忆体系与后台提取</td>
+<td>~1442</td>
+</tr>
+<tr>
+<td>06</td>
+<td><a href="06-tool-calling.html">06-tool-calling.md</a></td>
+<td>工具注册、执行与回填</td>
+<td>~1020</td>
+</tr>
+<tr>
+<td>07</td>
+<td><a href="07-subagent.html">07-subagent.md</a></td>
+<td>子 Agent / Teammate / 任务分派</td>
+<td>~1071</td>
+</tr>
+<tr>
+<td>08</td>
+<td><a href="08-permissions.html">08-permissions.md</a></td>
+<td>权限审批与规则体系</td>
+<td>~1161</td>
+</tr>
+<tr>
+<td>09</td>
+<td><a href="09-mcp.html">09-mcp.md</a></td>
+<td>MCP 配置、连接与注入</td>
+<td>~1121</td>
+</tr>
+<tr>
+<td>10</td>
+<td><a href="10-sse-and-streaming.html">10-sse-and-streaming.md</a></td>
+<td>SSE / WebSocket / 流式事件</td>
+<td>~878</td>
+</tr>
+<tr>
+<td>11</td>
+<td><a href="11-state.html">11-state.md</a></td>
+<td>运行时状态模型</td>
+<td>~1052</td>
+</tr>
+<tr>
+<td>12</td>
+<td><a href="12-safety.html">12-safety.md</a></td>
+<td>安全约束与风险缓解</td>
+<td>~412</td>
+</tr>
+<tr>
+<td>13</td>
+<td><a href="13-observability.html">13-observability.md</a></td>
+<td>遥测、日志与可观测性</td>
+<td>~536</td>
+</tr>
+<tr>
+<td>14</td>
+<td><a href="14-cost.html">14-cost.md</a></td>
+<td>成本与资源度量</td>
+<td>~608</td>
+</tr>
+<tr>
+<td>15</td>
+<td><a href="15-sandbox.html">15-sandbox.md</a></td>
+<td>命令沙箱与边界控制</td>
+<td>~632</td>
+</tr>
+<tr>
+<td>16</td>
+<td><a href="16-skills-and-extensibility.html">16-skills-and-extensibility.md</a></td>
+<td>技能、插件与扩展点</td>
+<td>~641</td>
+</tr>
+<tr>
+<td>17</td>
+<td><a href="17-end-to-end-flow.html">17-end-to-end-flow.md</a></td>
+<td>端到端运行流程</td>
+<td>~650</td>
+</tr>
+</tbody></table>
+<p><strong>总计</strong>: ~15,000+ 行深度分析</p>
+<h2>建议阅读顺序</h2>
+<ol>
+<li><code>01-architecture-runtime.md</code> — 整体架构与启动流程</li>
+<li><code>02-agent-loop.md</code> — 核心循环与状态机</li>
+<li><code>03-system-prompt.md</code> — 提示词拼装策略</li>
+<li><code>04-context.md</code> — 上下文管理与压缩管线</li>
+<li><code>05-memory.md</code> — 记忆系统全景</li>
+<li><code>06-tool-calling.md</code> — 工具执行管线</li>
+<li>其余专题按需查阅</li>
+</ol>
+</body>
+</html>

@@ -1,0 +1,1037 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>10-sse-and-streaming</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1>Claude Code SSE 与流式传输详细分析</h1>
+<blockquote>
+<p>源码版本: 2026-04-01 快照
+核心目录: <code>src/cli/transports/</code>, <code>src/remote/</code></p>
+</blockquote>
+<hr>
+<h2>目录</h2>
+<ul>
+<li><a href="#1-%E6%9E%B6%E6%9E%84%E6%80%BB%E8%A7%88">1. 架构总览</a><ul>
+<li><a href="#11-ascii-%E6%9E%B6%E6%9E%84%E5%9B%BE">1.1 ASCII 架构图</a></li>
+<li><a href="#12-%E6%A8%A1%E5%9D%97%E6%96%87%E4%BB%B6%E6%B8%85%E5%8D%95">1.2 模块文件清单</a></li>
+<li><a href="#13-transport-%E6%8E%A5%E5%8F%A3%E5%AE%9A%E4%B9%89">1.3 Transport 接口定义</a></li>
+<li><a href="#14-transport-%E9%80%89%E6%8B%A9%E7%AD%96%E7%95%A5">1.4 Transport 选择策略</a></li>
+</ul>
+</li>
+<li><a href="#2-ssetransport-%E5%AE%9E%E7%8E%B0">2. SSETransport 实现</a><ul>
+<li><a href="#21-%E7%B1%BB%E5%9E%8B%E5%AE%9A%E4%B9%89%E4%B8%8E%E7%8A%B6%E6%80%81%E6%9C%BA">2.1 类型定义与状态机</a></li>
+<li><a href="#22-sse-frame-%E8%A7%A3%E6%9E%90%E5%99%A8">2.2 SSE Frame 解析器</a></li>
+<li><a href="#23-%E8%BF%9E%E6%8E%A5%E4%B8%8E%E4%BA%8B%E4%BB%B6%E6%B5%81%E8%AF%BB%E5%8F%96">2.3 连接与事件流读取</a></li>
+<li><a href="#24-%E5%86%99%E5%85%A5-http-post">2.4 写入 (HTTP POST)</a></li>
+<li><a href="#25-%E9%87%8D%E8%BF%9E%E4%B8%8E-liveness-%E6%A3%80%E6%B5%8B">2.5 重连与 Liveness 检测</a></li>
+<li><a href="#26-%E5%BA%8F%E5%88%97%E5%8F%B7%E5%8E%BB%E9%87%8D">2.6 序列号去重</a></li>
+<li><a href="#27-%E9%85%8D%E7%BD%AE%E5%B8%B8%E9%87%8F%E8%A1%A8">2.7 配置常量表</a></li>
+</ul>
+</li>
+<li><a href="#3-websockettransport-%E5%AE%9E%E7%8E%B0">3. WebSocketTransport 实现</a><ul>
+<li><a href="#31-%E7%B1%BB%E5%9E%8B%E5%AE%9A%E4%B9%89%E4%B8%8E%E7%8A%B6%E6%80%81%E6%9C%BA">3.1 类型定义与状态机</a></li>
+<li><a href="#32-%E5%8F%8C%E8%BF%90%E8%A1%8C%E6%97%B6%E6%94%AF%E6%8C%81-bun--nodejs">3.2 双运行时支持 (Bun / Node.js)</a></li>
+<li><a href="#33-%E6%B6%88%E6%81%AF%E7%BC%93%E5%86%B2%E4%B8%8E%E9%87%8D%E6%94%BE">3.3 消息缓冲与重放</a></li>
+<li><a href="#34-pingpong-%E5%81%A5%E5%BA%B7%E6%A3%80%E6%9F%A5">3.4 Ping/Pong 健康检查</a></li>
+<li><a href="#35-keep-alive-%E6%95%B0%E6%8D%AE%E5%B8%A7">3.5 Keep-alive 数据帧</a></li>
+<li><a href="#36-%E7%9D%A1%E7%9C%A0%E6%A3%80%E6%B5%8B-sleep-detection">3.6 睡眠检测 (Sleep Detection)</a></li>
+<li><a href="#37-%E9%85%8D%E7%BD%AE%E5%B8%B8%E9%87%8F%E8%A1%A8">3.7 配置常量表</a></li>
+</ul>
+</li>
+<li><a href="#4-hybridtransport-%E5%AE%9E%E7%8E%B0">4. HybridTransport 实现</a><ul>
+<li><a href="#41-%E6%9E%B6%E6%9E%84-ws-%E8%AF%BB--http-post-%E5%86%99">4.1 架构: WS 读 + HTTP POST 写</a></li>
+<li><a href="#42-stream_event-%E5%BB%B6%E8%BF%9F%E7%BC%93%E5%86%B2">4.2 stream_event 延迟缓冲</a></li>
+<li><a href="#43-serialbatcheventuploader-%E8%AF%A6%E8%A7%A3">4.3 SerialBatchEventUploader 详解</a></li>
+<li><a href="#44-%E5%85%B3%E9%97%AD%E4%B8%8E%E4%BC%98%E9%9B%85%E9%80%80%E5%87%BA">4.4 关闭与优雅退出</a></li>
+</ul>
+</li>
+<li><a href="#5-%E4%BA%8B%E4%BB%B6%E6%A0%BC%E5%BC%8F%E4%B8%8E%E5%8D%8F%E8%AE%AE">5. 事件格式与协议</a><ul>
+<li><a href="#51-streamclientevent-%E6%A0%BC%E5%BC%8F">5.1 StreamClientEvent 格式</a></li>
+<li><a href="#52-ccr-v2-%E4%BA%8B%E4%BB%B6%E6%B5%81">5.2 CCR v2 事件流</a></li>
+<li><a href="#53-url-%E8%B7%AF%E5%BE%84%E8%BD%AC%E6%8D%A2%E8%A7%84%E5%88%99">5.3 URL 路径转换规则</a></li>
+</ul>
+</li>
+<li><a href="#6-ccrclient-%E8%BF%9C%E7%A8%8B%E4%BC%9A%E8%AF%9D%E7%AE%A1%E7%90%86">6. CCRClient 远程会话管理</a><ul>
+<li><a href="#61-worker-%E6%B3%A8%E5%86%8C%E4%B8%8E%E5%BF%83%E8%B7%B3">6.1 Worker 注册与心跳</a></li>
+<li><a href="#62-%E4%BA%8B%E4%BB%B6%E4%B8%8A%E4%BC%A0%E4%B8%8E-text_delta-%E5%90%88%E5%B9%B6">6.2 事件上传与 text_delta 合并</a></li>
+<li><a href="#63-worker-%E7%8A%B6%E6%80%81%E4%B8%8A%E4%BC%A0-workerstateuploader">6.3 Worker 状态上传 (WorkerStateUploader)</a></li>
+<li><a href="#64-%E8%AE%A4%E8%AF%81%E4%B8%8E%E4%BB%A4%E7%89%8C%E8%BF%87%E6%9C%9F%E5%A4%84%E7%90%86">6.4 认证与令牌过期处理</a></li>
+</ul>
+</li>
+<li><a href="#7-%E8%BF%9C%E7%A8%8B%E4%BC%9A%E8%AF%9D%E7%AE%A1%E7%90%86-remote">7. 远程会话管理 (Remote)</a><ul>
+<li><a href="#71-remotesessionmanager">7.1 RemoteSessionManager</a></li>
+<li><a href="#72-sessionswebsocket">7.2 SessionsWebSocket</a></li>
+<li><a href="#73-%E6%9D%83%E9%99%90%E8%AF%B7%E6%B1%82%E5%93%8D%E5%BA%94%E6%B5%81">7.3 权限请求/响应流</a></li>
+</ul>
+</li>
+<li><a href="#8-%E5%85%B3%E9%94%AE%E8%AE%BE%E8%AE%A1%E6%A8%A1%E5%BC%8F%E6%80%BB%E7%BB%93">8. 关键设计模式总结</a></li>
+</ul>
+<hr>
+<h2>1. 架构总览</h2>
+<h3>1.1 ASCII 架构图</h3>
+<pre><code>                              Claude Code CLI
+                                    |
+                          ┌─────────┴──────────┐
+                          │   Transport Layer   │
+                          │   (transportUtils)  │
+                          └─────────┬──────────┘
+                                    |
+               ┌────────────────────┼──────────────────────┐
+               |                    |                      |
+     ┌─────────▼──────┐   ┌────────▼────────┐   ┌────────▼────────┐
+     │  SSETransport   │   │ WebSocketTransport│  │ HybridTransport │
+     │  (CCR v2)       │   │ (default)        │   │ (WS + POST)    │
+     │                 │   │                  │   │                 │
+     │ SSE read        │   │ WS bidirectional │   │ extends WS      │
+     │ POST write      │   │                  │   │ POST write      │
+     └────────┬────────┘   └────────┬─────────┘   └────────┬────────┘
+              |                     |                       |
+              └─────────────────────┼───────────────────────┘
+                                    |
+                           ┌────────▼────────┐
+                           │  CCR / Session   │
+                           │  Ingress Server  │
+                           └────────┬─────────┘
+                                    |
+                    ┌───────────────┼──────────────────┐
+                    |                                   |
+          ┌─────────▼────────┐              ┌──────────▼──────────┐
+          │ CCRClient        │              │ RemoteSessionManager │
+          │ (Worker side)    │              │ (Viewer side)        │
+          │                  │              │                      │
+          │ - Worker register│              │ - SessionsWebSocket  │
+          │ - Event upload   │              │ - Permission relay   │
+          │ - State upload   │              │ - Message routing    │
+          │ - Heartbeat      │              │                      │
+          └──────────────────┘              └──────────────────────┘
+</code></pre>
+<h3>1.2 模块文件清单</h3>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>路径</th>
+<th>职责</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>SSETransport.ts</code></td>
+<td><code>src/cli/transports/</code></td>
+<td>SSE 读 + HTTP POST 写 transport</td>
+</tr>
+<tr>
+<td><code>WebSocketTransport.ts</code></td>
+<td><code>src/cli/transports/</code></td>
+<td>双向 WebSocket transport</td>
+</tr>
+<tr>
+<td><code>HybridTransport.ts</code></td>
+<td><code>src/cli/transports/</code></td>
+<td>WS 读 + HTTP POST 写 (继承 WS)</td>
+</tr>
+<tr>
+<td><code>SerialBatchEventUploader.ts</code></td>
+<td><code>src/cli/transports/</code></td>
+<td>串行批量事件上传器 (backpressure + retry)</td>
+</tr>
+<tr>
+<td><code>WorkerStateUploader.ts</code></td>
+<td><code>src/cli/transports/</code></td>
+<td>Worker 状态合并上传器</td>
+</tr>
+<tr>
+<td><code>transportUtils.ts</code></td>
+<td><code>src/cli/transports/</code></td>
+<td>Transport 工厂: 根据 env 选择 transport</td>
+</tr>
+<tr>
+<td><code>ccrClient.ts</code></td>
+<td><code>src/cli/transports/</code></td>
+<td>CCR Worker 端: 注册/心跳/事件上传</td>
+</tr>
+<tr>
+<td><code>RemoteSessionManager.ts</code></td>
+<td><code>src/remote/</code></td>
+<td>远程会话管理器 (Viewer 端)</td>
+</tr>
+<tr>
+<td><code>SessionsWebSocket.ts</code></td>
+<td><code>src/remote/</code></td>
+<td>Sessions API WebSocket 客户端</td>
+</tr>
+<tr>
+<td><code>remotePermissionBridge.ts</code></td>
+<td><code>src/remote/</code></td>
+<td>远程权限桥接</td>
+</tr>
+<tr>
+<td><code>sdkMessageAdapter.ts</code></td>
+<td><code>src/remote/</code></td>
+<td>SDK 消息适配器</td>
+</tr>
+</tbody></table>
+<h3>1.3 Transport 接口定义</h3>
+<pre><code class="language-typescript">// src/cli/transports/Transport.ts (推断自使用方)
+interface Transport {
+  connect(): Promise&lt;void&gt;
+  close(): void
+  write(message: StdoutMessage): Promise&lt;void&gt;
+  isConnectedStatus(): boolean
+  isClosedStatus(): boolean
+  setOnData(callback: (data: string) =&gt; void): void
+  setOnClose(callback: (closeCode?: number) =&gt; void): void
+}
+</code></pre>
+<h3>1.4 Transport 选择策略</h3>
+<blockquote>
+<p>源文件: <code>src/cli/transports/transportUtils.ts</code></p>
+</blockquote>
+<pre><code class="language-typescript">export function getTransportForUrl(url, headers, sessionId, refreshHeaders): Transport {
+  // 优先级 1: CCR v2 模式 (环境变量)
+  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_CCR_V2)) {
+    // SSE URL = 原始 URL + /worker/events/stream
+    return new SSETransport(sseUrl, headers, sessionId, refreshHeaders)
+  }
+
+  // 优先级 2: Hybrid 模式 (环境变量)
+  if (isEnvTruthy(process.env.CLAUDE_CODE_POST_FOR_SESSION_INGRESS_V2)) {
+    return new HybridTransport(url, headers, sessionId, refreshHeaders)
+  }
+
+  // 默认: 纯 WebSocket
+  return new WebSocketTransport(url, headers, sessionId, refreshHeaders)
+}
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>环境变量</th>
+<th>Transport</th>
+<th>读通道</th>
+<th>写通道</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>CLAUDE_CODE_USE_CCR_V2</code></td>
+<td>SSETransport</td>
+<td>SSE</td>
+<td>HTTP POST</td>
+</tr>
+<tr>
+<td><code>CLAUDE_CODE_POST_FOR_SESSION_INGRESS_V2</code></td>
+<td>HybridTransport</td>
+<td>WebSocket</td>
+<td>HTTP POST</td>
+</tr>
+<tr>
+<td>(默认)</td>
+<td>WebSocketTransport</td>
+<td>WebSocket</td>
+<td>WebSocket</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>2. SSETransport 实现</h2>
+<blockquote>
+<p>源文件: <code>src/cli/transports/SSETransport.ts</code></p>
+</blockquote>
+<h3>2.1 类型定义与状态机</h3>
+<pre><code class="language-typescript">type SSETransportState =
+  | &#39;idle&#39;          // 初始状态
+  | &#39;connected&#39;     // SSE 流已建立
+  | &#39;reconnecting&#39;  // 重连中
+  | &#39;closing&#39;       // 正在关闭
+  | &#39;closed&#39;        // 已关闭
+
+export type StreamClientEvent = {
+  event_id: string
+  sequence_num: number
+  event_type: string
+  source: string
+  payload: Record&lt;string, unknown&gt;
+  created_at: string
+}
+</code></pre>
+<p>状态转换:</p>
+<pre><code>idle -&gt; reconnecting -&gt; connected -&gt; reconnecting (on error)
+                    \-&gt; closed (permanent error / budget exhausted)
+closing -&gt; closed (clean shutdown)
+</code></pre>
+<h3>2.2 SSE Frame 解析器</h3>
+<pre><code class="language-typescript">type SSEFrame = {
+  event?: string
+  id?: string
+  data?: string
+}
+
+export function parseSSEFrames(buffer: string): {
+  frames: SSEFrame[]
+  remaining: string
+} {
+  // SSE 帧以 \n\n 分隔
+  // 每帧包含:
+  //   event: &lt;type&gt;
+  //   id: &lt;sequence_num&gt;
+  //   data: &lt;json&gt;
+  //   :&lt;comment&gt;  (keepalive)
+  // 
+  // 多个 data: 行用 \n 拼接 (SSE 规范)
+  // 仅冒号开头的行是注释
+}
+</code></pre>
+<h3>2.3 连接与事件流读取</h3>
+<pre><code class="language-typescript">async connect(): Promise&lt;void&gt; {
+  // 构建 SSE URL, 附加 from_sequence_num 用于断点续传
+  const sseUrl = new URL(this.url.href)
+  if (this.lastSequenceNum &gt; 0) {
+    sseUrl.searchParams.set(&#39;from_sequence_num&#39;, String(this.lastSequenceNum))
+  }
+
+  // 请求头: auth + Accept: text/event-stream + Last-Event-ID
+  const headers = {
+    ...this.headers,
+    ...this.getAuthHeaders(),
+    Accept: &#39;text/event-stream&#39;,
+    &#39;anthropic-version&#39;: &#39;2023-06-01&#39;,
+    &#39;User-Agent&#39;: getClaudeCodeUserAgent(),
+  }
+  if (this.lastSequenceNum &gt; 0) {
+    headers[&#39;Last-Event-ID&#39;] = String(this.lastSequenceNum)
+  }
+
+  const response = await fetch(sseUrl.href, { headers, signal: abortController.signal })
+  // 永久 HTTP 错误 (401/403/404): 直接关闭
+  // 其他错误: 触发重连
+  // 成功: 开始读取流
+  await this.readStream(response.body)
+}
+
+private async readStream(body: ReadableStream&lt;Uint8Array&gt;): Promise&lt;void&gt; {
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = &#39;&#39;
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const { frames, remaining } = parseSSEFrames(buffer)
+    buffer = remaining
+    for (const frame of frames) {
+      this.resetLivenessTimer()  // 任何帧 (含注释) 都证明连接存活
+      // 处理 frame.id (序列号)
+      // 处理 frame.event + frame.data
+      if (frame.event === &#39;client_event&#39;) {
+        this.handleSSEFrame(frame.event, frame.data)
+      }
+    }
+  }
+}
+</code></pre>
+<h3>2.4 写入 (HTTP POST)</h3>
+<pre><code class="language-typescript">async write(message: StdoutMessage): Promise&lt;void&gt; {
+  // POST URL 从 SSE URL 派生:
+  //   .../events/stream -&gt; .../events
+  const headers = {
+    ...this.getAuthHeaders(),
+    &#39;Content-Type&#39;: &#39;application/json&#39;,
+    &#39;anthropic-version&#39;: &#39;2023-06-01&#39;,
+  }
+
+  // 重试逻辑: 最多 10 次, 指数退避
+  for (let attempt = 1; attempt &lt;= POST_MAX_RETRIES; attempt++) {
+    const response = await axios.post(this.postUrl, message, { headers })
+    if (response.status === 200 || response.status === 201) return
+    // 4xx (非 429): 永久错误, 不重试
+    // 429 / 5xx: 可重试
+    const delay = Math.min(POST_BASE_DELAY_MS * 2^(attempt-1), POST_MAX_DELAY_MS)
+    await sleep(delay)
+  }
+}
+</code></pre>
+<h3>2.5 重连与 Liveness 检测</h3>
+<pre><code class="language-typescript">// Liveness 检测: 服务器每 15 秒发 keepalive, 45 秒无帧视为连接死亡
+private readonly onLivenessTimeout = (): void =&gt; {
+  this.abortController?.abort()
+  this.handleConnectionError()
+}
+
+private resetLivenessTimer(): void {
+  this.clearLivenessTimer()
+  this.livenessTimer = setTimeout(this.onLivenessTimeout, LIVENESS_TIMEOUT_MS)
+}
+
+// 重连: 指数退避 + 25% 抖动 + 10 分钟时间预算
+private handleConnectionError(): void {
+  if (elapsed &lt; RECONNECT_GIVE_UP_MS) {
+    const baseDelay = Math.min(
+      RECONNECT_BASE_DELAY_MS * Math.pow(2, this.reconnectAttempts - 1),
+      RECONNECT_MAX_DELAY_MS,
+    )
+    const delay = baseDelay + baseDelay * 0.25 * (2 * Math.random() - 1)
+    setTimeout(() =&gt; this.connect(), delay)
+  } else {
+    this.state = &#39;closed&#39;
+    this.onCloseCallback?.()
+  }
+}
+</code></pre>
+<h3>2.6 序列号去重</h3>
+<pre><code class="language-typescript">// 维护已见序列号 Set, 防止重连后重放的重复帧
+private seenSequenceNums = new Set&lt;number&gt;()
+
+// 防止 Set 无限增长: 超过 1000 条目时清理低水位以下的
+if (this.seenSequenceNums.size &gt; 1000) {
+  const threshold = this.lastSequenceNum - 200
+  for (const s of this.seenSequenceNums) {
+    if (s &lt; threshold) this.seenSequenceNums.delete(s)
+  }
+}
+</code></pre>
+<p><code>getLastSequenceNum()</code> 方法暴露高水位标记，供 transport 重建时传递给新实例的 <code>initialSequenceNum</code>。</p>
+<h3>2.7 配置常量表</h3>
+<table>
+<thead>
+<tr>
+<th>常量</th>
+<th>值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>RECONNECT_BASE_DELAY_MS</code></td>
+<td>1,000</td>
+<td>重连基础延迟</td>
+</tr>
+<tr>
+<td><code>RECONNECT_MAX_DELAY_MS</code></td>
+<td>30,000</td>
+<td>重连最大延迟</td>
+</tr>
+<tr>
+<td><code>RECONNECT_GIVE_UP_MS</code></td>
+<td>600,000 (10min)</td>
+<td>重连时间预算</td>
+</tr>
+<tr>
+<td><code>LIVENESS_TIMEOUT_MS</code></td>
+<td>45,000</td>
+<td>Liveness 超时 (服务器 15s keepalive)</td>
+</tr>
+<tr>
+<td><code>PERMANENT_HTTP_CODES</code></td>
+<td>{401, 403, 404}</td>
+<td>永久错误, 不重试</td>
+</tr>
+<tr>
+<td><code>POST_MAX_RETRIES</code></td>
+<td>10</td>
+<td>POST 最大重试次数</td>
+</tr>
+<tr>
+<td><code>POST_BASE_DELAY_MS</code></td>
+<td>500</td>
+<td>POST 重试基础延迟</td>
+</tr>
+<tr>
+<td><code>POST_MAX_DELAY_MS</code></td>
+<td>8,000</td>
+<td>POST 重试最大延迟</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>3. WebSocketTransport 实现</h2>
+<blockquote>
+<p>源文件: <code>src/cli/transports/WebSocketTransport.ts</code></p>
+</blockquote>
+<h3>3.1 类型定义与状态机</h3>
+<pre><code class="language-typescript">type WebSocketTransportState =
+  | &#39;idle&#39;          // 初始
+  | &#39;connected&#39;     // WS 已连接
+  | &#39;reconnecting&#39;  // 重连中
+  | &#39;closing&#39;       // 正在关闭
+  | &#39;closed&#39;        // 已关闭
+
+export type WebSocketTransportOptions = {
+  autoReconnect?: boolean   // 默认 true, REPL bridge 可设 false
+  isBridge?: boolean        // 启用 tengu_ws_transport_* 遥测
+}
+</code></pre>
+<h3>3.2 双运行时支持 (Bun / Node.js)</h3>
+<pre><code class="language-typescript">public async connect(): Promise&lt;void&gt; {
+  const headers = { ...this.headers }
+  if (this.lastSentId) {
+    headers[&#39;X-Last-Request-Id&#39;] = this.lastSentId  // 用于断点重放
+  }
+
+  if (typeof Bun !== &#39;undefined&#39;) {
+    // Bun 路径: globalThis.WebSocket + proxy/tls 选项
+    const ws = new globalThis.WebSocket(this.url.href, {
+      headers, proxy: getWebSocketProxyUrl(this.url.href),
+      tls: getWebSocketTLSOptions() || undefined,
+    })
+    ws.addEventListener(&#39;open&#39;, this.onBunOpen)
+    ws.addEventListener(&#39;message&#39;, this.onBunMessage)
+    ws.addEventListener(&#39;error&#39;, this.onBunError)
+    ws.addEventListener(&#39;close&#39;, this.onBunClose)
+    ws.addEventListener(&#39;pong&#39;, this.onPong)
+  } else {
+    // Node.js 路径: ws 包
+    const ws = new WS(this.url.href, {
+      headers, agent: getWebSocketProxyAgent(this.url.href),
+      ...getWebSocketTLSOptions(),
+    })
+    ws.on(&#39;open&#39;, this.onNodeOpen)
+    ws.on(&#39;message&#39;, this.onNodeMessage)
+    ws.on(&#39;error&#39;, this.onNodeError)
+    ws.on(&#39;close&#39;, this.onNodeClose)
+    ws.on(&#39;pong&#39;, this.onPong)
+  }
+}
+</code></pre>
+<p>事件处理器使用类属性箭头函数，确保可在 <code>doDisconnect()</code> 中正确移除 (防止重连时 listener 泄漏)。</p>
+<h3>3.3 消息缓冲与重放</h3>
+<pre><code class="language-typescript">// CircularBuffer 保存最近 1000 条消息用于重连重放
+private messageBuffer: CircularBuffer&lt;StdoutMessage&gt;
+
+async write(message: StdoutMessage): Promise&lt;void&gt; {
+  // 带 UUID 的消息进入缓冲区
+  if (&#39;uuid&#39; in message) {
+    this.messageBuffer.add(message)
+    this.lastSentId = message.uuid
+  }
+  const line = jsonStringify(message) + &#39;\n&#39;
+  if (this.state !== &#39;connected&#39;) return  // 缓冲, 连接后重放
+  this.sendLine(line)
+}
+
+private replayBufferedMessages(lastId: string): void {
+  // Node.js (ws): 从 upgrade response 的 x-last-request-id 头获取服务器确认点
+  // Bun: 无法读取 upgrade headers, 全量重放 (服务器按 UUID 去重)
+  // 找到 lastId 位置 -&gt; 仅重放后续消息
+  // 重放后不清除缓冲区 (等下次重连确认)
+}
+</code></pre>
+<h3>3.4 Ping/Pong 健康检查</h3>
+<pre><code class="language-typescript">private startPingInterval(): void {
+  this.pongReceived = true
+  let lastTickTime = Date.now()
+
+  this.pingInterval = setInterval(() =&gt; {
+    const gap = Date.now() - lastTickTime
+    lastTickTime = Date.now()
+
+    // 睡眠检测: tick 间隔 &gt;&gt; 10s -&gt; 进程被挂起
+    if (gap &gt; SLEEP_DETECTION_THRESHOLD_MS) {
+      this.handleConnectionError()  // 立即重连
+      return
+    }
+
+    // 上次 ping 未收到 pong -&gt; 连接死亡
+    if (!this.pongReceived) {
+      this.handleConnectionError()
+      return
+    }
+
+    this.pongReceived = false
+    this.ws.ping?.()
+  }, DEFAULT_PING_INTERVAL)  // 每 10 秒
+}
+</code></pre>
+<h3>3.5 Keep-alive 数据帧</h3>
+<pre><code class="language-typescript">const KEEP_ALIVE_FRAME = &#39;{&quot;type&quot;:&quot;keep_alive&quot;}\n&#39;
+const DEFAULT_KEEPALIVE_INTERVAL = 300_000  // 5 分钟
+
+private startKeepaliveInterval(): void {
+  // 在 CCR 远程会话中, session activity heartbeat 代替 keep-alive
+  if (isEnvTruthy(process.env.CLAUDE_CODE_REMOTE)) return
+
+  this.keepAliveInterval = setInterval(() =&gt; {
+    this.ws.send(KEEP_ALIVE_FRAME)
+    this.lastActivityTime = Date.now()
+  }, DEFAULT_KEEPALIVE_INTERVAL)
+}
+</code></pre>
+<p>另外，当 <code>registerSessionActivityCallback</code> 触发时 (用户操作)，也会发送 keep-alive。</p>
+<h3>3.6 睡眠检测 (Sleep Detection)</h3>
+<pre><code class="language-typescript">const SLEEP_DETECTION_THRESHOLD_MS = 60_000  // 2 * MAX_RECONNECT_DELAY
+
+// 在重连逻辑中检测:
+if (
+  this.lastReconnectAttemptTime !== null &amp;&amp;
+  now - this.lastReconnectAttemptTime &gt; SLEEP_DETECTION_THRESHOLD_MS
+) {
+  // 机器可能休眠了 (笔记本合盖)
+  // 重置重连预算, 从头开始重连
+  // 服务器会用永久关闭码 (4001/1002) 拒绝过期会话
+  this.reconnectStartTime = now
+  this.reconnectAttempts = 0
+}
+</code></pre>
+<h3>3.7 配置常量表</h3>
+<table>
+<thead>
+<tr>
+<th>常量</th>
+<th>值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>DEFAULT_MAX_BUFFER_SIZE</code></td>
+<td>1,000</td>
+<td>消息重放缓冲区大小</td>
+</tr>
+<tr>
+<td><code>DEFAULT_BASE_RECONNECT_DELAY</code></td>
+<td>1,000</td>
+<td>重连基础延迟</td>
+</tr>
+<tr>
+<td><code>DEFAULT_MAX_RECONNECT_DELAY</code></td>
+<td>30,000</td>
+<td>重连最大延迟</td>
+</tr>
+<tr>
+<td><code>DEFAULT_RECONNECT_GIVE_UP_MS</code></td>
+<td>600,000 (10min)</td>
+<td>重连时间预算</td>
+</tr>
+<tr>
+<td><code>DEFAULT_PING_INTERVAL</code></td>
+<td>10,000</td>
+<td>Ping 间隔</td>
+</tr>
+<tr>
+<td><code>DEFAULT_KEEPALIVE_INTERVAL</code></td>
+<td>300,000 (5min)</td>
+<td>Keep-alive 间隔</td>
+</tr>
+<tr>
+<td><code>SLEEP_DETECTION_THRESHOLD_MS</code></td>
+<td>60,000</td>
+<td>睡眠检测阈值</td>
+</tr>
+<tr>
+<td><code>PERMANENT_CLOSE_CODES</code></td>
+<td>{1002, 4001, 4003}</td>
+<td>永久关闭码</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>4. HybridTransport 实现</h2>
+<blockquote>
+<p>源文件: <code>src/cli/transports/HybridTransport.ts</code></p>
+</blockquote>
+<h3>4.1 架构: WS 读 + HTTP POST 写</h3>
+<pre><code>HybridTransport extends WebSocketTransport
+
+  读: 继承 WebSocket (接收服务器事件)
+  写: SerialBatchEventUploader -&gt; HTTP POST
+
+  write(stream_event) --[100ms buffer]--&gt; uploader.enqueue()
+  write(other)        --[立即]----------&gt; uploader.enqueue()
+                                               |
+                                               v
+                                          postOnce() (单次 HTTP POST)
+                                               |
+                                          成功: 继续下一批
+                                          失败 (429/5xx): 重入队+退避
+                                          失败 (4xx): 丢弃
+</code></pre>
+<h3>4.2 stream_event 延迟缓冲</h3>
+<pre><code class="language-typescript">const BATCH_FLUSH_INTERVAL_MS = 100  // 100ms 合并窗口
+
+override async write(message: StdoutMessage): Promise&lt;void&gt; {
+  if (message.type === &#39;stream_event&#39;) {
+    // 延迟: 累积 stream_events 100ms 后批量入队
+    this.streamEventBuffer.push(message)
+    if (!this.streamEventTimer) {
+      this.streamEventTimer = setTimeout(
+        () =&gt; this.flushStreamEvents(), BATCH_FLUSH_INTERVAL_MS)
+    }
+    return  // 立即返回, 不等待 POST
+  }
+  // 非 stream_event: 先 flush 缓冲, 然后立即入队 (保序)
+  await this.uploader.enqueue([...this.takeStreamEvents(), message])
+  return this.uploader.flush()
+}
+</code></pre>
+<h3>4.3 SerialBatchEventUploader 详解</h3>
+<blockquote>
+<p>源文件: <code>src/cli/transports/SerialBatchEventUploader.ts</code></p>
+</blockquote>
+<pre><code class="language-typescript">type SerialBatchEventUploaderConfig&lt;T&gt; = {
+  maxBatchSize: number       // 500 (session-ingress 不限)
+  maxBatchBytes?: number     // 可选字节限制
+  maxQueueSize: number       // 100,000 (内存上限)
+  send: (batch: T[]) =&gt; Promise&lt;void&gt;  // 实际 POST 函数
+  baseDelayMs: number        // 500
+  maxDelayMs: number         // 8,000
+  jitterMs: number           // 1,000
+  maxConsecutiveFailures?: number  // 可选: 连续失败上限
+  onBatchDropped?: (batchSize, failures) =&gt; void
+}
+</code></pre>
+<p>核心特性:</p>
+<ol>
+<li><strong>串行化</strong>: 同一时刻最多 1 个 POST 在飞</li>
+<li><strong>批量化</strong>: 飞行中的 POST 期间，新事件累积到下一批</li>
+<li><strong>重试</strong>: 失败时指数退避 + 随机抖动，重入队列头部</li>
+<li><strong>背压</strong>: 当队列满 (<code>maxQueueSize</code>) 时，<code>enqueue()</code> 阻塞</li>
+<li><strong>Retry-After</strong>: 支持服务器指定的重试延迟 (<code>RetryableError.retryAfterMs</code>)</li>
+<li><strong>字节限制</strong>: 可选 <code>maxBatchBytes</code>，按 JSON 序列化大小控制</li>
+</ol>
+<pre><code class="language-typescript">private async drain(): Promise&lt;void&gt; {
+  if (this.draining || this.closed) return
+  this.draining = true
+  let failures = 0
+  while (this.pending.length &gt; 0 &amp;&amp; !this.closed) {
+    const batch = this.takeBatch()
+    try {
+      await this.config.send(batch)
+      failures = 0
+    } catch (err) {
+      failures++
+      if (maxConsecutiveFailures &amp;&amp; failures &gt;= maxConsecutiveFailures) {
+        this.droppedBatches++
+        continue  // 丢弃此批, 继续下一批
+      }
+      this.pending = batch.concat(this.pending)  // 重入队头部
+      await this.sleep(this.retryDelay(failures, retryAfterMs))
+    }
+    this.releaseBackpressure()
+  }
+  this.draining = false
+}
+</code></pre>
+<h3>4.4 关闭与优雅退出</h3>
+<pre><code class="language-typescript">const CLOSE_GRACE_MS = 3000  // 关闭时 3 秒宽限期
+
+override close(): void {
+  // 清理 stream_event 缓冲
+  this.streamEventBuffer = []
+  // 宽限期: 等待剩余队列完成 POST
+  void Promise.race([
+    uploader.flush(),
+    new Promise(r =&gt; setTimeout(r, CLOSE_GRACE_MS)),
+  ]).finally(() =&gt; uploader.close())
+  super.close()  // WebSocket 关闭
+}
+</code></pre>
+<hr>
+<h2>5. 事件格式与协议</h2>
+<h3>5.1 StreamClientEvent 格式</h3>
+<pre><code class="language-typescript">// SSE 帧中 event: client_event 的 data 载荷
+export type StreamClientEvent = {
+  event_id: string         // 事件唯一 ID
+  sequence_num: number     // 递增序列号 (用于断点续传)
+  event_type: string       // 事件类型
+  source: string           // 来源标识
+  payload: Record&lt;string, unknown&gt;  // 实际内容
+  created_at: string       // ISO 时间戳
+}
+</code></pre>
+<h3>5.2 CCR v2 事件流</h3>
+<p>Worker subscriber 仅接收 <code>client_event</code> 帧。<code>delivery_update</code>、<code>session_update</code>、<code>ephemeral_event</code>、<code>catch_up_truncated</code> 等仅发送给 client-channel 订阅者。</p>
+<p>SSETransport 处理流程:</p>
+<ol>
+<li>收到 <code>event: client_event</code> 帧</li>
+<li>解析 <code>data:</code> 为 <code>StreamClientEvent</code></li>
+<li>提取 <code>payload</code> (含 <code>type</code> 字段)</li>
+<li>序列化为 newline-delimited JSON 传递给 <code>onData</code></li>
+</ol>
+<h3>5.3 URL 路径转换规则</h3>
+<p><strong>SSE URL 转 POST URL</strong>:</p>
+<pre><code>SSE:  https://api.example.com/.../events/stream
+POST: https://api.example.com/.../events
+(去掉 /stream 后缀)
+</code></pre>
+<p><strong>WebSocket URL 转 POST URL</strong>:</p>
+<pre><code>WS:   wss://api.example.com/v2/session_ingress/ws/&lt;session_id&gt;
+POST: https://api.example.com/v2/session_ingress/session/&lt;session_id&gt;/events
+(wss-&gt;https, /ws/-&gt;session/, 追加 /events)
+</code></pre>
+<p><strong>SDK URL 转 SSE URL</strong> (CCR v2):</p>
+<pre><code>SDK:  wss://api.example.com/.../sessions/{id}
+SSE:  https://api.example.com/.../sessions/{id}/worker/events/stream
+(wss-&gt;https, 追加 /worker/events/stream)
+</code></pre>
+<hr>
+<h2>6. CCRClient 远程会话管理</h2>
+<blockquote>
+<p>源文件: <code>src/cli/transports/ccrClient.ts</code></p>
+</blockquote>
+<h3>6.1 Worker 注册与心跳</h3>
+<pre><code class="language-typescript">const DEFAULT_HEARTBEAT_INTERVAL_MS = 20_000  // 20 秒 (服务器 TTL 60 秒)
+
+// Worker 注册: POST /worker with initial state
+// 心跳: 定期 heartbeat 事件 + session activity callback
+
+// 连续认证失败上限:
+const MAX_CONSECUTIVE_AUTH_FAILURES = 10  // 10 * 20s = 200s
+</code></pre>
+<h3>6.2 事件上传与 text_delta 合并</h3>
+<pre><code class="language-typescript">const STREAM_EVENT_FLUSH_INTERVAL_MS = 100  // 100ms 合并窗口
+
+// text_delta 合并: 同一 content block 的多个 delta 合并为全量快照
+export function accumulateStreamEvents(
+  buffer: SDKPartialAssistantMessage[],
+  state: StreamAccumulatorState,
+): EventPayload[] {
+  // message_start: 记录 message ID -&gt; scope 映射
+  // content_block_delta (text_delta): 累积 chunks, 输出全量快照
+  // 其他事件: 透传
+  // 好处: 中途连接的客户端看到完整文本, 非片段
+}
+
+export type StreamAccumulatorState = {
+  byMessage: Map&lt;string, string[][]&gt;     // msg_id -&gt; blocks[index] -&gt; chunks
+  scopeToMessage: Map&lt;string, string&gt;    // scope_key -&gt; active msg_id
+}
+</code></pre>
+<p>清理时机: 完整 assistant message 到达时 (非 stop 事件 -- abort/error 可能跳过 stop)。</p>
+<h3>6.3 Worker 状态上传 (WorkerStateUploader)</h3>
+<blockquote>
+<p>源文件: <code>src/cli/transports/WorkerStateUploader.ts</code></p>
+</blockquote>
+<pre><code class="language-typescript">// 合并上传器: 1 在飞 + 1 pending, 自然限界为 2 slot
+export class WorkerStateUploader {
+  enqueue(patch: Record&lt;string, unknown&gt;): void {
+    // 与现有 pending 合并 (coalescePatch)
+    // 触发 drain
+  }
+}
+
+// 合并规则 (RFC 7396 JSON Merge Patch 一层):
+function coalescePatches(base, overlay): Record&lt;string, unknown&gt; {
+  // 顶层 key: overlay 覆盖 base
+  // external_metadata / internal_metadata: 一层深合并
+  //   overlay key 添加/覆盖, null 值保留 (服务器删除)
+}
+</code></pre>
+<h3>6.4 认证与令牌过期处理</h3>
+<pre><code class="language-typescript">// JWT 过期检测: 在发请求前检查 exp
+const expiry = decodeJwtExpiry(token)
+if (expiry &amp;&amp; expiry &lt; Date.now()) {
+  // 令牌已过期, 立即放弃 (不重试)
+}
+
+// 连续 401/403 但令牌看起来有效 (exp 在未来):
+// 可能是 userauth 暂时不可用, 允许重试最多 10 次
+</code></pre>
+<hr>
+<h2>7. 远程会话管理 (Remote)</h2>
+<h3>7.1 RemoteSessionManager</h3>
+<blockquote>
+<p>源文件: <code>src/remote/RemoteSessionManager.ts</code></p>
+</blockquote>
+<pre><code class="language-typescript">export type RemoteSessionConfig = {
+  sessionId: string
+  getAccessToken: () =&gt; string
+  orgUuid: string
+  hasInitialPrompt?: boolean
+  viewerOnly?: boolean  // 纯查看模式 (claude assistant)
+}
+
+export class RemoteSessionManager {
+  private websocket: SessionsWebSocket | null = null
+  private pendingPermissionRequests: Map&lt;string, SDKControlPermissionRequest&gt;
+
+  connect(): void {
+    this.websocket = new SessionsWebSocket(
+      config.sessionId, config.orgUuid,
+      config.getAccessToken, callbacks,
+    )
+    this.websocket.connect()
+  }
+
+  // 消息路由:
+  handleMessage(message):
+    control_request          -&gt; handleControlRequest (权限请求)
+    control_cancel_request   -&gt; 取消待处理权限
+    control_response         -&gt; 日志确认
+    SDK message              -&gt; callbacks.onMessage (转发)
+
+  // 发送消息: HTTP POST (非 WebSocket)
+  async sendMessage(content, opts): Promise&lt;boolean&gt; {
+    return sendEventToRemoteSession(config.sessionId, content, opts)
+  }
+}
+</code></pre>
+<h3>7.2 SessionsWebSocket</h3>
+<blockquote>
+<p>源文件: <code>src/remote/SessionsWebSocket.ts</code></p>
+</blockquote>
+<pre><code class="language-typescript">// 连接端点:
+// wss://api.anthropic.com/v1/sessions/ws/{sessionId}/subscribe
+//   ?organization_uuid=...
+
+// 认证: Authorization header (Bearer token)
+// 消息格式: JSON (SDKMessage | SDKControlRequest | SDKControlResponse)
+
+export class SessionsWebSocket {
+  // 状态: &#39;connecting&#39; | &#39;connected&#39; | &#39;closed&#39;
+  // 重连: 最多 5 次, 基础延迟 2 秒
+  // 4001 (session not found): 特殊处理, 最多 3 次重试
+  //   (compaction 期间可能暂时找不到会话)
+  // 永久关闭码: { 4003 (unauthorized) }
+  // Ping: 每 30 秒
+
+  async connect(): Promise&lt;void&gt; {
+    // 双运行时 (Bun/Node.js), 与 WebSocketTransport 类似
+    // 认证通过 headers 而非 auth message
+  }
+
+  sendControlResponse(response: SDKControlResponse): void {
+    this.ws.send(jsonStringify(response))
+  }
+
+  sendControlRequest(request: SDKControlRequestInner): void {
+    // 包装为 SDKControlRequest { type, request_id: randomUUID(), request }
+    this.ws.send(jsonStringify(controlRequest))
+  }
+
+  reconnect(): void {
+    // 强制重连: 重置计数器 + 关闭 + 500ms 后重连
+  }
+}
+</code></pre>
+<h3>7.3 权限请求/响应流</h3>
+<pre><code>CCR Worker                 SessionsWebSocket         RemoteSessionManager
+    |                            |                           |
+    | control_request            |                           |
+    | {subtype: can_use_tool}    |                           |
+    |---------------------------&gt;|                           |
+    |                            | handleMessage()           |
+    |                            |--------------------------&gt;|
+    |                            |                           | onPermissionRequest
+    |                            |                           | (展示给用户)
+    |                            |                           |
+    |                            |        用户批准/拒绝       |
+    |                            |&lt;--------------------------|
+    |                            | sendControlResponse       |
+    |    control_response        |                           |
+    |&lt;---------------------------|                           |
+</code></pre>
+<p>对于未识别的 control request subtype，返回 error response 防止服务器挂起等待。</p>
+<hr>
+<h2>8. 关键设计模式总结</h2>
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>应用位置</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>半双工 Transport</strong></td>
+<td>SSETransport, HybridTransport</td>
+<td>读和写使用不同通道: SSE/WS 读, HTTP POST 写。避免 WS 写并发冲突</td>
+</tr>
+<tr>
+<td><strong>继承 + 覆盖</strong></td>
+<td>HybridTransport extends WebSocketTransport</td>
+<td>继承 WS 读能力，覆盖 <code>write()</code> 改用 HTTP POST</td>
+</tr>
+<tr>
+<td><strong>串行队列 + 批量化</strong></td>
+<td>SerialBatchEventUploader</td>
+<td>同时仅 1 个 POST 在飞，新事件自动批量化。避免并发写导致的 Firestore 冲突</td>
+</tr>
+<tr>
+<td><strong>合并上传</strong></td>
+<td>WorkerStateUploader</td>
+<td>1 在飞 + 1 pending slot，新 patch 与 pending 合并。自然限界，无需队列</td>
+</tr>
+<tr>
+<td><strong>断点续传</strong></td>
+<td>SSE: <code>from_sequence_num</code> / <code>Last-Event-ID</code>; WS: <code>X-Last-Request-Id</code></td>
+<td>SSE 用序列号; WS 用消息 UUID + CircularBuffer 重放</td>
+</tr>
+<tr>
+<td><strong>序列号去重</strong></td>
+<td>SSETransport.seenSequenceNums</td>
+<td>Set 跟踪已处理的序列号，带自动清理 (&gt;1000 条时清理低水位)</td>
+</tr>
+<tr>
+<td><strong>text_delta 合并</strong></td>
+<td>ccrClient.ts accumulateStreamEvents</td>
+<td>多个增量 delta 合并为全量快照，中途连接的客户端看到完整文本</td>
+</tr>
+<tr>
+<td><strong>双运行时</strong></td>
+<td>WebSocketTransport, SessionsWebSocket</td>
+<td>Bun 和 Node.js 路径各有独立的事件绑定/解绑逻辑</td>
+</tr>
+<tr>
+<td><strong>Listener 清理</strong></td>
+<td>WebSocketTransport.removeWsListeners</td>
+<td>重连前移除旧 WS 的所有 listener，防止闭包/对象泄漏</td>
+</tr>
+<tr>
+<td><strong>睡眠检测</strong></td>
+<td>WebSocketTransport, ping interval</td>
+<td>检测 tick 间隔异常 (&gt;60s) -&gt; 进程被挂起 -&gt; 立即重连</td>
+</tr>
+<tr>
+<td><strong>Liveness Timer</strong></td>
+<td>SSETransport</td>
+<td>45 秒无任何帧 (含注释/keepalive) -&gt; 视为连接死亡</td>
+</tr>
+<tr>
+<td><strong>优雅退出</strong></td>
+<td>HybridTransport.close</td>
+<td>3 秒宽限期让剩余队列 flush，然后关闭 uploader</td>
+</tr>
+<tr>
+<td><strong>背压控制</strong></td>
+<td>SerialBatchEventUploader</td>
+<td>队列满时 <code>enqueue()</code> 返回 Promise 阻塞调用者</td>
+</tr>
+<tr>
+<td><strong>Retry-After 支持</strong></td>
+<td>RetryableError.retryAfterMs</td>
+<td>服务器指定的重试延迟替代指数退避，仍加抖动</td>
+</tr>
+<tr>
+<td><strong>Exponential Backoff + Jitter</strong></td>
+<td>所有 transport 重连</td>
+<td>base * 2^n (capped) + 25% 随机抖动</td>
+</tr>
+<tr>
+<td><strong>Permanent Close Codes</strong></td>
+<td>WS: {1002, 4001, 4003}; SSE: {401, 403, 404}</td>
+<td>立即停止重连，不浪费预算</td>
+</tr>
+<tr>
+<td><strong>Cookie/Bearer 切换</strong></td>
+<td>SSETransport auth headers</td>
+<td>当 Cookie auth 存在时删除 Authorization header，避免混淆</td>
+</tr>
+</tbody></table>
+</body>
+</html>

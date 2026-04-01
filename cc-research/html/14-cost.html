@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>14-cost</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1>Claude Code 成本与资源度量详细分析</h1>
+<blockquote>
+<p>源码版本: 2026-04 主干 | 分析日期: 2026-04-01</p>
+</blockquote>
+<hr>
+<h2>目录</h2>
+<ul>
+<li><a href="#1-%E6%88%90%E6%9C%AC%E8%BF%BD%E8%B8%AA%E6%9E%B6%E6%9E%84">1. 成本追踪架构</a><ul>
+<li><a href="#11-%E6%A8%A1%E5%9D%97%E6%80%BB%E8%A7%88">1.1 模块总览</a></li>
+<li><a href="#12-%E6%95%B0%E6%8D%AE%E6%B5%81-ascii-%E5%9B%BE">1.2 数据流 ASCII 图</a></li>
+<li><a href="#13-%E6%A0%B8%E5%BF%83%E7%8A%B6%E6%80%81%E5%AD%97%E6%AE%B5">1.3 核心状态字段</a></li>
+</ul>
+</li>
+<li><a href="#2-token-%E8%AE%A1%E6%95%B0%E6%96%B9%E5%BC%8F">2. Token 计数方式</a><ul>
+<li><a href="#21-api-%E5%93%8D%E5%BA%94-usage-%E7%BB%93%E6%9E%84">2.1 API 响应 Usage 结构</a></li>
+<li><a href="#22-%E4%B8%8A%E4%B8%8B%E6%96%87%E7%AA%97%E5%8F%A3-token-%E8%AE%A1%E7%AE%97">2.2 上下文窗口 Token 计算</a></li>
+<li><a href="#23-%E5%B8%A6%E4%BC%B0%E7%AE%97%E7%9A%84-token-%E8%AE%A1%E6%95%B0">2.3 带估算的 Token 计数</a></li>
+<li><a href="#24-%E8%BE%85%E5%8A%A9-token-%E5%87%BD%E6%95%B0">2.4 辅助 Token 函数</a></li>
+</ul>
+</li>
+<li><a href="#3-%E6%A8%A1%E5%9E%8B%E5%AE%9A%E4%BB%B7%E6%9C%BA%E5%88%B6">3. 模型定价机制</a><ul>
+<li><a href="#31-%E5%AE%9A%E4%BB%B7%E5%B1%82%E7%BA%A7%E5%B8%B8%E9%87%8F%E8%A1%A8">3.1 定价层级常量表</a></li>
+<li><a href="#32-%E6%A8%A1%E5%9E%8B%E5%88%B0%E5%B1%82%E7%BA%A7%E6%98%A0%E5%B0%84">3.2 模型到层级映射</a></li>
+<li><a href="#33-usd-%E6%88%90%E6%9C%AC%E8%AE%A1%E7%AE%97%E5%85%AC%E5%BC%8F">3.3 USD 成本计算公式</a></li>
+<li><a href="#34-%E6%9C%AA%E7%9F%A5%E6%A8%A1%E5%9E%8B%E5%9B%9E%E9%80%80%E9%80%BB%E8%BE%91">3.4 未知模型回退逻辑</a></li>
+</ul>
+</li>
+<li><a href="#4-%E4%B8%8A%E4%B8%8B%E6%96%87%E7%AA%97%E5%8F%A3%E4%B8%8E%E8%BE%93%E5%87%BA%E9%99%90%E5%88%B6">4. 上下文窗口与输出限制</a><ul>
+<li><a href="#41-%E4%B8%8A%E4%B8%8B%E6%96%87%E7%AA%97%E5%8F%A3%E5%A4%A7%E5%B0%8F">4.1 上下文窗口大小</a></li>
+<li><a href="#42-%E6%9C%80%E5%A4%A7%E8%BE%93%E5%87%BA-token-%E9%99%90%E5%88%B6">4.2 最大输出 Token 限制</a></li>
+<li><a href="#43-%E4%B8%8A%E4%B8%8B%E6%96%87%E7%99%BE%E5%88%86%E6%AF%94%E8%AE%A1%E7%AE%97">4.3 上下文百分比计算</a></li>
+</ul>
+</li>
+<li><a href="#5-%E6%88%90%E6%9C%AC%E9%A2%84%E7%AE%97%E6%8C%81%E4%B9%85%E5%8C%96%E4%B8%8E%E4%BC%9A%E8%AF%9D%E6%81%A2%E5%A4%8D">5. 成本预算、持久化与会话恢复</a><ul>
+<li><a href="#51-storedcoststate-%E7%BB%93%E6%9E%84">5.1 StoredCostState 结构</a></li>
+<li><a href="#52-%E4%BC%9A%E8%AF%9D%E4%BF%9D%E5%AD%98%E4%B8%8E%E6%81%A2%E5%A4%8D%E6%B5%81%E7%A8%8B">5.2 会话保存与恢复流程</a></li>
+<li><a href="#53-advisor-%E5%AD%90%E6%9F%A5%E8%AF%A2%E6%88%90%E6%9C%AC%E7%B4%AF%E8%AE%A1">5.3 Advisor 子查询成本累计</a></li>
+</ul>
+</li>
+<li><a href="#6-%E7%94%A8%E9%87%8F%E6%8A%A5%E5%91%8A%E4%B8%8E%E5%B1%95%E7%A4%BA">6. 用量报告与展示</a><ul>
+<li><a href="#61-%E8%AE%A1%E8%B4%B9%E8%AE%BF%E9%97%AE%E6%9D%83%E9%99%90%E5%88%A4%E6%96%AD">6.1 计费访问权限判断</a></li>
+<li><a href="#62-%E6%88%90%E6%9C%AC%E6%A0%BC%E5%BC%8F%E5%8C%96%E8%BE%93%E5%87%BA">6.2 成本格式化输出</a></li>
+<li><a href="#63-%E9%80%80%E5%87%BA%E6%97%B6-hook">6.3 退出时 Hook</a></li>
+<li><a href="#64-opentelemetry-%E8%AE%A1%E6%95%B0%E5%99%A8">6.4 OpenTelemetry 计数器</a></li>
+</ul>
+</li>
+<li><a href="#7-%E5%85%B3%E9%94%AE%E8%AE%BE%E8%AE%A1%E6%A8%A1%E5%BC%8F%E6%80%BB%E7%BB%93">7. 关键设计模式总结</a></li>
+</ul>
+<hr>
+<h2>1. 成本追踪架构</h2>
+<h3>1.1 模块总览</h3>
+<table>
+<thead>
+<tr>
+<th>源文件</th>
+<th>职责</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>src/cost-tracker.ts</code></td>
+<td>成本追踪主模块: 累加、格式化、持久化、恢复</td>
+</tr>
+<tr>
+<td><code>src/costHook.ts</code></td>
+<td>React Hook, 进程退出时输出成本摘要</td>
+</tr>
+<tr>
+<td><code>src/utils/modelCost.ts</code></td>
+<td>模型定价映射与 USD 计算</td>
+</tr>
+<tr>
+<td><code>src/utils/tokens.ts</code></td>
+<td>Token 计数工具: API Usage 提取、估算、阈值判断</td>
+</tr>
+<tr>
+<td><code>src/utils/context.ts</code></td>
+<td>上下文窗口大小、最大输出 Token 限制</td>
+</tr>
+<tr>
+<td><code>src/utils/billing.ts</code></td>
+<td>计费访问权限判断(Console / Claude.ai)</td>
+</tr>
+<tr>
+<td><code>src/bootstrap/state.ts</code></td>
+<td>全局可变状态: 成本累计、Token 计数器、模型用量</td>
+</tr>
+</tbody></table>
+<h3>1.2 数据流 ASCII 图</h3>
+<pre><code>API Response (BetaUsage)
+        |
+        v
++-------------------+     +------------------+
+| calculateUSDCost  |&lt;----| MODEL_COSTS map  |   src/utils/modelCost.ts
+|  (modelCost.ts)   |     | (per-Mtok 定价)  |
++-------------------+     +------------------+
+        |
+        v
++---------------------------+
+| addToTotalSessionCost()   |     src/cost-tracker.ts
+|  - addToTotalModelUsage() |
+|  - addToTotalCostState()  |---&gt; STATE.totalCostUSD    (bootstrap/state.ts)
+|  - costCounter.add()      |---&gt; OpenTelemetry metrics
+|  - tokenCounter.add()     |---&gt; OpenTelemetry metrics
+|  - advisor recursion      |
++---------------------------+
+        |
+        v
++---------------------------+
+| saveCurrentSessionCosts() |---&gt; projectConfig (on disk)
+| restoreCostStateForSession|&lt;--- projectConfig (on startup)
++---------------------------+
+        |
+        v
++---------------------------+
+| formatTotalCost()         |---&gt; Terminal 输出 (process exit)
+| useCostSummary() Hook     |
++---------------------------+
+</code></pre>
+<h3>1.3 核心状态字段</h3>
+<blockquote>
+<p>源文件: <code>src/bootstrap/state.ts</code></p>
+</blockquote>
+<p>全局 <code>STATE</code> 对象中的成本相关字段:</p>
+<pre><code class="language-typescript">// bootstrap/state.ts (精简)
+interface BootstrapState {
+  totalCostUSD: number                         // 累计 USD 成本
+  totalAPIDuration: number                     // API 总耗时 (ms)
+  totalAPIDurationWithoutRetries: number        // 不含重试的 API 耗时
+  totalToolDuration: number                    // 工具执行总耗时
+  totalLinesAdded: number                      // 代码新增行数
+  totalLinesRemoved: number                    // 代码删除行数
+  hasUnknownModelCost: boolean                 // 是否遇到未知定价模型
+  modelUsage: { [modelName: string]: ModelUsage } // 按模型分类用量
+  costCounter: AttributedCounter | null        // OTel 成本计数器
+  tokenCounter: AttributedCounter | null       // OTel Token 计数器
+}
+</code></pre>
+<p><code>ModelUsage</code> 类型 (引自 <code>src/bootstrap/state.ts</code> import):</p>
+<pre><code class="language-typescript">type ModelUsage = {
+  inputTokens: number
+  outputTokens: number
+  cacheReadInputTokens: number
+  cacheCreationInputTokens: number
+  webSearchRequests: number
+  costUSD: number
+  contextWindow: number
+  maxOutputTokens: number
+}
+</code></pre>
+<hr>
+<h2>2. Token 计数方式</h2>
+<blockquote>
+<p>源文件: <code>src/utils/tokens.ts</code></p>
+</blockquote>
+<h3>2.1 API 响应 Usage 结构</h3>
+<p>Claude Code 使用 Anthropic SDK 的 <code>BetaUsage</code> 类型:</p>
+<pre><code class="language-typescript">// @anthropic-ai/sdk BetaUsage (简化)
+type Usage = {
+  input_tokens: number
+  output_tokens: number
+  cache_read_input_tokens?: number
+  cache_creation_input_tokens?: number
+  server_tool_use?: { web_search_requests?: number }
+  speed?: &#39;fast&#39; | &#39;normal&#39;    // Opus 4.6 fast mode 标记
+  iterations?: Array&lt;{         // 服务端工具循环迭代
+    input_tokens: number
+    output_tokens: number
+  }&gt;
+}
+</code></pre>
+<p><code>getTokenUsage(message)</code> 从消息中提取真实 (非合成) Usage:</p>
+<pre><code>伪代码:
+  if message.type == &#39;assistant&#39;
+     &amp;&amp; message.usage exists
+     &amp;&amp; NOT synthetic message (SYNTHETIC_MESSAGES set)
+     &amp;&amp; NOT synthetic model (SYNTHETIC_MODEL)
+  then return message.usage
+  else return undefined
+</code></pre>
+<h3>2.2 上下文窗口 Token 计算</h3>
+<p><code>getTokenCountFromUsage(usage)</code> -- 从单次 API 响应计算总上下文:</p>
+<pre><code>total = input_tokens
+      + cache_creation_input_tokens
+      + cache_read_input_tokens
+      + output_tokens
+</code></pre>
+<p><code>finalContextTokensFromLastResponse(messages)</code> -- 用于 task_budget.remaining 计算:</p>
+<pre><code>伪代码:
+  从后向前找到最后一条有 usage 的 assistant 消息
+  if usage.iterations 存在且非空:
+    last = iterations 末尾元素
+    return last.input_tokens + last.output_tokens
+  else:
+    // 无 server tool loop, top-level usage 即 final window
+    return usage.input_tokens + usage.output_tokens   // 不含 cache tokens
+</code></pre>
+<p>此函数与服务端 <code>renderer.py:292 calculate_context_tokens</code> 对齐, 用于跨压缩边界的预算递减。</p>
+<h3>2.3 带估算的 Token 计数</h3>
+<p><code>tokenCountWithEstimation(messages)</code> -- 上下文窗口大小的<strong>标准度量函数</strong>:</p>
+<pre><code>伪代码:
+  从后向前遍历 messages
+  找到最后一条有 usage 的 assistant 消息 (index = i)
+
+  // 处理并行 tool_use 分裂:
+  // 同一 API 响应的多个 content block 被拆为多条 assistant 记录
+  // 消息数组形如:
+  //   [..., assistant(id=A), user(result), assistant(id=A), user(result), ...]
+  // 如果停在最后一条 id=A, 会漏掉之前插入的 tool_result
+  responseId = getAssistantMessageId(message)
+  回退到同 responseId 的最早 assistant 记录 (更新 index = i)
+
+  return getTokenCountFromUsage(usage)
+       + roughTokenCountEstimationForMessages(messages[i+1:])
+</code></pre>
+<p>此函数用于所有阈值判断 (自动压缩、会话记忆初始化等), 避免了累计计数的重复计算问题。</p>
+<h3>2.4 辅助 Token 函数</h3>
+<table>
+<thead>
+<tr>
+<th>函数</th>
+<th>用途</th>
+<th>返回值</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>tokenCountFromLastAPIResponse()</code></td>
+<td>最后 API 响应的完整 token count</td>
+<td><code>number</code></td>
+</tr>
+<tr>
+<td><code>messageTokenCountFromLastAPIResponse()</code></td>
+<td>仅最后响应的 output_tokens</td>
+<td><code>number</code></td>
+</tr>
+<tr>
+<td><code>getCurrentUsage()</code></td>
+<td>最后响应的 input/output/cache 分类</td>
+<td><code>{input_tokens, output_tokens, cache_*} | null</code></td>
+</tr>
+<tr>
+<td><code>doesMostRecentAssistantMessageExceed200k()</code></td>
+<td>最后消息是否超 200k token</td>
+<td><code>boolean</code></td>
+</tr>
+<tr>
+<td><code>getAssistantMessageContentLength()</code></td>
+<td>字符级内容长度 (chars / 4 ~ tokens)</td>
+<td><code>number</code></td>
+</tr>
+</tbody></table>
+<p><code>getAssistantMessageContentLength</code> 计算内容包括: text、thinking、redacted_thinking data、tool_use input JSON, 排除 signature_delta。</p>
+<hr>
+<h2>3. 模型定价机制</h2>
+<blockquote>
+<p>源文件: <code>src/utils/modelCost.ts</code></p>
+</blockquote>
+<h3>3.1 定价层级常量表</h3>
+<pre><code class="language-typescript">export type ModelCosts = {
+  inputTokens: number           // 每百万输入 token 美元价格
+  outputTokens: number          // 每百万输出 token 美元价格
+  promptCacheWriteTokens: number // 每百万缓存写入 token 价格
+  promptCacheReadTokens: number  // 每百万缓存读取 token 价格
+  webSearchRequests: number      // 每次网页搜索美元价格
+}
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>常量名</th>
+<th>input/Mtok</th>
+<th>output/Mtok</th>
+<th>cacheWrite/Mtok</th>
+<th>cacheRead/Mtok</th>
+<th>webSearch</th>
+<th>适用模型</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>COST_TIER_3_15</code></td>
+<td>$3</td>
+<td>$15</td>
+<td>$3.75</td>
+<td>$0.30</td>
+<td>$0.01</td>
+<td>Sonnet 3.5v2 / 3.7 / 4 / 4.5 / 4.6</td>
+</tr>
+<tr>
+<td><code>COST_TIER_15_75</code></td>
+<td>$15</td>
+<td>$75</td>
+<td>$18.75</td>
+<td>$1.50</td>
+<td>$0.01</td>
+<td>Opus 4 / 4.1</td>
+</tr>
+<tr>
+<td><code>COST_TIER_5_25</code></td>
+<td>$5</td>
+<td>$25</td>
+<td>$6.25</td>
+<td>$0.50</td>
+<td>$0.01</td>
+<td>Opus 4.5 / 4.6 (normal)</td>
+</tr>
+<tr>
+<td><code>COST_TIER_30_150</code></td>
+<td>$30</td>
+<td>$150</td>
+<td>$37.50</td>
+<td>$3.00</td>
+<td>$0.01</td>
+<td>Opus 4.6 (fast mode)</td>
+</tr>
+<tr>
+<td><code>COST_HAIKU_35</code></td>
+<td>$0.80</td>
+<td>$4</td>
+<td>$1.00</td>
+<td>$0.08</td>
+<td>$0.01</td>
+<td>Haiku 3.5</td>
+</tr>
+<tr>
+<td><code>COST_HAIKU_45</code></td>
+<td>$1</td>
+<td>$5</td>
+<td>$1.25</td>
+<td>$0.10</td>
+<td>$0.01</td>
+<td>Haiku 4.5</td>
+</tr>
+</tbody></table>
+<h3>3.2 模型到层级映射</h3>
+<blockquote>
+<p>源文件: <code>src/utils/modelCost.ts</code> L104-126</p>
+</blockquote>
+<pre><code class="language-typescript">export const MODEL_COSTS: Record&lt;ModelShortName, ModelCosts&gt; = {
+  // Haiku
+  [firstPartyNameToCanonical(CLAUDE_3_5_HAIKU_CONFIG.firstParty)]:     COST_HAIKU_35,
+  [firstPartyNameToCanonical(CLAUDE_HAIKU_4_5_CONFIG.firstParty)]:     COST_HAIKU_45,
+  // Sonnet (全部 $3/$15)
+  [firstPartyNameToCanonical(CLAUDE_3_5_V2_SONNET_CONFIG.firstParty)]: COST_TIER_3_15,
+  [firstPartyNameToCanonical(CLAUDE_3_7_SONNET_CONFIG.firstParty)]:    COST_TIER_3_15,
+  [firstPartyNameToCanonical(CLAUDE_SONNET_4_CONFIG.firstParty)]:      COST_TIER_3_15,
+  [firstPartyNameToCanonical(CLAUDE_SONNET_4_5_CONFIG.firstParty)]:    COST_TIER_3_15,
+  [firstPartyNameToCanonical(CLAUDE_SONNET_4_6_CONFIG.firstParty)]:    COST_TIER_3_15,
+  // Opus
+  [firstPartyNameToCanonical(CLAUDE_OPUS_4_CONFIG.firstParty)]:        COST_TIER_15_75,
+  [firstPartyNameToCanonical(CLAUDE_OPUS_4_1_CONFIG.firstParty)]:      COST_TIER_15_75,
+  [firstPartyNameToCanonical(CLAUDE_OPUS_4_5_CONFIG.firstParty)]:      COST_TIER_5_25,
+  [firstPartyNameToCanonical(CLAUDE_OPUS_4_6_CONFIG.firstParty)]:      COST_TIER_5_25,
+}
+</code></pre>
+<p>Opus 4.6 特殊逻辑: <code>getOpus46CostTier(fastMode)</code> -- 当 <code>isFastModeEnabled() &amp;&amp; fastMode</code> 时返回 <code>COST_TIER_30_150</code>, 否则 <code>COST_TIER_5_25</code>。</p>
+<h3>3.3 USD 成本计算公式</h3>
+<blockquote>
+<p>源文件: <code>src/utils/modelCost.ts</code> L131-142</p>
+</blockquote>
+<pre><code class="language-typescript">function tokensToUSDCost(modelCosts: ModelCosts, usage: Usage): number {
+  return (
+    (usage.input_tokens / 1_000_000) * modelCosts.inputTokens +
+    (usage.output_tokens / 1_000_000) * modelCosts.outputTokens +
+    ((usage.cache_read_input_tokens ?? 0) / 1_000_000) *
+      modelCosts.promptCacheReadTokens +
+    ((usage.cache_creation_input_tokens ?? 0) / 1_000_000) *
+      modelCosts.promptCacheWriteTokens +
+    (usage.server_tool_use?.web_search_requests ?? 0) *
+      modelCosts.webSearchRequests
+  )
+}
+</code></pre>
+<p>公开接口:</p>
+<pre><code class="language-typescript">// 完整 Usage 对象 -&gt; USD
+export function calculateUSDCost(resolvedModel: string, usage: Usage): number
+
+// 原始 token 计数 -&gt; USD (用于分类器等侧查询)
+export function calculateCostFromTokens(model: string, tokens: {
+  inputTokens: number; outputTokens: number;
+  cacheReadInputTokens: number; cacheCreationInputTokens: number;
+}): number
+
+// 格式化定价字符串, 如 &quot;$3/$15 per Mtok&quot;
+export function formatModelPricing(costs: ModelCosts): string
+
+// 按模型名获取定价字符串
+export function getModelPricingString(model: string): string | undefined
+</code></pre>
+<h3>3.4 未知模型回退逻辑</h3>
+<blockquote>
+<p>源文件: <code>src/utils/modelCost.ts</code> L144-164</p>
+</blockquote>
+<pre><code>伪代码 getModelCosts(model, usage):
+  shortName = getCanonicalName(model)
+
+  if shortName is Opus 4.6:
+    return usage.speed == &#39;fast&#39; ? COST_TIER_30_150 : COST_TIER_5_25
+
+  costs = MODEL_COSTS[shortName]
+  if costs 存在:
+    return costs
+
+  // 未知模型:
+  logEvent(&#39;tengu_unknown_model_cost&#39;, { model, shortName })
+  setHasUnknownModelCost()   // 标记, 最终报告时会显示警告
+  // 回退: 使用默认主循环模型的定价, 或 COST_TIER_5_25
+  return MODEL_COSTS[getCanonicalName(getDefaultMainLoopModelSetting())]
+      ?? DEFAULT_UNKNOWN_MODEL_COST  // COST_TIER_5_25
+</code></pre>
+<hr>
+<h2>4. 上下文窗口与输出限制</h2>
+<blockquote>
+<p>源文件: <code>src/utils/context.ts</code></p>
+</blockquote>
+<h3>4.1 上下文窗口大小</h3>
+<table>
+<thead>
+<tr>
+<th>常量</th>
+<th>值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>MODEL_CONTEXT_WINDOW_DEFAULT</code></td>
+<td>200,000</td>
+<td>默认上下文窗口</td>
+</tr>
+<tr>
+<td>1M context</td>
+<td>1,000,000</td>
+<td>通过 <code>[1m]</code> 后缀、beta header 或实验启用</td>
+</tr>
+</tbody></table>
+<p><code>getContextWindowForModel(model, betas?)</code> 优先级链:</p>
+<pre><code>1. env CLAUDE_CODE_MAX_CONTEXT_TOKENS (仅 ant 用户, parseInt 后有效)
+2. model 名称含 [1m] 后缀 -&gt; 1,000,000
+3. model capability cap.max_input_tokens (&gt;= 100k 时采用)
+   - 如 cap &gt; 200k 但 1M 被禁用 -&gt; 回退 200k
+4. betas 含 CONTEXT_1M_BETA_HEADER &amp;&amp; modelSupports1M(model) -&gt; 1,000,000
+5. Sonnet 4.6 coral_reef 实验 (clientDataCache[&#39;coral_reef_sonnet&#39;] === &#39;true&#39;)
+6. ant 内部模型配置 (resolveAntModel)
+7. 回退 MODEL_CONTEXT_WINDOW_DEFAULT = 200,000
+</code></pre>
+<p><code>modelSupports1M(model)</code> 白名单: canonical name 包含 <code>claude-sonnet-4</code> 或 <code>opus-4-6</code>。</p>
+<p>可通过 <code>CLAUDE_CODE_DISABLE_1M_CONTEXT</code> 环境变量全局禁用 1M (HIPAA 合规需求)。</p>
+<h3>4.2 最大输出 Token 限制</h3>
+<table>
+<thead>
+<tr>
+<th>常量</th>
+<th>值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>MAX_OUTPUT_TOKENS_DEFAULT</code></td>
+<td>32,000</td>
+<td>默认最大输出</td>
+</tr>
+<tr>
+<td><code>MAX_OUTPUT_TOKENS_UPPER_LIMIT</code></td>
+<td>64,000</td>
+<td>默认上限</td>
+</tr>
+<tr>
+<td><code>CAPPED_DEFAULT_MAX_TOKENS</code></td>
+<td>8,000</td>
+<td>槽位预留优化默认 (BQ p99 output = 4,911)</td>
+</tr>
+<tr>
+<td><code>ESCALATED_MAX_TOKENS</code></td>
+<td>64,000</td>
+<td>命中 8k 上限后的重试值</td>
+</tr>
+<tr>
+<td><code>COMPACT_MAX_OUTPUT_TOKENS</code></td>
+<td>20,000</td>
+<td>压缩操作的最大输出</td>
+</tr>
+</tbody></table>
+<p><code>getModelMaxOutputTokens(model)</code> 返回 <code>{ default, upperLimit }</code>:</p>
+<table>
+<thead>
+<tr>
+<th>模型系列</th>
+<th>default</th>
+<th>upperLimit</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Opus 4.6</td>
+<td>64,000</td>
+<td>128,000</td>
+</tr>
+<tr>
+<td>Sonnet 4.6</td>
+<td>32,000</td>
+<td>128,000</td>
+</tr>
+<tr>
+<td>Opus 4.5 / Sonnet 4.* / Haiku 4.*</td>
+<td>32,000</td>
+<td>64,000</td>
+</tr>
+<tr>
+<td>Opus 4 / 4.1</td>
+<td>32,000</td>
+<td>32,000</td>
+</tr>
+<tr>
+<td>Claude 3.7 Sonnet</td>
+<td>32,000</td>
+<td>64,000</td>
+</tr>
+<tr>
+<td>Claude 3.5 Sonnet / Haiku</td>
+<td>8,192</td>
+<td>8,192</td>
+</tr>
+<tr>
+<td>Claude 3 Opus</td>
+<td>4,096</td>
+<td>4,096</td>
+</tr>
+</tbody></table>
+<p>如果模型的 capability <code>cap.max_tokens &gt;= 4096</code>, 则用 cap 值覆盖 upperLimit, 并将 default 夹紧。</p>
+<p><code>getMaxThinkingTokensForModel(model)</code> = <code>upperLimit - 1</code> (已标记为 deprecated, 新模型使用自适应 thinking)。</p>
+<h3>4.3 上下文百分比计算</h3>
+<pre><code class="language-typescript">export function calculateContextPercentages(
+  currentUsage: {
+    input_tokens: number
+    cache_creation_input_tokens: number
+    cache_read_input_tokens: number
+  } | null,
+  contextWindowSize: number,
+): { used: number | null; remaining: number | null }
+</code></pre>
+<p>公式: <code>usedPct = round((input + cacheCreation + cacheRead) / contextWindow * 100)</code>, 夹紧到 <code>[0, 100]</code>。</p>
+<hr>
+<h2>5. 成本预算、持久化与会话恢复</h2>
+<blockquote>
+<p>源文件: <code>src/cost-tracker.ts</code></p>
+</blockquote>
+<h3>5.1 StoredCostState 结构</h3>
+<pre><code class="language-typescript">type StoredCostState = {
+  totalCostUSD: number
+  totalAPIDuration: number
+  totalAPIDurationWithoutRetries: number
+  totalToolDuration: number
+  totalLinesAdded: number
+  totalLinesRemoved: number
+  lastDuration: number | undefined
+  modelUsage: { [modelName: string]: ModelUsage } | undefined
+}
+</code></pre>
+<h3>5.2 会话保存与恢复流程</h3>
+<p><strong>保存</strong> (<code>saveCurrentSessionCosts</code>, 在进程退出时调用):</p>
+<pre><code>读取当前 STATE 中所有成本字段
+写入 projectConfig (磁盘文件):
+  lastCost, lastAPIDuration, lastAPIDurationWithoutRetries,
+  lastToolDuration, lastDuration,
+  lastLinesAdded, lastLinesRemoved,
+  lastTotalInputTokens, lastTotalOutputTokens,
+  lastTotalCacheCreationInputTokens, lastTotalCacheReadInputTokens,
+  lastTotalWebSearchRequests,
+  lastFpsAverage, lastFpsLow1Pct,
+  lastModelUsage (按模型分类, 不含 contextWindow/maxOutputTokens),
+  lastSessionId
+</code></pre>
+<p><strong>恢复</strong> (<code>restoreCostStateForSession(sessionId) -&gt; boolean</code>):</p>
+<pre><code>1. 读取 projectConfig
+2. 检查 projectConfig.lastSessionId === sessionId
+   - 不匹配 -&gt; return false
+3. 构建 StoredCostState:
+   - 从 projectConfig 字段恢复各计数
+   - 为 modelUsage 补充 contextWindow 和 maxOutputTokens
+4. 调用 setCostStateForRestore(data) 恢复 STATE
+5. return true
+</code></pre>
+<p><strong>读取</strong> (<code>getStoredSessionCosts(sessionId) -&gt; StoredCostState | undefined</code>):</p>
+<p>用于在调用 <code>saveCurrentSessionCosts()</code> 覆盖前先读取旧数据。</p>
+<h3>5.3 Advisor 子查询成本累计</h3>
+<blockquote>
+<p>源文件: <code>src/cost-tracker.ts</code> L278-323</p>
+</blockquote>
+<pre><code class="language-typescript">export function addToTotalSessionCost(cost, usage, model): number {
+  // 1. 累加主查询的成本和 Token 到 modelUsage
+  const modelUsage = addToTotalModelUsage(cost, usage, model)
+  addToTotalCostState(cost, modelUsage, model)
+
+  // 2. 更新 OTel 计数器
+  const attrs = isFastModeEnabled() &amp;&amp; usage.speed === &#39;fast&#39;
+    ? { model, speed: &#39;fast&#39; }
+    : { model }
+  getCostCounter()?.add(cost, attrs)
+  getTokenCounter()?.add(usage.input_tokens,  { ...attrs, type: &#39;input&#39; })
+  getTokenCounter()?.add(usage.output_tokens, { ...attrs, type: &#39;output&#39; })
+  getTokenCounter()?.add(usage.cache_read_input_tokens ?? 0,
+                         { ...attrs, type: &#39;cacheRead&#39; })
+  getTokenCounter()?.add(usage.cache_creation_input_tokens ?? 0,
+                         { ...attrs, type: &#39;cacheCreation&#39; })
+
+  // 3. 递归累加 advisor 子查询成本
+  let totalCost = cost
+  for (const advisorUsage of getAdvisorUsage(usage)) {
+    const advisorCost = calculateUSDCost(advisorUsage.model, advisorUsage)
+    logEvent(&#39;tengu_advisor_tool_token_usage&#39;, {
+      advisor_model: advisorUsage.model,
+      input_tokens, output_tokens, cache_*, cost_usd_micros
+    })
+    totalCost += addToTotalSessionCost(advisorCost, advisorUsage, advisorUsage.model)
+  }
+  return totalCost
+}
+</code></pre>
+<p>Advisor 是服务端工具 (如 web search) 可能使用的子模型, 其 token 用量嵌套在主响应的 usage 中。递归处理保证了完整的成本计入。</p>
+<hr>
+<h2>6. 用量报告与展示</h2>
+<h3>6.1 计费访问权限判断</h3>
+<blockquote>
+<p>源文件: <code>src/utils/billing.ts</code></p>
+</blockquote>
+<p><strong>Console 用户</strong> <code>hasConsoleBillingAccess()</code>:</p>
+<pre><code>if env DISABLE_COST_WARNINGS -&gt; false
+if isClaudeAISubscriber()    -&gt; false  (走 Claude.ai 路径)
+if 无 authToken 且无 API key -&gt; false
+if 无 orgRole 或 workspaceRole -&gt; false  (grandfathered user)
+return orgRole in [&#39;admin&#39;,&#39;billing&#39;]
+    || workspaceRole in [&#39;workspace_admin&#39;,&#39;workspace_billing&#39;]
+</code></pre>
+<p><strong>Claude.ai 用户</strong> <code>hasClaudeAiBillingAccess()</code>:</p>
+<pre><code>if 非 Claude.ai 订阅者 -&gt; false
+if subscriptionType == &#39;max&#39; || &#39;pro&#39; -&gt; true  (个人用户)
+return orgRole in [&#39;admin&#39;,&#39;billing&#39;,&#39;owner&#39;,&#39;primary_owner&#39;]
+</code></pre>
+<h3>6.2 成本格式化输出</h3>
+<p><code>formatCost(cost, maxDecimalPlaces = 4)</code>:</p>
+<ul>
+<li>cost &gt; $0.50: 保留 2 位小数 (如 <code>$1.23</code>)</li>
+<li>cost &lt;= $0.50: 保留 maxDecimalPlaces 位 (如 <code>$0.0034</code>)</li>
+</ul>
+<p><code>formatModelUsage()</code> 按 canonical short name 聚合输出:</p>
+<pre><code>Usage by model:
+   claude-sonnet-4-6:  12.3k input, 5.6k output, 8.9k cache read, 1.2k cache write ($0.1234)
+     claude-opus-4-6:  3.4k input, 1.2k output, 0 cache read, 0 cache write ($0.5678)
+</code></pre>
+<p>Web search 请求数仅在 &gt; 0 时显示。</p>
+<p><code>formatTotalCost()</code> 完整输出 (chalk.dim 灰色):</p>
+<pre><code>Total cost:            $0.69
+Total duration (API):  2m 34s
+Total duration (wall): 5m 12s
+Total code changes:    42 lines added, 7 lines removed
+Usage by model:
+   ...
+</code></pre>
+<p>当 <code>hasUnknownModelCost()</code> 为 true 时追加: <code>(costs may be inaccurate due to usage of unknown models)</code></p>
+<h3>6.3 退出时 Hook</h3>
+<blockquote>
+<p>源文件: <code>src/costHook.ts</code></p>
+</blockquote>
+<pre><code class="language-typescript">export function useCostSummary(getFpsMetrics?: () =&gt; FpsMetrics | undefined): void {
+  useEffect(() =&gt; {
+    const f = () =&gt; {
+      if (hasConsoleBillingAccess()) {
+        process.stdout.write(&#39;\n&#39; + formatTotalCost() + &#39;\n&#39;)
+      }
+      saveCurrentSessionCosts(getFpsMetrics?.())
+    }
+    process.on(&#39;exit&#39;, f)
+    return () =&gt; { process.off(&#39;exit&#39;, f) }
+  }, [])
+}
+</code></pre>
+<p>关键行为: 无论是否有计费权限, <strong>都会在退出时保存会话成本</strong>。FPS 指标也一并写入, 用于性能分析。</p>
+<h3>6.4 OpenTelemetry 计数器</h3>
+<p>在 <code>addToTotalSessionCost()</code> 中, 每次 API 调用后更新:</p>
+<table>
+<thead>
+<tr>
+<th>计数器</th>
+<th>属性</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>costCounter</code></td>
+<td><code>{ model, speed? }</code></td>
+<td>累加 USD 成本</td>
+</tr>
+<tr>
+<td><code>tokenCounter</code></td>
+<td><code>{ model, speed?, type: &#39;input&#39; }</code></td>
+<td>累加输入 token</td>
+</tr>
+<tr>
+<td><code>tokenCounter</code></td>
+<td><code>{ model, speed?, type: &#39;output&#39; }</code></td>
+<td>累加输出 token</td>
+</tr>
+<tr>
+<td><code>tokenCounter</code></td>
+<td><code>{ model, speed?, type: &#39;cacheRead&#39; }</code></td>
+<td>累加缓存读取 token</td>
+</tr>
+<tr>
+<td><code>tokenCounter</code></td>
+<td><code>{ model, speed?, type: &#39;cacheCreation&#39; }</code></td>
+<td>累加缓存写入 token</td>
+</tr>
+</tbody></table>
+<p><code>speed: &#39;fast&#39;</code> 属性仅在 <code>isFastModeEnabled() &amp;&amp; usage.speed === &#39;fast&#39;</code> 时添加, 支持按速度维度的外部监控聚合。</p>
+<hr>
+<h2>7. 关键设计模式总结</h2>
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>说明</th>
+<th>源文件</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>集中式全局状态</strong></td>
+<td>所有成本数据存储在 <code>bootstrap/state.ts</code> 的单例 STATE 对象中, 通过纯函数 getter/setter 访问, 避免模块间直接耦合</td>
+<td><code>src/bootstrap/state.ts</code></td>
+</tr>
+<tr>
+<td><strong>按模型分类聚合</strong></td>
+<td><code>modelUsage</code> 字典以完整模型名为键累积, 在展示时通过 <code>getCanonicalName</code> 再归并到短名, 保证内部精度和外部可读性</td>
+<td><code>src/cost-tracker.ts</code> L188-226</td>
+</tr>
+<tr>
+<td><strong>递归 Advisor 累计</strong></td>
+<td><code>addToTotalSessionCost</code> 递归处理 advisor 子查询, 保证嵌套工具调用 (如 web search 的子模型) 成本不遗漏</td>
+<td><code>src/cost-tracker.ts</code> L303-322</td>
+</tr>
+<tr>
+<td><strong>会话持久化恢复</strong></td>
+<td>通过 projectConfig 文件保存/恢复会话成本, 以 <code>sessionId</code> 匹配, 支持跨进程的使用量连续统计</td>
+<td><code>src/cost-tracker.ts</code> L87-175</td>
+</tr>
+<tr>
+<td><strong>权限分层的展示控制</strong></td>
+<td>Console 用户按 org/workspace role 判断, Claude.ai 用户按订阅类型判断, 两条路径互不干扰</td>
+<td><code>src/utils/billing.ts</code></td>
+</tr>
+<tr>
+<td><strong>未知模型安全回退</strong></td>
+<td>未知模型不报错, 回退到默认定价层并标记 <code>hasUnknownModelCost</code>, 仅在最终报告中提示, 不阻断工作流</td>
+<td><code>src/utils/modelCost.ts</code> L157-173</td>
+</tr>
+<tr>
+<td><strong>Fast Mode 动态定价</strong></td>
+<td>Opus 4.6 根据<strong>每次响应</strong>的 <code>usage.speed</code> 动态选择定价层, 而非全局静态设置, 精确到单次调用</td>
+<td><code>src/utils/modelCost.ts</code> L94-99</td>
+</tr>
+<tr>
+<td><strong>并行 tool_use 分裂处理</strong></td>
+<td><code>tokenCountWithEstimation</code> 检测同一 API 响应被拆分为多条消息的情况, 回退到最早分裂点以包含所有中间 tool_result</td>
+<td><code>src/utils/tokens.ts</code> L226-261</td>
+</tr>
+<tr>
+<td><strong>React Hook 生命周期管理</strong></td>
+<td><code>useCostSummary</code> 在挂载时注册 process.exit 监听, 卸载时清理, 确保无论如何退出都保存数据</td>
+<td><code>src/costHook.ts</code></td>
+</tr>
+<tr>
+<td><strong>OTel 可观测性集成</strong></td>
+<td>成本和 Token 通过 <code>AttributedCounter</code> 接入 OpenTelemetry, 支持按模型/速度/token类型维度的外部监控和告警</td>
+<td><code>src/cost-tracker.ts</code> L291-301</td>
+</tr>
+</tbody></table>
+</body>
+</html>

@@ -1,0 +1,1222 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>09-mcp</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1>Claude Code MCP 系统详细分析</h1>
+<blockquote>
+<p>源码版本: 2026-04-01 快照
+核心目录: <code>src/services/mcp/</code></p>
+</blockquote>
+<hr>
+<h2>目录</h2>
+<ul>
+<li><a href="#1-%E6%9E%B6%E6%9E%84%E6%80%BB%E8%A7%88">1. 架构总览</a><ul>
+<li><a href="#11-ascii-%E6%9E%B6%E6%9E%84%E5%9B%BE">1.1 ASCII 架构图</a></li>
+<li><a href="#12-%E6%A8%A1%E5%9D%97%E6%96%87%E4%BB%B6%E6%B8%85%E5%8D%95">1.2 模块文件清单</a></li>
+<li><a href="#13-%E6%A0%B8%E5%BF%83%E8%AE%BE%E8%AE%A1%E7%90%86%E5%BF%B5">1.3 核心设计理念</a></li>
+</ul>
+</li>
+<li><a href="#2-mcp-%E9%85%8D%E7%BD%AE%E7%B1%BB%E5%9E%8B%E5%92%8C-scope">2. MCP 配置类型和 Scope</a><ul>
+<li><a href="#21-configscope-%E6%9E%9A%E4%B8%BE">2.1 ConfigScope 枚举</a></li>
+<li><a href="#22-transport-%E6%9E%9A%E4%B8%BE">2.2 Transport 枚举</a></li>
+<li><a href="#23-%E6%9C%8D%E5%8A%A1%E5%99%A8%E9%85%8D%E7%BD%AE-schema-%E5%AE%9A%E4%B9%89">2.3 服务器配置 Schema 定义</a></li>
+<li><a href="#24-scopedmcpserverconfig-%E6%89%A9%E5%B1%95%E7%B1%BB%E5%9E%8B">2.4 ScopedMcpServerConfig 扩展类型</a></li>
+<li><a href="#25-%E8%BF%9E%E6%8E%A5%E7%8A%B6%E6%80%81%E7%B1%BB%E5%9E%8B-mcpserverconnection">2.5 连接状态类型 (MCPServerConnection)</a></li>
+</ul>
+</li>
+<li><a href="#3-%E5%A4%9A-scope-%E9%85%8D%E7%BD%AE%E5%90%88%E5%B9%B6%E4%B8%8E%E5%8E%BB%E9%87%8D%E7%AE%97%E6%B3%95">3. 多 Scope 配置合并与去重算法</a><ul>
+<li><a href="#31-%E9%85%8D%E7%BD%AE%E6%9D%A5%E6%BA%90%E5%8A%A0%E8%BD%BD%E9%A1%BA%E5%BA%8F">3.1 配置来源加载顺序</a></li>
+<li><a href="#32-%E5%8E%BB%E9%87%8D%E7%AD%BE%E5%90%8D%E7%AE%97%E6%B3%95">3.2 去重签名算法</a></li>
+<li><a href="#33-plugin-%E5%8E%BB%E9%87%8D%E9%80%BB%E8%BE%91">3.3 Plugin 去重逻辑</a></li>
+<li><a href="#34-claudeai-connector-%E5%8E%BB%E9%87%8D%E9%80%BB%E8%BE%91">3.4 Claude.ai Connector 去重逻辑</a></li>
+<li><a href="#35-%E4%BC%81%E4%B8%9A%E7%AD%96%E7%95%A5%E8%BF%87%E6%BB%A4">3.5 企业策略过滤</a></li>
+</ul>
+</li>
+<li><a href="#4-transport-%E5%B1%82">4. Transport 层</a><ul>
+<li><a href="#41-stdio-transport">4.1 Stdio Transport</a></li>
+<li><a href="#42-sse-transport-mcp-sdk">4.2 SSE Transport (MCP SDK)</a></li>
+<li><a href="#43-streamable-http-transport">4.3 Streamable HTTP Transport</a></li>
+<li><a href="#44-websocket-transport">4.4 WebSocket Transport</a></li>
+<li><a href="#45-sdk-transport-%E8%BF%9B%E7%A8%8B%E5%86%85">4.5 SDK Transport (进程内)</a></li>
+<li><a href="#46-inprocess-transport">4.6 InProcess Transport</a></li>
+<li><a href="#47-claudeai-proxy-transport">4.7 Claude.ai Proxy Transport</a></li>
+<li><a href="#48-ide-transport-sse-ide--ws-ide">4.8 IDE Transport (SSE-IDE / WS-IDE)</a></li>
+</ul>
+</li>
+<li><a href="#5-%E8%BF%9E%E6%8E%A5%E7%94%9F%E5%91%BD%E5%91%A8%E6%9C%9F%E7%AE%A1%E7%90%86">5. 连接生命周期管理</a><ul>
+<li><a href="#51-%E8%BF%9E%E6%8E%A5%E6%B5%81%E7%A8%8B%E4%BC%AA%E4%BB%A3%E7%A0%81">5.1 连接流程伪代码</a></li>
+<li><a href="#52-%E6%89%B9%E9%87%8F%E8%BF%9E%E6%8E%A5%E7%AD%96%E7%95%A5">5.2 批量连接策略</a></li>
+<li><a href="#53-%E8%BF%9E%E6%8E%A5%E7%BC%93%E5%AD%98-memoize">5.3 连接缓存 (memoize)</a></li>
+<li><a href="#54-%E9%87%8D%E8%BF%9E%E4%B8%8E%E4%BC%9A%E8%AF%9D%E8%BF%87%E6%9C%9F">5.4 重连与会话过期</a></li>
+<li><a href="#55-%E8%B6%85%E6%97%B6%E4%B8%8E-liveness-%E9%85%8D%E7%BD%AE">5.5 超时与 Liveness 配置</a></li>
+</ul>
+</li>
+<li><a href="#6-oauth--xaa-%E8%AE%A4%E8%AF%81%E6%9C%BA%E5%88%B6">6. OAuth / XAA 认证机制</a><ul>
+<li><a href="#61-claudeauthprovider">6.1 ClaudeAuthProvider</a></li>
+<li><a href="#62-%E6%A0%87%E5%87%86-oauth-%E6%B5%81%E7%A8%8B">6.2 标准 OAuth 流程</a></li>
+<li><a href="#63-xaa-%E8%B7%A8%E5%BA%94%E7%94%A8%E8%AE%BF%E9%97%AE-sep-990">6.3 XAA 跨应用访问 (SEP-990)</a></li>
+<li><a href="#64-xaa-idp-%E7%99%BB%E5%BD%95%E4%B8%8E%E7%BC%93%E5%AD%98">6.4 XAA IdP 登录与缓存</a></li>
+<li><a href="#65-step-up-detection">6.5 Step-up Detection</a></li>
+</ul>
+</li>
+<li><a href="#7-mcp-%E5%B7%A5%E5%85%B7%E4%B8%8E%E5%86%85%E5%BB%BA%E5%B7%A5%E5%85%B7%E7%9A%84%E7%BB%9F%E4%B8%80">7. MCP 工具与内建工具的统一</a><ul>
+<li><a href="#71-%E5%B7%A5%E5%85%B7%E5%91%BD%E5%90%8D%E8%A7%84%E5%88%99">7.1 工具命名规则</a></li>
+<li><a href="#72-mcptool-%E5%8C%85%E8%A3%85">7.2 MCPTool 包装</a></li>
+<li><a href="#73-%E5%B7%A5%E5%85%B7%E8%B0%83%E7%94%A8%E4%B8%8E%E7%BB%93%E6%9E%9C%E5%A4%84%E7%90%86">7.3 工具调用与结果处理</a></li>
+<li><a href="#74-%E6%8F%8F%E8%BF%B0%E6%88%AA%E6%96%AD%E4%B8%8E%E5%AE%89%E5%85%A8%E6%B8%85%E7%90%86">7.4 描述截断与安全清理</a></li>
+</ul>
+</li>
+<li><a href="#8-registry-%E5%92%8C-channel-allowlist">8. Registry 和 Channel Allowlist</a><ul>
+<li><a href="#81-%E5%AE%98%E6%96%B9-mcp-registry">8.1 官方 MCP Registry</a></li>
+<li><a href="#82-channel-allowlist-%E6%9C%BA%E5%88%B6">8.2 Channel Allowlist 机制</a></li>
+<li><a href="#83-channel-gate-%E5%86%B3%E7%AD%96%E9%93%BE">8.3 Channel Gate 决策链</a></li>
+<li><a href="#84-channel-permission-relay">8.4 Channel Permission Relay</a></li>
+</ul>
+</li>
+<li><a href="#9-mcp-%E6%8C%87%E4%BB%A4%E6%B3%A8%E5%85%A5%E5%88%B0-system-prompt">9. MCP 指令注入到 System Prompt</a><ul>
+<li><a href="#91-server-instructions">9.1 Server Instructions</a></li>
+<li><a href="#92-mcp-skills">9.2 MCP Skills</a></li>
+<li><a href="#93-channel-notification-%E6%B6%88%E6%81%AF%E6%B3%A8%E5%85%A5">9.3 Channel Notification 消息注入</a></li>
+</ul>
+</li>
+<li><a href="#10-%E5%85%B3%E9%94%AE%E8%AE%BE%E8%AE%A1%E6%A8%A1%E5%BC%8F%E6%80%BB%E7%BB%93">10. 关键设计模式总结</a></li>
+</ul>
+<hr>
+<h2>1. 架构总览</h2>
+<h3>1.1 ASCII 架构图</h3>
+<pre><code>                        ┌─────────────────────────────────────────────┐
+                        │              Claude Code CLI                │
+                        │                                             │
+                        │  ┌─────────────────────────────────────┐    │
+                        │  │         AppState.mcp                │    │
+                        │  │  clients: MCPServerConnection[]     │    │
+                        │  │  tools:   Tool[]                    │    │
+                        │  │  commands: Command[]                │    │
+                        │  │  resources: Record&lt;string,          │    │
+                        │  │             ServerResource[]&gt;       │    │
+                        │  └───────────┬─────────────────────────┘    │
+                        │              │                               │
+                        │  ┌───────────▼──────────────┐               │
+                        │  │ useManageMCPConnections() │  (React hook)│
+                        │  │  - getAllMcpConfigs()      │               │
+                        │  │  - connectToServer()      │               │
+                        │  │  - channel gate           │               │
+                        │  └───────────┬──────────────┘               │
+                        │              │                               │
+                        └──────────────┼───────────────────────────────┘
+                                       │
+                 ┌─────────────────────┼──────────────────────┐
+                 │                     │                      │
+         ┌───────▼──────┐    ┌────────▼───────┐    ┌────────▼────────┐
+         │ config.ts     │    │  client.ts     │    │   auth.ts       │
+         │               │    │                │    │                 │
+         │ getAllMcp      │    │ connectTo      │    │ ClaudeAuth      │
+         │ Configs()     │    │ Server()       │    │ Provider        │
+         │               │    │                │    │                 │
+         │ Scope merge   │    │ Transport      │    │ OAuth +         │
+         │ Dedup         │    │ factory        │    │ XAA flow        │
+         │ Policy filter │    │ memoize cache  │    │                 │
+         └───────┬───────┘    └───────┬────────┘    └────────┬────────┘
+                 │                    │                       │
+    ┌────────────┼────────────────────┼───────────────────────┘
+    │            │                    │
+    ▼            ▼                    ▼
+┌────────┐ ┌─────────┐ ┌──────────┐ ┌────────┐ ┌────────┐ ┌──────────┐
+│ stdio  │ │   SSE   │ │   HTTP   │ │   WS   │ │  SDK   │ │claudeai- │
+│        │ │(MCP SDK)│ │Streamable│ │        │ │Control │ │ proxy    │
+└────────┘ └─────────┘ └──────────┘ └────────┘ └────────┘ └──────────┘
+</code></pre>
+<h3>1.2 模块文件清单</h3>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>职责</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>types.ts</code></td>
+<td>所有 Zod schema 和 TypeScript 类型定义</td>
+</tr>
+<tr>
+<td><code>config.ts</code></td>
+<td>多 scope 配置加载、合并、去重、策略过滤</td>
+</tr>
+<tr>
+<td><code>client.ts</code></td>
+<td>连接管理、transport 工厂、工具调用执行</td>
+</tr>
+<tr>
+<td><code>auth.ts</code></td>
+<td>ClaudeAuthProvider, OAuth 流程, token 管理</td>
+</tr>
+<tr>
+<td><code>xaa.ts</code></td>
+<td>XAA (Cross-App Access) RFC 8693/7523 实现</td>
+</tr>
+<tr>
+<td><code>xaaIdpLogin.ts</code></td>
+<td>IdP OIDC 登录, id_token 缓存</td>
+</tr>
+<tr>
+<td><code>normalization.ts</code></td>
+<td>服务器名到 API 兼容名的标准化</td>
+</tr>
+<tr>
+<td><code>mcpStringUtils.ts</code></td>
+<td>MCP 工具名解析/构建 (<code>mcp__server__tool</code>)</td>
+</tr>
+<tr>
+<td><code>envExpansion.ts</code></td>
+<td><code>${VAR}</code> / <code>${VAR:-default}</code> 环境变量展开</td>
+</tr>
+<tr>
+<td><code>headersHelper.ts</code></td>
+<td>动态 header 脚本执行</td>
+</tr>
+<tr>
+<td><code>channelAllowlist.ts</code></td>
+<td>GrowthBook 控制的 channel 白名单</td>
+</tr>
+<tr>
+<td><code>channelNotification.ts</code></td>
+<td>Channel 消息通知入队/gate 逻辑</td>
+</tr>
+<tr>
+<td><code>channelPermissions.ts</code></td>
+<td>Channel 权限中继 (permission relay)</td>
+</tr>
+<tr>
+<td><code>officialRegistry.ts</code></td>
+<td>Anthropic 官方 MCP Registry 预取</td>
+</tr>
+<tr>
+<td><code>claudeai.ts</code></td>
+<td>Claude.ai connector 配置拉取</td>
+</tr>
+<tr>
+<td><code>vscodeSdkMcp.ts</code></td>
+<td>VSCode IDE MCP 服务器通知桥接</td>
+</tr>
+<tr>
+<td><code>InProcessTransport.ts</code></td>
+<td>进程内 linked transport pair</td>
+</tr>
+<tr>
+<td><code>SdkControlTransport.ts</code></td>
+<td>SDK 控制消息桥接 transport</td>
+</tr>
+<tr>
+<td><code>elicitationHandler.ts</code></td>
+<td>MCP elicitation 请求处理</td>
+</tr>
+<tr>
+<td><code>oauthPort.ts</code></td>
+<td>OAuth 回调端口管理</td>
+</tr>
+<tr>
+<td><code>utils.ts</code></td>
+<td>日志安全 URL、项目 MCP 状态等工具函数</td>
+</tr>
+<tr>
+<td><code>useManageMCPConnections.ts</code></td>
+<td>React hook: 连接编排入口</td>
+</tr>
+</tbody></table>
+<h3>1.3 核心设计理念</h3>
+<ol>
+<li><strong>多 scope 配置合并</strong>: 7 种 scope 各自独立加载后合并，高优先级 scope 覆盖低优先级</li>
+<li><strong>Transport 抽象</strong>: 统一接口封装 6+ 种 transport 实现</li>
+<li><strong>连接缓存</strong>: <code>memoize</code> 避免重复连接同一服务器</li>
+<li><strong>安全优先</strong>: 企业策略 (allowlist/denylist) + OAuth + XAA + 信任检查</li>
+<li><strong>去重</strong>: 基于签名 (command array / URL) 的内容去重，防止同一服务器被连接多次</li>
+</ol>
+<hr>
+<h2>2. MCP 配置类型和 Scope</h2>
+<blockquote>
+<p>源文件: <code>src/services/mcp/types.ts</code></p>
+</blockquote>
+<h3>2.1 ConfigScope 枚举</h3>
+<pre><code class="language-typescript">export const ConfigScopeSchema = lazySchema(() =&gt;
+  z.enum([
+    &#39;local&#39;,       // .mcp.json (工作目录)
+    &#39;user&#39;,        // ~/.claude/settings.json 中的 mcpServers
+    &#39;project&#39;,     // .claude/settings.json (项目目录)
+    &#39;dynamic&#39;,     // --mcp-config CLI 参数或 SDK 动态注入
+    &#39;enterprise&#39;,  // managed-mcp.json (企业管理)
+    &#39;claudeai&#39;,    // Claude.ai 组织 connector
+    &#39;managed&#39;,     // 内部管理的服务器 (如 IDE)
+  ]),
+)
+export type ConfigScope = z.infer&lt;ReturnType&lt;typeof ConfigScopeSchema&gt;&gt;
+</code></pre>
+<p>各 scope 的来源和优先级:</p>
+<table>
+<thead>
+<tr>
+<th>Scope</th>
+<th>来源</th>
+<th>优先级</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>local</code></td>
+<td><code>$CWD/.mcp.json</code></td>
+<td>最低</td>
+<td>项目本地 MCP 配置文件</td>
+</tr>
+<tr>
+<td><code>user</code></td>
+<td><code>~/.claude/settings.json</code></td>
+<td>低</td>
+<td>用户全局设置</td>
+</tr>
+<tr>
+<td><code>project</code></td>
+<td><code>.claude/settings.json</code></td>
+<td>中</td>
+<td>项目级设置</td>
+</tr>
+<tr>
+<td><code>dynamic</code></td>
+<td><code>--mcp-config</code> / SDK</td>
+<td>中高</td>
+<td>运行时注入</td>
+</tr>
+<tr>
+<td><code>enterprise</code></td>
+<td><code>managed-mcp.json</code></td>
+<td>高</td>
+<td>企业管理配置，路径来自 <code>getManagedFilePath()</code></td>
+</tr>
+<tr>
+<td><code>claudeai</code></td>
+<td>Claude.ai API</td>
+<td>高</td>
+<td>通过 OAuth 拉取的 connector</td>
+</tr>
+<tr>
+<td><code>managed</code></td>
+<td>内部代码</td>
+<td>最高</td>
+<td>IDE 集成等内部管理的服务器</td>
+</tr>
+</tbody></table>
+<h3>2.2 Transport 枚举</h3>
+<pre><code class="language-typescript">export const TransportSchema = lazySchema(() =&gt;
+  z.enum([&#39;stdio&#39;, &#39;sse&#39;, &#39;sse-ide&#39;, &#39;http&#39;, &#39;ws&#39;, &#39;sdk&#39;]),
+)
+</code></pre>
+<p>额外还存在两种内部类型未在 TransportSchema 中但在 ServerConfig union 中:</p>
+<ul>
+<li><code>ws-ide</code>: WebSocket IDE 扩展专用</li>
+<li><code>claudeai-proxy</code>: Claude.ai 代理连接</li>
+</ul>
+<h3>2.3 服务器配置 Schema 定义</h3>
+<pre><code class="language-typescript">// Stdio (本地进程)
+export const McpStdioServerConfigSchema = lazySchema(() =&gt;
+  z.object({
+    type: z.literal(&#39;stdio&#39;).optional(), // 可省略以兼容旧配置
+    command: z.string().min(1, &#39;Command cannot be empty&#39;),
+    args: z.array(z.string()).default([]),
+    env: z.record(z.string(), z.string()).optional(),
+  }),
+)
+
+// SSE (Server-Sent Events)
+export const McpSSEServerConfigSchema = lazySchema(() =&gt;
+  z.object({
+    type: z.literal(&#39;sse&#39;),
+    url: z.string(),
+    headers: z.record(z.string(), z.string()).optional(),
+    headersHelper: z.string().optional(),         // 动态 header 脚本路径
+    oauth: z.object({
+      clientId: z.string().optional(),
+      callbackPort: z.number().int().positive().optional(),
+      authServerMetadataUrl: z.string().url()
+        .startsWith(&#39;https://&#39;).optional(),
+      xaa: z.boolean().optional(),                // XAA 开关
+    }).optional(),
+  }),
+)
+
+// Streamable HTTP (MCP 2025-03-26 规范)
+export const McpHTTPServerConfigSchema = lazySchema(() =&gt;
+  z.object({
+    type: z.literal(&#39;http&#39;),
+    url: z.string(),
+    headers: z.record(z.string(), z.string()).optional(),
+    headersHelper: z.string().optional(),
+    oauth: McpOAuthConfigSchema().optional(),
+  }),
+)
+
+// WebSocket
+export const McpWebSocketServerConfigSchema = lazySchema(() =&gt;
+  z.object({
+    type: z.literal(&#39;ws&#39;),
+    url: z.string(),
+    headers: z.record(z.string(), z.string()).optional(),
+    headersHelper: z.string().optional(),
+  }),
+)
+
+// SDK (进程内 SDK 桥接)
+export const McpSdkServerConfigSchema = lazySchema(() =&gt;
+  z.object({
+    type: z.literal(&#39;sdk&#39;),
+    name: z.string(),
+  }),
+)
+
+// Claude.ai Proxy
+export const McpClaudeAIProxyServerConfigSchema = lazySchema(() =&gt;
+  z.object({
+    type: z.literal(&#39;claudeai-proxy&#39;),
+    url: z.string(),
+    id: z.string(),
+  }),
+)
+</code></pre>
+<h3>2.4 ScopedMcpServerConfig 扩展类型</h3>
+<pre><code class="language-typescript">export type ScopedMcpServerConfig = McpServerConfig &amp; {
+  scope: ConfigScope
+  pluginSource?: string  // 插件来源标识: 如 &#39;slack@anthropic&#39;
+}
+</code></pre>
+<p><code>pluginSource</code> 在配置构建阶段由 <code>addPluginScopeToServers()</code> 填入，后续 channel gate 使用它来验证插件来源是否与 <code>--channels</code> 声明匹配。</p>
+<h3>2.5 连接状态类型 (MCPServerConnection)</h3>
+<pre><code class="language-typescript">export type MCPServerConnection =
+  | ConnectedMCPServer     // type: &#39;connected&#39;
+  | FailedMCPServer        // type: &#39;failed&#39;
+  | NeedsAuthMCPServer     // type: &#39;needs-auth&#39;
+  | PendingMCPServer       // type: &#39;pending&#39;
+  | DisabledMCPServer      // type: &#39;disabled&#39;
+
+export type ConnectedMCPServer = {
+  client: Client                    // @modelcontextprotocol/sdk Client 实例
+  name: string
+  type: &#39;connected&#39;
+  capabilities: ServerCapabilities  // 服务器声明的能力
+  serverInfo?: { name: string; version: string }
+  instructions?: string             // 服务器指令 (注入 system prompt)
+  config: ScopedMcpServerConfig
+  cleanup: () =&gt; Promise&lt;void&gt;      // 断开连接清理函数
+}
+
+export type PendingMCPServer = {
+  name: string
+  type: &#39;pending&#39;
+  config: ScopedMcpServerConfig
+  reconnectAttempt?: number
+  maxReconnectAttempts?: number
+}
+</code></pre>
+<hr>
+<h2>3. 多 Scope 配置合并与去重算法</h2>
+<blockquote>
+<p>源文件: <code>src/services/mcp/config.ts</code></p>
+</blockquote>
+<h3>3.1 配置来源加载顺序</h3>
+<p><code>getAllMcpConfigs()</code> 按以下顺序加载和合并 (伪代码):</p>
+<pre><code>getAllMcpConfigs():
+
+  1. mcpJsonConfigs     &lt;- 读取 $CWD/.mcp.json, scope=&#39;local&#39;
+  2. globalConfigs      &lt;- ~/.claude/settings.json -&gt; mcpServers, scope=&#39;user&#39;
+  3. projectConfigs     &lt;- .claude/settings.json -&gt; mcpServers, scope=&#39;project&#39;
+  4. enterpriseConfigs  &lt;- managed-mcp.json, scope=&#39;enterprise&#39;
+  5. claudeaiConfigs    &lt;- fetchClaudeAIMcpConfigsIfEligible(), scope=&#39;claudeai&#39;
+  6. pluginConfigs      &lt;- getPluginMcpServers(), 继承插件 scope
+  7. dynamicConfigs     &lt;- --mcp-config 参数, scope=&#39;dynamic&#39;
+
+  合并规则 (后者覆盖前者的同名键):
+    manualServers = { ...mcpJson, ...global, ...project, ...enterprise, ...dynamic }
+    pluginServers = dedupPluginMcpServers(pluginConfigs, manualServers)
+    claudeaiServers = dedupClaudeAiMcpServers(claudeaiConfigs, manualServers)
+
+    allConfigs = { ...manualServers, ...pluginServers, ...claudeaiServers }
+
+  对每个 config:
+    - expandEnvVars(config)         -- 展开 ${VAR} / ${VAR:-default}
+    - isMcpServerAllowedByPolicy()  -- 企业策略检查
+    - isMcpServerDisabled()         -- 用户禁用检查
+</code></pre>
+<h3>3.2 去重签名算法</h3>
+<pre><code class="language-typescript">// src/services/mcp/config.ts
+
+export function getMcpServerSignature(config: McpServerConfig): string | null {
+  // stdio 服务器: 基于 command + args 的 JSON 序列化
+  const cmd = getServerCommandArray(config)
+  if (cmd) {
+    return `stdio:${jsonStringify(cmd)}`
+    // 例: &#39;stdio:[&quot;npx&quot;,&quot;-y&quot;,&quot;@anthropic/mcp-server-github&quot;]&#39;
+  }
+
+  // 远程服务器: 基于 URL (解包 CCR 代理 URL)
+  const url = getServerUrl(config)
+  if (url) {
+    return `url:${unwrapCcrProxyUrl(url)}`
+  }
+
+  // SDK 类型: 无签名 (总是保留)
+  return null
+}
+</code></pre>
+<p>CCR 代理 URL 解包 -- 远程会话中，Claude.ai connector 的 URL 被重写为 CCR 代理路径:</p>
+<pre><code class="language-typescript">const CCR_PROXY_PATH_MARKERS = [
+  &#39;/v2/session_ingress/shttp/mcp/&#39;,
+  &#39;/v2/ccr-sessions/&#39;,
+]
+
+export function unwrapCcrProxyUrl(url: string): string {
+  if (!CCR_PROXY_PATH_MARKERS.some(m =&gt; url.includes(m))) return url
+  try {
+    const parsed = new URL(url)
+    return parsed.searchParams.get(&#39;mcp_url&#39;) || url
+  } catch { return url }
+}
+</code></pre>
+<h3>3.3 Plugin 去重逻辑</h3>
+<pre><code class="language-typescript">export function dedupPluginMcpServers(
+  pluginServers: Record&lt;string, ScopedMcpServerConfig&gt;,
+  manualServers: Record&lt;string, ScopedMcpServerConfig&gt;,
+): { servers: Record&lt;string, ScopedMcpServerConfig&gt;; suppressed: [...] }
+</code></pre>
+<p>决策优先级:</p>
+<ol>
+<li><strong>手动配置优先</strong>: plugin 的签名匹配已有手动配置 -&gt; 抑制 plugin</li>
+<li><strong>先到先得</strong>: 多个 plugin 签名相同 -&gt; 保留第一个，抑制后续</li>
+</ol>
+<p>Plugin 服务器命名空间为 <code>plugin:name:server</code>，与手动配置键名不会冲突，但签名检查捕获指向同一底层进程/URL 的重复。</p>
+<h3>3.4 Claude.ai Connector 去重逻辑</h3>
+<pre><code class="language-typescript">export function dedupClaudeAiMcpServers(
+  claudeAiServers: Record&lt;string, ScopedMcpServerConfig&gt;,
+  manualServers: Record&lt;string, ScopedMcpServerConfig&gt;,
+): { servers; suppressed }
+</code></pre>
+<p>关键区别: 仅<strong>已启用</strong>的手动服务器参与去重。禁用的手动服务器不抑制其 Claude.ai twin，否则两者都不会运行。</p>
+<p>Connector 键名格式: <code>claude.ai &lt;DisplayName&gt;</code>。</p>
+<h3>3.5 企业策略过滤</h3>
+<pre><code>isMcpServerAllowedByPolicy(serverName, config):
+
+  1. isMcpServerDenied(serverName, config)?    -&gt; false  (denylist 绝对优先)
+  2. settings.allowedMcpServers === undefined?  -&gt; true   (无白名单=无限制)
+  3. settings.allowedMcpServers.length === 0?   -&gt; false  (空白名单=全部封禁)
+  4. 按类型匹配:
+     - stdio: serverCommand 精确匹配 (数组等值比较)
+     - remote: serverUrl 通配符匹配 (* -&gt; .*)
+     - 其他: serverName 精确匹配
+</code></pre>
+<p>白名单/黑名单设置来源:</p>
+<ul>
+<li>白名单: <code>allowManagedMcpServersOnly</code> 设置时仅读 <code>policySettings</code>；否则合并所有来源</li>
+<li>黑名单: <strong>始终</strong>合并所有来源 (用户可以自行黑名单)</li>
+</ul>
+<p>URL 通配符示例:</p>
+<pre><code>&quot;https://example.com/*&quot;         -&gt; /^https:\/\/example\.com\/.*$/
+&quot;https://*.example.com:*/*&quot;     -&gt; /^https:\/\/.*\.example\.com:.*\/.*$/
+</code></pre>
+<p>SDK 类型服务器豁免策略检查 -- 它们是 SDK 管理的 transport 占位符，CLI 不为其启动进程或网络连接。</p>
+<hr>
+<h2>4. Transport 层</h2>
+<blockquote>
+<p>源文件: <code>src/services/mcp/client.ts</code></p>
+</blockquote>
+<h3>4.1 Stdio Transport</h3>
+<p>使用 <code>@modelcontextprotocol/sdk</code> 的 <code>StdioClientTransport</code>:</p>
+<pre><code class="language-typescript">transport = new StdioClientTransport({
+  command: expandedConfig.command,
+  args: expandedConfig.args,
+  env: {
+    ...subprocessEnv(),     // 继承当前环境
+    ...expandedConfig.env,  // 配置覆盖
+  },
+  stderr: &#39;pipe&#39;,           // 捕获 stderr 用于诊断
+})
+</code></pre>
+<h3>4.2 SSE Transport (MCP SDK)</h3>
+<p>SSE transport 需要特殊的 fetch 链式包装:</p>
+<pre><code class="language-typescript">const transportOptions: SSEClientTransportOptions = {
+  authProvider: new ClaudeAuthProvider(name, serverRef),
+  // fetch 链: stepUpDetection -&gt; timeout -&gt; base
+  fetch: wrapFetchWithTimeout(
+    wrapFetchWithStepUpDetection(createFetchWithInit(), authProvider),
+  ),
+  requestInit: {
+    headers: { &#39;User-Agent&#39;: getMCPUserAgent(), ...combinedHeaders },
+  },
+  // eventSourceInit 使用不带 timeout 的 fetch (SSE 长连接不应超时)
+  eventSourceInit: {
+    fetch: async (url, init) =&gt; {
+      const authHeaders = {}
+      const tokens = await authProvider.tokens()
+      if (tokens) authHeaders.Authorization = `Bearer ${tokens.access_token}`
+      return fetch(url, {
+        ...init, ...proxyOptions,
+        headers: {
+          &#39;User-Agent&#39;: getMCPUserAgent(),
+          ...authHeaders, ...init?.headers, ...combinedHeaders,
+          Accept: &#39;text/event-stream&#39;,
+        },
+      })
+    },
+  },
+}
+transport = new SSEClientTransport(new URL(serverRef.url), transportOptions)
+</code></pre>
+<h3>4.3 Streamable HTTP Transport</h3>
+<p>MCP 2025-03-26 规范要求客户端在 POST 时发送双 Accept 头:</p>
+<pre><code class="language-typescript">const MCP_STREAMABLE_HTTP_ACCEPT = &#39;application/json, text/event-stream&#39;
+
+// wrapFetchWithTimeout 自动注入此 Accept 头
+if (!headers.has(&#39;accept&#39;)) {
+  headers.set(&#39;accept&#39;, MCP_STREAMABLE_HTTP_ACCEPT)
+}
+</code></pre>
+<p>使用 <code>StreamableHTTPClientTransport</code>，与 SSE 共享相同的 auth/timeout fetch 包装链。</p>
+<h3>4.4 WebSocket Transport</h3>
+<p>支持 Bun 原生 WebSocket 和 Node.js <code>ws</code> 包:</p>
+<pre><code class="language-typescript">// Bun 路径
+const ws = new globalThis.WebSocket(url, {
+  headers, proxy: getWebSocketProxyUrl(url),
+  tls: getWebSocketTLSOptions() || undefined,
+})
+
+// Node.js 路径
+const ws = new WS(url, [&#39;mcp&#39;], {
+  headers: { &#39;User-Agent&#39;: getMCPUserAgent(), ...headers },
+  agent: getWebSocketProxyAgent(url),
+  ...getWebSocketTLSOptions(),
+})
+</code></pre>
+<h3>4.5 SDK Transport (进程内)</h3>
+<blockquote>
+<p>源文件: <code>src/services/mcp/SdkControlTransport.ts</code></p>
+</blockquote>
+<pre><code>消息流:
+
+  CLI 进程 (MCP Client)                SDK 进程 (MCP Server)
+       |                                      |
+       | JSONRPC request                      |
+       | SdkControlClientTransport.send()     |
+       |  -&gt; stdout: control_request          |
+       |     { server_name, message }         |
+       |                                      |
+       |         SdkControlServerTransport    |
+       |  &lt;- stdin: control_response          |
+       |     { response }                     |
+       |                                      |
+</code></pre>
+<pre><code class="language-typescript">export class SdkControlClientTransport implements Transport {
+  async send(message: JSONRPCMessage): Promise&lt;void&gt; {
+    const response = await this.sendMcpMessage(this.serverName, message)
+    this.onmessage?.(response)
+  }
+}
+</code></pre>
+<h3>4.6 InProcess Transport</h3>
+<blockquote>
+<p>源文件: <code>src/services/mcp/InProcessTransport.ts</code></p>
+</blockquote>
+<p>用于同一进程中运行 MCP 服务器和客户端:</p>
+<pre><code class="language-typescript">export function createLinkedTransportPair(): [Transport, Transport] {
+  const a = new InProcessTransport()
+  const b = new InProcessTransport()
+  a._setPeer(b)
+  b._setPeer(a)
+  return [a, b]
+}
+
+// send() 通过 queueMicrotask 异步投递, 避免同步请求/响应的栈溢出
+async send(message: JSONRPCMessage): Promise&lt;void&gt; {
+  queueMicrotask(() =&gt; { this.peer?.onmessage?.(message) })
+}
+</code></pre>
+<h3>4.7 Claude.ai Proxy Transport</h3>
+<p>Claude.ai connector 使用 <code>StreamableHTTPClientTransport</code>，fetch 被 <code>createClaudeAiProxyFetch</code> 包装:</p>
+<pre><code class="language-typescript">export function createClaudeAiProxyFetch(innerFetch: FetchLike): FetchLike {
+  return async (url, init) =&gt; {
+    const doRequest = async () =&gt; {
+      await checkAndRefreshOAuthTokenIfNeeded()
+      const tokens = getClaudeAIOAuthTokens()
+      headers.set(&#39;Authorization&#39;, `Bearer ${tokens.accessToken}`)
+      return { response: await innerFetch(url, {...init, headers}), sentToken }
+    }
+
+    const { response, sentToken } = await doRequest()
+    if (response.status !== 401) return response
+
+    // 401 重试: token 可能过期，尝试刷新后重试一次
+    const tokenChanged = await handleOAuth401Error(sentToken)
+    if (!tokenChanged) return response
+    return (await doRequest()).response
+  }
+}
+</code></pre>
+<h3>4.8 IDE Transport (SSE-IDE / WS-IDE)</h3>
+<p>IDE 扩展 (如 VSCode) 使用专用 transport，不需要 OAuth 认证:</p>
+<pre><code class="language-typescript">// SSE-IDE
+export const McpSSEIDEServerConfigSchema = lazySchema(() =&gt;
+  z.object({
+    type: z.literal(&#39;sse-ide&#39;),
+    url: z.string(),
+    ideName: z.string(),
+    ideRunningInWindows: z.boolean().optional(),
+  }),
+)
+
+// WS-IDE: 可选 authToken
+export const McpWebSocketIDEServerConfigSchema = lazySchema(() =&gt;
+  z.object({
+    type: z.literal(&#39;ws-ide&#39;),
+    url: z.string(),
+    ideName: z.string(),
+    authToken: z.string().optional(),
+    ideRunningInWindows: z.boolean().optional(),
+  }),
+)
+</code></pre>
+<p>IDE 工具白名单: 仅暴露 <code>mcp__ide__executeCode</code> 和 <code>mcp__ide__getDiagnostics</code>。</p>
+<hr>
+<h2>5. 连接生命周期管理</h2>
+<h3>5.1 连接流程伪代码</h3>
+<pre><code>connectToServer(name, serverRef, serverStats):
+
+  1. 检查 disabled 状态       -&gt; return DisabledMCPServer
+  2. 检查 needs-auth 缓存     -&gt; return NeedsAuthMCPServer (15分钟 TTL)
+  3. 根据 serverRef.type 创建 transport (见第4节)
+  4. 创建 MCP Client 实例
+  5. client.connect() 建立连接 (超时: getConnectionTimeoutMs() 默认 30s)
+  6. 捕获 UnauthorizedError   -&gt; handleRemoteAuthFailure() -&gt; NeedsAuthMCPServer
+  7. 捕获 Session expired     -&gt; clearServerCache + 可重试
+  8. 成功 -&gt; ConnectedMCPServer { client, capabilities, instructions, cleanup }
+  9. 失败 -&gt; FailedMCPServer { error }
+</code></pre>
+<h3>5.2 批量连接策略</h3>
+<pre><code class="language-typescript">// 本地服务器 (stdio, sdk): 默认并发度 3
+export function getMcpServerConnectionBatchSize(): number {
+  return parseInt(process.env.MCP_SERVER_CONNECTION_BATCH_SIZE || &#39;&#39;, 10) || 3
+}
+
+// 远程服务器 (sse, http, ws, claudeai-proxy): 默认并发度 20
+function getRemoteMcpServerConnectionBatchSize(): number {
+  return parseInt(
+    process.env.MCP_REMOTE_SERVER_CONNECTION_BATCH_SIZE || &#39;&#39;, 10
+  ) || 20
+}
+</code></pre>
+<p>本地和远程服务器先分组，再各自并行连接 (使用 <code>pMap</code>)。</p>
+<h3>5.3 连接缓存 (memoize)</h3>
+<pre><code class="language-typescript">export const connectToServer = memoize(
+  async (name, serverRef, serverStats) =&gt; { ... },
+  getServerCacheKey,
+)
+
+export function getServerCacheKey(name, serverRef): string {
+  return `${name}-${jsonStringify(serverRef)}`
+}
+</code></pre>
+<p>配置变更时通过 <code>clearServerCache(name, config)</code> 清除特定缓存条目。</p>
+<h3>5.4 重连与会话过期</h3>
+<pre><code class="language-typescript">// MCP 规范: 服务器返回 HTTP 404 + JSON-RPC -32001 表示会话过期
+export function isMcpSessionExpiredError(error: Error): boolean {
+  if (error.code !== 404) return false
+  return error.message.includes(&#39;&quot;code&quot;:-32001&#39;) ||
+         error.message.includes(&#39;&quot;code&quot;: -32001&#39;)
+}
+
+class McpSessionExpiredError extends Error {
+  constructor(serverName: string) {
+    super(`MCP server &quot;${serverName}&quot; session expired`)
+  }
+}
+// 捕获后: 清除连接缓存 -&gt; 调用者用 ensureConnectedClient 重试
+</code></pre>
+<h3>5.5 超时与 Liveness 配置</h3>
+<table>
+<thead>
+<tr>
+<th>常量</th>
+<th>值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>DEFAULT_MCP_TOOL_TIMEOUT_MS</code></td>
+<td>100,000,000 (~27.8h)</td>
+<td>MCP 工具调用超时</td>
+</tr>
+<tr>
+<td><code>MCP_REQUEST_TIMEOUT_MS</code></td>
+<td>60,000</td>
+<td>单个 MCP 请求超时</td>
+</tr>
+<tr>
+<td><code>MCP_AUTH_CACHE_TTL_MS</code></td>
+<td>900,000 (15min)</td>
+<td>needs-auth 缓存有效期</td>
+</tr>
+<tr>
+<td><code>getConnectionTimeoutMs()</code></td>
+<td>30,000 (可通过 <code>MCP_TIMEOUT</code> 环境变量覆盖)</td>
+<td>连接建立超时</td>
+</tr>
+<tr>
+<td><code>MAX_MCP_DESCRIPTION_LENGTH</code></td>
+<td>2,048</td>
+<td>工具描述/server instructions 最大长度</td>
+</tr>
+</tbody></table>
+<p><code>wrapFetchWithTimeout</code> 为每个 POST 创建独立的 <code>AbortController</code>，避免共享 <code>AbortSignal.timeout()</code> 导致后续请求立即超时。GET 请求 (SSE 长连接) 不设超时。</p>
+<hr>
+<h2>6. OAuth / XAA 认证机制</h2>
+<h3>6.1 ClaudeAuthProvider</h3>
+<blockquote>
+<p>源文件: <code>src/services/mcp/auth.ts</code></p>
+</blockquote>
+<p><code>ClaudeAuthProvider</code> 实现 <code>OAuthClientProvider</code> 接口，管理每个 MCP 服务器的 OAuth 状态:</p>
+<pre><code>OAuth 状态机:
+
+  [无 token] ---hasMcpDiscoveryButNoToken()---&gt; [needs-auth]
+                                                     |
+                                               用户点击认证
+                                                     |
+                                              [浏览器 OAuth]
+                                                     |
+                                               [connected]
+</code></pre>
+<p>关键方法:</p>
+<ul>
+<li><code>tokens()</code>: 从 keychain 读取缓存的 access_token</li>
+<li><code>saveTokens()</code>: 保存 token 到 keychain</li>
+<li><code>redirectUrl()</code>: 构建 OAuth 回调 URL (<code>http://127.0.0.1:&lt;port&gt;/callback</code>)</li>
+<li><code>xaaRefresh()</code>: XAA 模式下用 id_token 静默刷新</li>
+</ul>
+<h3>6.2 标准 OAuth 流程</h3>
+<ol>
+<li><strong>发现</strong>: <code>/.well-known/oauth-authorization-server</code> 获取 AS metadata</li>
+<li><strong>动态注册</strong>: <code>registration_endpoint</code> (如果未预注册 clientId)</li>
+<li><strong>Authorization Code + PKCE</strong>: 打开浏览器 -&gt; 用户授权 -&gt; callback</li>
+<li><strong>Token Exchange</strong>: authorization code -&gt; access_token + refresh_token</li>
+<li><strong>持久化</strong>: keychain (macOS) / 加密文件 (Linux)</li>
+</ol>
+<h3>6.3 XAA 跨应用访问 (SEP-990)</h3>
+<blockquote>
+<p>源文件: <code>src/services/mcp/xaa.ts</code></p>
+</blockquote>
+<p>XAA (Cross-App Access) 实现无浏览器弹窗的 MCP 授权，核心价值: <strong>一次 IdP 登录 -&gt; N 个 MCP 服务器静默授权</strong>。</p>
+<pre><code>XAA 完整流程 (performCrossAppAccess):
+
+  MCP URL
+    |
+    v
+  [RFC 9728] PRM Discovery
+    resource: &lt;MCP URL&gt;
+    authorization_servers: [&lt;AS URL&gt;]
+    |
+    v
+  [RFC 8414] AS Metadata Discovery
+    issuer, token_endpoint
+    grant_types_supported (含 jwt-bearer?)
+    |
+    v
+  [RFC 8693] Token Exchange at IdP (Step 1)
+    grant_type: urn:ietf:params:oauth:grant-type:token-exchange
+    subject_token: &lt;user id_token&gt;
+    subject_token_type: urn:ietf:params:oauth:token-type:id_token
+    requested_token_type: urn:ietf:params:oauth:token-type:id-jag
+    audience: &lt;AS issuer&gt;
+    resource: &lt;PRM resource&gt;
+    --&gt; ID-JAG (Identity Assertion Authorization Grant)
+    |
+    v
+  [RFC 7523] JWT Bearer Grant at AS (Step 2)
+    grant_type: urn:ietf:params:oauth:grant-type:jwt-bearer
+    assertion: &lt;ID-JAG&gt;
+    client_id + client_secret (Basic or Post)
+    --&gt; access_token
+</code></pre>
+<p>关键常量:</p>
+<pre><code class="language-typescript">const XAA_REQUEST_TIMEOUT_MS = 30000
+const TOKEN_EXCHANGE_GRANT = &#39;urn:ietf:params:oauth:grant-type:token-exchange&#39;
+const JWT_BEARER_GRANT = &#39;urn:ietf:params:oauth:grant-type:jwt-bearer&#39;
+const ID_JAG_TOKEN_TYPE = &#39;urn:ietf:params:oauth:token-type:id-jag&#39;
+const ID_TOKEN_TYPE = &#39;urn:ietf:params:oauth:token-type:id_token&#39;
+</code></pre>
+<p>XAA 配置类型:</p>
+<pre><code class="language-typescript">export type XaaConfig = {
+  clientId: string         // MCP 服务器 AS 的 client_id
+  clientSecret: string     // MCP 服务器 AS 的 client_secret
+  idpClientId: string      // IdP 注册的 client_id
+  idpClientSecret?: string // IdP 客户端密钥 (可选)
+  idpIdToken: string       // 用户 OIDC id_token
+  idpTokenEndpoint: string // IdP token endpoint
+}
+
+export type XaaResult = {
+  access_token: string
+  token_type: string
+  expires_in?: number
+  authorizationServerUrl: string  // AS issuer (需持久化用于刷新/撤销)
+}
+</code></pre>
+<p><code>XaaTokenExchangeError</code> 携带语义化 <code>shouldClearIdToken</code>:</p>
+<ul>
+<li>4xx / invalid_grant -&gt; id_token 无效, 清除缓存</li>
+<li>5xx -&gt; IdP 宕机, id_token 可能仍有效, 保留</li>
+</ul>
+<p>AS 认证方法选择:</p>
+<pre><code class="language-typescript">// 从 AS metadata 读取 token_endpoint_auth_methods_supported
+// 优先 client_secret_basic (SEP-990 合规), 回退 client_secret_post
+const authMethod =
+  authMethods &amp;&amp; !authMethods.includes(&#39;client_secret_basic&#39;)
+  &amp;&amp; authMethods.includes(&#39;client_secret_post&#39;)
+    ? &#39;client_secret_post&#39;
+    : &#39;client_secret_basic&#39;
+</code></pre>
+<h3>6.4 XAA IdP 登录与缓存</h3>
+<blockquote>
+<p>源文件: <code>src/services/mcp/xaaIdpLogin.ts</code></p>
+</blockquote>
+<pre><code class="language-typescript">// 环境变量开关
+export function isXaaEnabled(): boolean {
+  return isEnvTruthy(process.env.CLAUDE_CODE_ENABLE_XAA)
+}
+
+// 设置来自 settings.xaaIdp
+export type XaaIdpSettings = {
+  issuer: string
+  clientId: string
+  callbackPort?: number  // 固定端口用于已注册的 redirect URI
+}
+</code></pre>
+<p>id_token 缓存策略:</p>
+<ul>
+<li><strong>存储</strong>: keychain (<code>mcpXaaIdp[issuerKey(idpIssuer)]</code>)</li>
+<li><strong>TTL</strong>: JWT <code>exp</code> claim，提前 60 秒过期 (<code>ID_TOKEN_EXPIRY_BUFFER_S</code>)</li>
+<li><strong>回退</strong>: <code>expires_in</code> (access_token 生命周期) 或默认 1 小时</li>
+<li><strong>issuer key</strong>: URL 标准化 (小写 host, 去尾斜杠)</li>
+</ul>
+<p><code>acquireIdpIdToken()</code> 流程:</p>
+<ol>
+<li>检查缓存 (<code>getCachedIdpIdToken</code>) -&gt; 有效则直接返回</li>
+<li>OIDC Discovery: <code>.well-known/openid-configuration</code></li>
+<li><code>startAuthorization()</code> (PKCE) -&gt; 生成 authorizationUrl</li>
+<li>启动本地 HTTP 服务器 (<code>waitForCallback</code>) 监听 <code>/callback</code></li>
+<li><strong>服务器绑定成功后</strong>才打开浏览器 (防止 EADDRINUSE 时弹出无用标签页)</li>
+<li>等待 authorization code (5 分钟超时: <code>IDP_LOGIN_TIMEOUT_MS</code>)</li>
+<li><code>exchangeAuthorization()</code> -&gt; 获取 tokens</li>
+<li>解析 JWT exp -&gt; 缓存到 keychain</li>
+</ol>
+<h3>6.5 Step-up Detection</h3>
+<p><code>wrapFetchWithStepUpDetection</code> 包装 fetch，检测 403 响应中的 step-up 认证需求。当 MCP 服务器要求更高权限 (如 MFA) 时，auth provider 能触发再次认证流程。</p>
+<hr>
+<h2>7. MCP 工具与内建工具的统一</h2>
+<h3>7.1 工具命名规则</h3>
+<blockquote>
+<p>源文件: <code>src/services/mcp/mcpStringUtils.ts</code>, <code>src/services/mcp/normalization.ts</code></p>
+</blockquote>
+<pre><code class="language-typescript">// 服务器名标准化: 替换非法字符为下划线
+export function normalizeNameForMCP(name: string): string {
+  let normalized = name.replace(/[^a-zA-Z0-9_-]/g, &#39;_&#39;)
+  // Claude.ai 服务器额外处理: 合并连续下划线, 去首尾下划线
+  if (name.startsWith(&#39;claude.ai &#39;)) {
+    normalized = normalized.replace(/_+/g, &#39;_&#39;).replace(/^_|_$/g, &#39;&#39;)
+  }
+  return normalized
+}
+
+// 完整工具名: mcp__{normalizedServer}__{normalizedTool}
+export function buildMcpToolName(serverName: string, toolName: string): string {
+  return `${getMcpPrefix(serverName)}${normalizeNameForMCP(toolName)}`
+}
+
+// 解析: &quot;mcp__github__add_comment&quot; -&gt; { serverName: &quot;github&quot;, toolName: &quot;add_comment&quot; }
+export function mcpInfoFromString(toolString: string): {
+  serverName: string; toolName: string | undefined
+} | null {
+  const parts = toolString.split(&#39;__&#39;)
+  const [mcpPart, serverName, ...toolNameParts] = parts
+  if (mcpPart !== &#39;mcp&#39; || !serverName) return null
+  return { serverName, toolName: toolNameParts.join(&#39;__&#39;) || undefined }
+}
+</code></pre>
+<p>已知限制: 如果服务器名包含 <code>__</code>，解析将不正确。</p>
+<h3>7.2 MCPTool 包装</h3>
+<p>MCP 服务器返回的每个工具被包装为 <code>MCPTool</code> 实例 (实现 <code>Tool</code> 接口)，与内建工具统一处理:</p>
+<pre><code class="language-typescript">// 典型属性
+name: &quot;mcp__github__add_comment&quot;            // API 名
+userFacingName: &quot;github - Add comment (MCP)&quot; // 显示名
+description: &quot;...&quot;                            // 截断到 2048 字符
+inputJSONSchema: { type: &#39;object&#39;, ... }     // 直接透传 MCP schema
+mcpInfo: { serverName: &quot;github&quot;, toolName: &quot;add_comment&quot; }
+</code></pre>
+<h3>7.3 工具调用与结果处理</h3>
+<p>工具调用通过 <code>client.callTool()</code> 执行，结果按类型处理:</p>
+<ol>
+<li><strong>文本</strong>: 直接返回</li>
+<li><strong>图像</strong>: <code>maybeResizeAndDownsampleImageBuffer</code> 压缩后 Base64 传递</li>
+<li><strong>ResourceLink</strong>: 通过 <code>ReadMcpResourceTool</code> 二次读取</li>
+<li><strong>二进制 Blob</strong>: 持久化到文件，返回路径描述</li>
+<li><strong>大型输出</strong>: <code>truncateMcpContentIfNeeded</code> 截断 + 持久化完整内容</li>
+<li><strong>isError: true</strong>: 抛出 <code>McpToolCallError</code>，携带 <code>_meta</code></li>
+</ol>
+<h3>7.4 描述截断与安全清理</h3>
+<pre><code class="language-typescript">const MAX_MCP_DESCRIPTION_LENGTH = 2048
+// OpenAPI 生成的 MCP 服务器可能有 15-60KB 的描述文档
+
+// Unicode 清理: 递归移除不安全 Unicode 字符
+recursivelySanitizeUnicode(toolResult)
+</code></pre>
+<hr>
+<h2>8. Registry 和 Channel Allowlist</h2>
+<h3>8.1 官方 MCP Registry</h3>
+<blockquote>
+<p>源文件: <code>src/services/mcp/officialRegistry.ts</code></p>
+</blockquote>
+<pre><code class="language-typescript">// 启动时 fire-and-forget 预取
+export async function prefetchOfficialMcpUrls(): Promise&lt;void&gt; {
+  if (process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC) return
+
+  const response = await axios.get&lt;RegistryResponse&gt;(
+    &#39;https://api.anthropic.com/mcp-registry/v0/servers&#39; +
+    &#39;?version=latest&amp;visibility=commercial&#39;,
+    { timeout: 5000 },
+  )
+  // 标准化 URL (去 query string, 去尾斜杠) 后存入 Set
+  officialUrls = urls
+}
+
+// 查询: fail-closed (registry 未加载 -&gt; false)
+export function isOfficialMcpUrl(normalizedUrl: string): boolean {
+  return officialUrls?.has(normalizedUrl) ?? false
+}
+</code></pre>
+<h3>8.2 Channel Allowlist 机制</h3>
+<blockquote>
+<p>源文件: <code>src/services/mcp/channelAllowlist.ts</code></p>
+</blockquote>
+<pre><code class="language-typescript">export type ChannelAllowlistEntry = { marketplace: string; plugin: string }
+
+// GrowthBook feature flag &#39;tengu_harbor_ledger&#39; 控制白名单内容
+export function getChannelAllowlist(): ChannelAllowlistEntry[] {
+  const raw = getFeatureValue_CACHED_MAY_BE_STALE(&#39;tengu_harbor_ledger&#39;, [])
+  return ChannelAllowlistSchema().safeParse(raw).data ?? []
+}
+
+// 总开关: &#39;tengu_harbor&#39;
+export function isChannelsEnabled(): boolean {
+  return getFeatureValue_CACHED_MAY_BE_STALE(&#39;tengu_harbor&#39;, false)
+}
+</code></pre>
+<p>Team/Enterprise 组织可通过 <code>allowedChannelPlugins</code> managed settings 替换 GrowthBook 白名单。</p>
+<h3>8.3 Channel Gate 决策链</h3>
+<blockquote>
+<p>源文件: <code>src/services/mcp/channelNotification.ts</code></p>
+</blockquote>
+<pre><code>gateChannelServer(serverName, capabilities, pluginSource):
+
+  [1] capability check
+      capabilities.experimental[&#39;claude/channel&#39;] 缺失?
+      -&gt; skip: &#39;capability&#39;
+
+  [2] runtime gate (tengu_harbor)
+      isChannelsEnabled() === false?
+      -&gt; skip: &#39;disabled&#39;
+
+  [3] auth check
+      无 OAuth token? (API key 用户被阻止)
+      -&gt; skip: &#39;auth&#39;
+
+  [4] policy check
+      Team/Enterprise 且 channelsEnabled !== true?
+      -&gt; skip: &#39;policy&#39;
+
+  [5] session check
+      不在 --channels 列表中?
+      -&gt; skip: &#39;session&#39;
+
+  [6] marketplace verification (仅 plugin 类型)
+      实际安装来源 !== --channels 声明来源?
+      -&gt; skip: &#39;marketplace&#39;
+
+  [7] allowlist check
+      plugin 不在白名单? (dev 模式除外)
+      -&gt; skip: &#39;allowlist&#39;
+
+  [通过] -&gt; action: &#39;register&#39;
+</code></pre>
+<h3>8.4 Channel Permission Relay</h3>
+<blockquote>
+<p>源文件: <code>src/services/mcp/channelPermissions.ts</code></p>
+</blockquote>
+<p>允许用户通过 Telegram/iMessage/Discord 等渠道批准工具权限请求:</p>
+<pre><code class="language-typescript">// 请求 ID: 5 字母, 25 字母表 (a-z 去掉 l), ~9.8M 空间
+// 使用 FNV-1a hash, 带脏话黑名单过滤
+export function shortRequestId(toolUseID: string): string
+
+// 用户回复正则 (由 channel server 解析):
+export const PERMISSION_REPLY_RE = /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i
+
+// 回调工厂 (闭包内 Map, 非模块级/非 AppState)
+export function createChannelPermissionCallbacks(): ChannelPermissionCallbacks {
+  const pending = new Map&lt;string, (response) =&gt; void&gt;()
+  return {
+    onResponse(requestId, handler) { /* 注册 */ },
+    resolve(requestId, behavior, fromServer) { /* 匹配并触发 */ },
+  }
+}
+
+// 过滤支持权限中继的客户端: connected + allowlist + 双 capability
+export function filterPermissionRelayClients&lt;T&gt;(clients, isInAllowlist): T[]
+</code></pre>
+<p>安全设计: CC 不直接解析文本回复。channel server 负责解析 &quot;yes tbxkq&quot; 并发送结构化事件 <code>notifications/claude/channel/permission</code>。</p>
+<hr>
+<h2>9. MCP 指令注入到 System Prompt</h2>
+<h3>9.1 Server Instructions</h3>
+<p>每个连接成功的 MCP 服务器可返回 <code>instructions</code> 字段 (截断到 2048 字符)，被注入到 system prompt 的 MCP Server Instructions 区块。</p>
+<h3>9.2 MCP Skills</h3>
+<p>当 <code>feature(&#39;MCP_SKILLS&#39;)</code> 编译期开关启用时:</p>
+<pre><code class="language-typescript">const fetchMcpSkillsForClient = feature(&#39;MCP_SKILLS&#39;)
+  ? require(&#39;../../skills/mcpSkills.js&#39;).fetchMcpSkillsForClient
+  : null
+
+// 连接成功后拉取 MCP skills
+if (fetchMcpSkillsForClient) {
+  await fetchMcpSkillsForClient(client, serverName)
+}
+</code></pre>
+<h3>9.3 Channel Notification 消息注入</h3>
+<pre><code class="language-typescript">// 通知 schema
+export const ChannelMessageNotificationSchema = lazySchema(() =&gt;
+  z.object({
+    method: z.literal(&#39;notifications/claude/channel&#39;),
+    params: z.object({
+      content: z.string(),
+      meta: z.record(z.string(), z.string()).optional(),
+    }),
+  }),
+)
+
+// 包装为 XML tag 后入队
+export function wrapChannelMessage(serverName, content, meta): string {
+  // meta key 安全检查: /^[a-zA-Z_][a-zA-Z0-9_]*$/
+  return `&lt;channel source=&quot;${escapeXmlAttr(serverName)}&quot;${attrs}&gt;
+${content}
+&lt;/channel&gt;`
+}
+</code></pre>
+<p>消息通过 <code>enqueue()</code> 入队，<code>SleepTool</code> 轮询 <code>hasCommandsInQueue()</code> 并在 1 秒内唤醒模型处理。</p>
+<hr>
+<h2>10. 关键设计模式总结</h2>
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>应用位置</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Lazy Schema</strong></td>
+<td><code>types.ts</code> 全部 schema</td>
+<td><code>lazySchema(() =&gt; z.object(...))</code> 延迟 Zod schema 创建, 减少启动开销</td>
+</tr>
+<tr>
+<td><strong>Memoize + 手动失效</strong></td>
+<td><code>client.ts</code> <code>connectToServer</code></td>
+<td>lodash <code>memoize</code> 缓存连接, <code>clearServerCache</code> 手动清除</td>
+</tr>
+<tr>
+<td><strong>Discriminated Union</strong></td>
+<td><code>types.ts</code> <code>MCPServerConnection</code></td>
+<td>5 种连接状态用 <code>type</code> 字段区分, TypeScript 类型收窄</td>
+</tr>
+<tr>
+<td><strong>Signature Dedup</strong></td>
+<td><code>config.ts</code> <code>getMcpServerSignature</code></td>
+<td>基于内容签名 (command/URL) 而非名称去重</td>
+</tr>
+<tr>
+<td><strong>CCR Proxy Unwrap</strong></td>
+<td><code>config.ts</code> <code>unwrapCcrProxyUrl</code></td>
+<td>从代理 URL 提取原始 vendor URL 实现跨格式去重</td>
+</tr>
+<tr>
+<td><strong>Fetch Wrapper Chain</strong></td>
+<td><code>client.ts</code></td>
+<td><code>base -&gt; stepUpDetection -&gt; timeout</code> 链式 fetch 包装</td>
+</tr>
+<tr>
+<td><strong>Per-request Timeout</strong></td>
+<td><code>client.ts</code> <code>wrapFetchWithTimeout</code></td>
+<td>每请求独立 AbortController, 避免共享 signal 过期</td>
+</tr>
+<tr>
+<td><strong>Multi-layer Gate</strong></td>
+<td><code>channelNotification.ts</code></td>
+<td>7 层独立 gate (capability/runtime/auth/policy/session/marketplace/allowlist)</td>
+</tr>
+<tr>
+<td><strong>Factory Closure</strong></td>
+<td><code>channelPermissions.ts</code></td>
+<td>回调 Map 封闭在工厂闭包中, 不放模块级或 AppState (避免序列化)</td>
+</tr>
+<tr>
+<td><strong>Atomic File Write</strong></td>
+<td><code>config.ts</code> <code>writeMcpjsonFile</code></td>
+<td>临时文件 -&gt; datasync -&gt; rename, 保留原权限</td>
+</tr>
+<tr>
+<td><strong>Exponential Backoff + Jitter</strong></td>
+<td>多处重连逻辑</td>
+<td>指数退避 + 25% 随机抖动, 防止 thundering herd</td>
+</tr>
+<tr>
+<td><strong>Token Redaction</strong></td>
+<td><code>xaa.ts</code> <code>redactTokens</code></td>
+<td>日志中正则替换敏感 token 为 <code>[REDACTED]</code></td>
+</tr>
+<tr>
+<td><strong>Profanity Filter</strong></td>
+<td><code>channelPermissions.ts</code></td>
+<td>短 ID 生成时检查脏话子串, 最多 10 次重哈希</td>
+</tr>
+<tr>
+<td><strong>Compile-time Feature Gate</strong></td>
+<td><code>client.ts</code></td>
+<td><code>feature(&#39;MCP_SKILLS&#39;)</code>, <code>feature(&#39;CHICAGO_MCP&#39;)</code> 编译期消除死代码路径</td>
+</tr>
+<tr>
+<td><strong>Environment Expansion</strong></td>
+<td><code>envExpansion.ts</code></td>
+<td><code>${VAR}</code> / <code>${VAR:-default}</code> 语法, 收集缺失变量供错误报告</td>
+</tr>
+</tbody></table>
+</body>
+</html>

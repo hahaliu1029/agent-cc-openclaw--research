@@ -1,0 +1,1632 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>05-memory</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1>当前项目研究：Memory 系统深度分析</h1>
+<blockquote>
+<p>源码版本截至 2026-04-01；行号与函数签名以实际源码为准。</p>
+</blockquote>
+<hr>
+<h2>目录</h2>
+<ol>
+<li><a href="#1-%E6%A0%B8%E5%BF%83%E5%88%A4%E6%96%AD">核心判断</a></li>
+<li><a href="#2-%E6%9E%B6%E6%9E%84%E5%85%A8%E6%99%AF">架构全景</a></li>
+<li><a href="#3-%E8%AE%B0%E5%BF%86%E7%B1%BB%E5%9E%8B%E5%AD%A6">记忆类型学 (Memory Taxonomy)</a></li>
+<li><a href="#4-frontmatter-%E6%A0%BC%E5%BC%8F%E4%B8%8E-memorymd-%E7%B4%A2%E5%BC%95">Frontmatter 格式与 MEMORY.md 索引</a></li>
+<li><a href="#5-%E8%B7%AF%E5%BE%84%E4%BD%93%E7%B3%BB">路径体系 (paths.ts)</a></li>
+<li><a href="#6-private-%E4%B8%8E-team-%E5%8F%8C%E5%B1%82%E4%BD%9C%E7%94%A8%E5%9F%9F">Private 与 Team 双层作用域</a></li>
+<li><a href="#7-%E8%AE%B0%E5%BF%86%E6%89%AB%E6%8F%8F">记忆扫描 (memoryScan.ts)</a></li>
+<li><a href="#8-%E7%9B%B8%E5%85%B3%E6%80%A7%E9%80%89%E6%8B%A9%E7%AE%97%E6%B3%95">相关性选择算法 (findRelevantMemories.ts)</a></li>
+<li><a href="#9-%E8%AE%B0%E5%BF%86%E6%96%B0%E9%B2%9C%E5%BA%A6%E4%B8%8E%E8%BF%87%E6%9C%9F%E7%AE%A1%E7%90%86">记忆新鲜度与过期管理 (memoryAge.ts)</a></li>
+<li><a href="#10-%E8%AE%B0%E5%BF%86%E4%B8%8E-system-prompt-%E7%9A%84%E8%80%A6%E5%90%88">记忆与 System Prompt 的耦合</a></li>
+<li><a href="#11-%E8%AE%B0%E5%BF%86%E6%8F%90%E5%8F%96-extractmemories">记忆提取 (extractMemories)</a></li>
+<li><a href="#12-sessionmemory----%E4%BC%9A%E8%AF%9D%E7%BA%A7%E6%8C%81%E7%BB%AD%E6%80%BB%E7%BB%93">SessionMemory -- 会话级持续总结</a></li>
+<li><a href="#13-agent-memory----%E5%AD%90%E4%BB%A3%E7%90%86%E8%AE%B0%E5%BF%86">Agent Memory -- 子代理记忆</a></li>
+<li><a href="#14-team-memory-sync-%E5%90%8C%E6%AD%A5%E6%9C%8D%E5%8A%A1">Team Memory Sync 同步服务</a></li>
+<li><a href="#15-secret-scanner----%E6%95%8F%E6%84%9F%E4%BF%A1%E6%81%AF%E9%98%B2%E6%8A%A4">Secret Scanner -- 敏感信息防护</a></li>
+<li><a href="#16-team-memory-watcher----%E6%96%87%E4%BB%B6%E7%9B%91%E5%90%AC%E4%B8%8E%E6%8E%A8%E9%80%81">Team Memory Watcher -- 文件监听与推送</a></li>
+<li><a href="#17-%E8%AE%B0%E5%BF%86%E9%AA%8C%E8%AF%81%E7%AD%96%E7%95%A5">记忆验证 (Stale Memory 管理)</a></li>
+<li><a href="#18-%E5%85%B3%E9%94%AE%E5%B8%B8%E9%87%8F%E8%A1%A8">关键常量表</a></li>
+<li><a href="#19-%E8%AE%BE%E8%AE%A1%E6%A8%A1%E5%BC%8F%E6%80%BB%E7%BB%93">设计模式总结</a></li>
+<li><a href="#20-%E5%85%B3%E9%94%AE%E8%AF%81%E6%8D%AE%E6%96%87%E4%BB%B6%E7%B4%A2%E5%BC%95">关键证据文件索引</a></li>
+</ol>
+<hr>
+<h2>1. 核心判断</h2>
+<ul>
+<li>当前项目有 <strong>三套互补记忆机制</strong>：<code>memdir</code> 文件式长期记忆、<code>SessionMemory</code> 会话级后台摘要、<code>AgentMemory</code> 子代理持久记忆。</li>
+<li>记忆不是单纯检索，而是包含”何时读、何时写、何时验证是否过时”的完整生命周期策略。</li>
+<li>记忆系统与 system prompt <strong>直接耦合</strong>：<code>MEMORY.md</code> 索引在 prompt 构建阶段注入，topic 文件通过 <code>findRelevantMemories</code> 作为 <code>relevant_memories</code> attachment 在每个 turn 动态注入。</li>
+<li>团队记忆通过 OAuth + REST API 同步到服务器，实现跨用户共享，并内置 client-side secret scanner 防止敏感信息泄露。</li>
+<li>后台 subagent 提取流程使用 <strong>forked agent 模式</strong>（完美复刻主对话的 prompt cache），在 token/tool-call 双门槛满足时自动触发。</li>
+</ul>
+<hr>
+<h2>2. 架构全景</h2>
+<pre><code>+-------------------------------------------------------------------------+
+|                         Claude Code Memory System                       |
++-------------------------------------------------------------------------+
+|                                                                         |
+|  +-------------------------------------------------------------+       |
+|  |                    System Prompt Layer                        |       |
+|  |  prompts.ts -&gt; systemPromptSection(&#39;memory&#39;, loadMemoryPrompt)|      |
+|  |  claudemd.ts -&gt; MEMORY.md content injection (user context)   |       |
+|  +-----------------------------+--------------------------------+       |
+|                                |                                        |
+|  +-----------------------------v--------------------------------+       |
+|  |                  Attachment / Turn Layer                      |       |
+|  |  attachments.ts -&gt; findRelevantMemories -&gt; relevant_memories  |       |
+|  |  memoryAge.ts -&gt; staleness warning per memory file            |       |
+|  +-----------------------------+--------------------------------+       |
+|                                |                                        |
+|  +-----------------------------v--------------------------------+       |
+|  |                    Storage Layer                              |       |
+|  |                                                              |       |
+|  |  +------------------+  +------------------+  +--------------+|       |
+|  |  |  Auto Memory     |  |  Team Memory     |  | Agent Memory ||       |
+|  |  |  (private)       |  |  (shared)        |  | (per-agent)  ||       |
+|  |  |                  |  |                  |  |              ||       |
+|  |  | ~/.claude/       |  | ~/.claude/       |  | user/project ||       |
+|  |  |  projects/       |  |  projects/       |  |  /local      ||       |
+|  |  |  &lt;slug&gt;/memory/  |  |  &lt;slug&gt;/memory/  |  |  scope       ||       |
+|  |  |                  |  |  team/           |  |              ||       |
+|  |  |  MEMORY.md       |  |  MEMORY.md       |  |  MEMORY.md   ||       |
+|  |  |  *.md (topics)   |  |  *.md (topics)   |  |  *.md        ||       |
+|  |  +--------+---------+  +--------+---------+  +--------------+|       |
+|  |           |                     |                             |       |
+|  +-----------+---------------------+-----------------------------+       |
+|              |                     |                                     |
+|  +-----------v---------+  +-------v-------------------------------+     |
+|  |  Extract Memories   |  |  Team Memory Sync Service              |     |
+|  |  (background fork)  |  |  watcher.ts -&gt; fs.watch(recursive)     |     |
+|  |                     |  |  index.ts   -&gt; pull/push via REST API  |     |
+|  |  stopHooks trigger  |  |  secretScanner.ts -&gt; gitleaks rules    |     |
+|  |  forkedAgent()      |  |  teamMemSecretGuard.ts -&gt; write-time   |     |
+|  +---------------------+  +---------------------------------------+     |
+|                                                                         |
+|  +-------------------------------------------------------------+       |
+|  |  SessionMemory (per-session structured notes)                |       |
+|  |  sessionMemory.ts -&gt; postSamplingHook -&gt; forkedAgent          |       |
+|  |  prompts.ts -&gt; template + update prompt                       |       |
+|  |  Used by autoCompact for compaction context                   |       |
+|  +-------------------------------------------------------------+       |
+|                                                                         |
++-------------------------------------------------------------------------+
+</code></pre>
+<hr>
+<h2>3. 记忆类型学</h2>
+<blockquote>
+<p>源文件：<code>src/memdir/memoryTypes.ts</code></p>
+</blockquote>
+<h3>3.1 四种记忆类型</h3>
+<p>系统采用封闭的四类型分类法。每种类型有明确的保存时机、使用方式和作用域偏好：</p>
+<pre><code class="language-typescript">// src/memdir/memoryTypes.ts:14-19
+export const MEMORY_TYPES = [
+  &#39;user&#39;,
+  &#39;feedback&#39;,
+  &#39;project&#39;,
+  &#39;reference&#39;,
+] as const
+
+export type MemoryType = (typeof MEMORY_TYPES)[number]
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>类型</th>
+<th>描述</th>
+<th>作用域偏好</th>
+<th>保存时机</th>
+<th>使用时机</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>user</code></td>
+<td>用户角色、目标、能力、偏好</td>
+<td><strong>always private</strong></td>
+<td>了解到用户的角色/偏好/能力时</td>
+<td>需要根据用户画像定制响应时</td>
+</tr>
+<tr>
+<td><code>feedback</code></td>
+<td>用户对工作方式的纠正或确认</td>
+<td><strong>default private</strong> (仅当属于全项目规范时才 team)</td>
+<td>用户纠正做法或确认非显而易见的做法时</td>
+<td>避免重复犯错、保持已验证的做法</td>
+</tr>
+<tr>
+<td><code>project</code></td>
+<td>进行中的工作、目标、事件、决策</td>
+<td><strong>偏向 team</strong></td>
+<td>了解到谁在做什么、为什么、何时截止</td>
+<td>理解请求背后的更大上下文</td>
+</tr>
+<tr>
+<td><code>reference</code></td>
+<td>外部系统的指向性信息</td>
+<td><strong>usually team</strong></td>
+<td>了解到外部资源位置及用途时</td>
+<td>用户引用外部系统或信息时</td>
+</tr>
+</tbody></table>
+<h3>3.2 类型解析</h3>
+<pre><code class="language-typescript">// src/memdir/memoryTypes.ts:28-31
+export function parseMemoryType(raw: unknown): MemoryType | undefined {
+  if (typeof raw !== &#39;string&#39;) return undefined
+  return MEMORY_TYPES.find(t =&gt; t === raw)
+}
+</code></pre>
+<p>设计要点：</p>
+<ul>
+<li>对无效或缺失的 <code>type:</code> 字段返回 <code>undefined</code>，不抛错</li>
+<li>向后兼容旧文件（没有 <code>type:</code> 字段的 legacy 文件继续工作）</li>
+</ul>
+<h3>3.3 两套 Prompt 变体</h3>
+<p>系统维护两套完全独立的类型描述 prompt 而非从共享模板生成：</p>
+<table>
+<thead>
+<tr>
+<th>变体</th>
+<th>导出常量</th>
+<th>使用场景</th>
+<th>特点</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Combined</td>
+<td><code>TYPES_SECTION_COMBINED</code></td>
+<td>private + team 双目录</td>
+<td>包含 <code>&lt;scope&gt;</code> 标签，示例含 private/team 限定词</td>
+</tr>
+<tr>
+<td>Individual</td>
+<td><code>TYPES_SECTION_INDIVIDUAL</code></td>
+<td>仅单目录</td>
+<td>无 <code>&lt;scope&gt;</code> 标签，示例使用普通 <code>[saves X memory: ...]</code></td>
+</tr>
+</tbody></table>
+<h3>3.4 不应保存的内容</h3>
+<pre><code class="language-typescript">// src/memdir/memoryTypes.ts:183-195
+// 注意：此处为简化引用，完整内容请参见源码（各条目含详细解释，最后一条含额外引导语句）。
+export const WHAT_NOT_TO_SAVE_SECTION: readonly string[] = [
+  &#39;## What NOT to save in memory&#39;,
+  &#39;&#39;,
+  &#39;- Code patterns, conventions, architecture, file paths, or project structure&#39;,
+  &#39;- Git history, recent changes, or who-changed-what&#39;,
+  &#39;- Debugging solutions or fix recipes&#39;,
+  &#39;- Anything already documented in CLAUDE.md files.&#39;,
+  &#39;- Ephemeral task details: in-progress work, temporary state&#39;,
+  &#39;&#39;,
+  // 即使用户明确要求也要过滤
+  &#39;These exclusions apply even when the user explicitly asks you to save.&#39;,
+]
+</code></pre>
+<p>核心设计原则：<strong>记忆仅保存从当前项目状态不可推导的信息</strong>。代码模式、架构、git 历史等均可通过 grep/git/CLAUDE.md 获取，不应作为记忆保存。</p>
+<h3>3.5 Feedback 类型的 Body Structure</h3>
+<p><code>feedback</code> 和 <code>project</code> 类型有规定的正文结构：</p>
+<pre><code>Rule/Fact statement
+**Why:** [原因 -- 通常是过去的事故或强烈偏好]
+**How to apply:** [何时何地应用此指导]
+</code></pre>
+<p>这种结构使记忆在边界情况下可被合理评估，而非盲目遵循。</p>
+<hr>
+<h2>4. Frontmatter 格式与 MEMORY.md 索引</h2>
+<blockquote>
+<p>源文件：<code>src/memdir/memoryTypes.ts:261-271</code>, <code>src/memdir/memdir.ts</code></p>
+</blockquote>
+<h3>4.1 单个记忆文件格式</h3>
+<pre><code class="language-markdown">---
+name: {{memory name}}
+description: {{one-line description -- 用于未来决定相关性，需具体}}
+type: {{user, feedback, project, reference}}
+---
+
+{{memory content -- feedback/project 类型使用: 规则/事实 + **Why:** + **How to apply:**}}
+</code></pre>
+<h3>4.2 MEMORY.md 索引机制</h3>
+<p><code>MEMORY.md</code> 是一个<strong>纯索引文件</strong>，不是记忆本身：</p>
+<pre><code class="language-typescript">// src/memdir/memdir.ts:34-38
+export const ENTRYPOINT_NAME = &#39;MEMORY.md&#39;
+export const MAX_ENTRYPOINT_LINES = 200
+export const MAX_ENTRYPOINT_BYTES = 25_000
+</code></pre>
+<p>写入记忆是<strong>两步操作</strong>（当 <code>skipIndex = false</code> 时）：</p>
+<ol>
+<li><strong>Step 1</strong>：将记忆写入独立的 <code>.md</code> 文件（如 <code>user_role.md</code>, <code>feedback_testing.md</code>）</li>
+<li><strong>Step 2</strong>：在 <code>MEMORY.md</code> 中添加指向该文件的指针，格式为单行、不超过 ~150 字符：<pre><code>- [Title](file.md) -- one-line hook
+</code></pre>
+</li>
+</ol>
+<h3>4.3 MEMORY.md 截断策略</h3>
+<pre><code class="language-typescript">// src/memdir/memdir.ts:57-103
+export function truncateEntrypointContent(raw: string): EntrypointTruncation {
+  // 1. 先按行截断（自然边界）
+  // 2. 再按字节截断（在最后一个换行处切割，不切断行中间）
+  // 3. 附加警告说明哪个上限触发了截断
+}
+</code></pre>
+<p>截断产生三种提示信息：</p>
+<table>
+<thead>
+<tr>
+<th>触发条件</th>
+<th>提示格式</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>仅超行数</td>
+<td><code>{lineCount} lines (limit: 200)</code></td>
+</tr>
+<tr>
+<td>仅超字节</td>
+<td><code>{byteSize} (limit: 24.4KB) -- index entries are too long</code></td>
+</tr>
+<tr>
+<td>两者都超</td>
+<td><code>{lineCount} lines and {byteSize}</code></td>
+</tr>
+</tbody></table>
+<hr>
+<h2>5. 路径体系</h2>
+<blockquote>
+<p>源文件：<code>src/memdir/paths.ts</code></p>
+</blockquote>
+<h3>5.1 Auto Memory 路径解析顺序</h3>
+<pre><code>Resolution order (first defined wins):
+  1. CLAUDE_COWORK_MEMORY_PATH_OVERRIDE env var (Cowork 全路径覆盖)
+  2. autoMemoryDirectory in settings.json (仅受信源: policy/local/user, 排除 project)
+  3. &lt;memoryBase&gt;/projects/&lt;sanitized-git-root&gt;/memory/
+     where memoryBase = CLAUDE_CODE_REMOTE_MEMORY_DIR || ~/.claude
+</code></pre>
+<pre><code class="language-typescript">// src/memdir/paths.ts:223-235
+export const getAutoMemPath = memoize(
+  (): string =&gt; {
+    const override = getAutoMemPathOverride() ?? getAutoMemPathSetting()
+    if (override) return override
+    const projectsDir = join(getMemoryBaseDir(), &#39;projects&#39;)
+    return (
+      join(projectsDir, sanitizePath(getAutoMemBase()), AUTO_MEM_DIRNAME) + sep
+    ).normalize(&#39;NFC&#39;)
+  },
+  () =&gt; getProjectRoot(), // memoize key
+)
+</code></pre>
+<h3>5.2 Auto Memory 启用条件</h3>
+<pre><code class="language-typescript">// src/memdir/paths.ts:30-55
+// 优先级链（首个已定义的值胜出）：
+//   1. CLAUDE_CODE_DISABLE_AUTO_MEMORY env var (1/true -&gt; OFF, 0/false -&gt; ON)
+//   2. CLAUDE_CODE_SIMPLE (--bare) -&gt; OFF
+//   3. CCR without persistent storage -&gt; OFF
+//   4. autoMemoryEnabled in settings.json
+//   5. Default: enabled
+</code></pre>
+<h3>5.3 安全约束</h3>
+<pre><code class="language-typescript">// src/memdir/paths.ts:109-150
+function validateMemoryPath(raw, expandTilde): string | undefined {
+  // 拒绝：
+  // - 相对路径 (!isAbsolute)
+  // - 根路径或近根路径 (length &lt; 3)
+  // - Windows 驱动器根 (C: regex)
+  // - UNC 路径 (\\server\share)
+  // - 包含 null byte 的路径
+  // 支持 ~/ 展开（仅 settings.json 来源，env var 不展开）
+}
+</code></pre>
+<p><strong>安全设计</strong>：<code>projectSettings</code>（提交到仓库的 <code>.claude/settings.json</code>）被刻意排除在 <code>autoMemoryDirectory</code> 的受信源之外 -- 恶意仓库可以通过设置 <code>autoMemoryDirectory: “~/.ssh”</code> 获得对敏感目录的静默写入权限。</p>
+<h3>5.4 Git Worktree 感知</h3>
+<pre><code class="language-typescript">// src/memdir/paths.ts:203-205
+function getAutoMemBase(): string {
+  return findCanonicalGitRoot(getProjectRoot()) ?? getProjectRoot()
+}
+</code></pre>
+<p>同一个仓库的所有 worktree 共享同一个 auto-memory 目录（通过 <code>findCanonicalGitRoot</code> 找到规范的 git 仓库根）。</p>
+<h3>5.5 Extract Mode 启用条件</h3>
+<pre><code class="language-typescript">// src/memdir/paths.ts:69-77
+export function isExtractModeActive(): boolean {
+  if (!getFeatureValue_CACHED_MAY_BE_STALE(&#39;tengu_passport_quail&#39;, false)) {
+    return false
+  }
+  return (
+    !getIsNonInteractiveSession() ||
+    getFeatureValue_CACHED_MAY_BE_STALE(&#39;tengu_slate_thimble&#39;, false)
+  )
+}
+</code></pre>
+<hr>
+<h2>6. Private 与 Team 双层作用域</h2>
+<blockquote>
+<p>源文件：<code>src/memdir/teamMemPaths.ts</code>, <code>src/memdir/teamMemPrompts.ts</code></p>
+</blockquote>
+<h3>6.1 路径结构</h3>
+<pre><code>~/.claude/projects/&lt;sanitized-git-root&gt;/memory/
+|-- MEMORY.md              &lt;- private index
+|-- user_role.md           &lt;- private topic file
+|-- feedback_testing.md    &lt;- private topic file
++-- team/                  &lt;- team memory subdirectory
+    |-- MEMORY.md          &lt;- team index
+    |-- project_freeze.md  &lt;- team topic file
+    +-- reference_linear.md
+</code></pre>
+<pre><code class="language-typescript">// src/memdir/teamMemPaths.ts:84-94
+export function getTeamMemPath(): string {
+  return (join(getAutoMemPath(), &#39;team&#39;) + sep).normalize(&#39;NFC&#39;)
+}
+
+export function getTeamMemEntrypoint(): string {
+  return join(getAutoMemPath(), &#39;team&#39;, &#39;MEMORY.md&#39;)
+}
+</code></pre>
+<h3>6.2 Team Memory 启用条件</h3>
+<pre><code class="language-typescript">// src/memdir/teamMemPaths.ts:73-78
+export function isTeamMemoryEnabled(): boolean {
+  if (!isAutoMemoryEnabled()) return false  // 前置依赖
+  return getFeatureValue_CACHED_MAY_BE_STALE(&#39;tengu_herring_clock&#39;, false)
+}
+</code></pre>
+<p>Team memory 是 auto memory 的子目录，因此必须先启用 auto memory。</p>
+<h3>6.3 路径安全防护</h3>
+<p>Team memory 路径验证有 <strong>两遍检查</strong>：</p>
+<pre><code>Pass 1 (string-level): resolve() + startsWith(teamDir)
+  | 拒绝 .. 遍历攻击
+Pass 2 (filesystem-level): realpathDeepestExisting() + isRealPathWithinTeamDir()
+  | 拒绝 symlink 逃逸攻击 (PSR M22186)
+</code></pre>
+<pre><code class="language-typescript">// src/memdir/teamMemPaths.ts:228-256
+export async function validateTeamMemWritePath(filePath: string): Promise&lt;string&gt; {
+  if (filePath.includes(&#39;\0&#39;)) throw new PathTraversalError(...)
+  const resolvedPath = resolve(filePath)
+  if (!resolvedPath.startsWith(teamDir))
+    throw new PathTraversalError(&#39;Path escapes team memory directory&#39;)
+  const realPath = await realpathDeepestExisting(resolvedPath)
+  if (!(await isRealPathWithinTeamDir(realPath)))
+    throw new PathTraversalError(&#39;Path escapes via symlink&#39;)
+  return resolvedPath
+}
+</code></pre>
+<p>额外防护向量：</p>
+<ul>
+<li><strong>Null byte 注入</strong>：直接拒绝</li>
+<li><strong>URL-encoded 遍历</strong> (<code>%2e%2e%2f</code>)：<code>decodeURIComponent</code> 后检测</li>
+<li><strong>Unicode 正规化攻击</strong>（全角句点/斜杠）：NFKC 正规化后检测</li>
+<li><strong>反斜杠</strong>（Windows 路径分隔符）：直接拒绝</li>
+<li><strong>悬空 symlink</strong>：通过 <code>lstat</code> 区分真不存在 vs 悬空 symlink</li>
+<li><strong>Symlink 循环</strong>（ELOOP）：抛错</li>
+</ul>
+<h3>6.4 Combined Prompt 构建</h3>
+<pre><code class="language-typescript">// src/memdir/teamMemPrompts.ts:22-100
+export function buildCombinedMemoryPrompt(
+  extraGuidelines?: string[],
+  skipIndex = false,
+): string {
+  // 使用 TYPES_SECTION_COMBINED（含 &lt;scope&gt; 标签）
+  // 额外添加敏感数据禁令：
+  // “You MUST avoid saving sensitive data within shared team memories.”
+}
+</code></pre>
+<hr>
+<h2>7. 记忆扫描</h2>
+<blockquote>
+<p>源文件：<code>src/memdir/memoryScan.ts</code></p>
+</blockquote>
+<h3>7.1 核心类型</h3>
+<pre><code class="language-typescript">// src/memdir/memoryScan.ts:13-19
+export type MemoryHeader = {
+  filename: string       // 相对路径
+  filePath: string       // 绝对路径
+  mtimeMs: number        // 修改时间（毫秒）
+  description: string | null  // 从 frontmatter 提取
+  type: MemoryType | undefined // 从 frontmatter 提取
+}
+</code></pre>
+<h3>7.2 关键常量</h3>
+<pre><code class="language-typescript">const MAX_MEMORY_FILES = 200        // 最多扫描 200 个文件
+const FRONTMATTER_MAX_LINES = 30    // 每个文件只读前 30 行提取 frontmatter
+</code></pre>
+<h3>7.3 扫描算法</h3>
+<pre><code class="language-typescript">// src/memdir/memoryScan.ts:35-77
+export async function scanMemoryFiles(
+  memoryDir: string,
+  signal: AbortSignal,
+): Promise&lt;MemoryHeader[]&gt;
+</code></pre>
+<p>算法步骤：</p>
+<ol>
+<li><code>readdir(memoryDir, { recursive: true })</code> 递归列出所有文件</li>
+<li>过滤出 <code>.md</code> 文件，排除 <code>MEMORY.md</code>（索引文件）</li>
+<li>对每个文件并行读取前 30 行（<code>readFileInRange</code>，内含 stat，返回 mtimeMs）</li>
+<li>解析 frontmatter 提取 <code>description</code> 和 <code>type</code></li>
+<li>使用 <code>Promise.allSettled</code> 容忍个别文件读取失败</li>
+<li>按 <code>mtimeMs</code> <strong>降序排列</strong>（最新的在前）</li>
+<li>取前 200 个</li>
+</ol>
+<p><strong>性能优化</strong>：单遍读取 -- <code>readFileInRange</code> 内部 stat 返回 mtimeMs，避免先 stat-sort-read 的双遍 syscall。</p>
+<h3>7.4 Manifest 格式化</h3>
+<pre><code class="language-typescript">// src/memdir/memoryScan.ts:84-94
+export function formatMemoryManifest(memories: MemoryHeader[]): string
+// 输出格式：
+// - [type] filename (ISO-timestamp): description
+// - [user] user_role.md (2026-03-28T10:00:00.000Z): Senior Go engineer
+</code></pre>
+<p>此 manifest 同时被 recall selector（<code>findRelevantMemories</code>）和 extraction agent（<code>extractMemories</code>）使用。</p>
+<hr>
+<h2>8. 相关性选择算法</h2>
+<blockquote>
+<p>源文件：<code>src/memdir/findRelevantMemories.ts</code></p>
+</blockquote>
+<h3>8.1 核心流程</h3>
+<pre><code>用户查询
+    |
+    v
+scanMemoryFiles(memoryDir)
+    | 过滤 alreadySurfaced
+    v
+selectRelevantMemories(query, memories, recentTools)
+    | Sonnet side-query (JSON schema output)
+    v
+返回最多 5 个 RelevantMemory (path + mtimeMs)
+</code></pre>
+<h3>8.2 接口签名</h3>
+<pre><code class="language-typescript">// src/memdir/findRelevantMemories.ts:39-45
+export async function findRelevantMemories(
+  query: string,
+  memoryDir: string,
+  signal: AbortSignal,
+  recentTools: readonly string[] = [],
+  alreadySurfaced: ReadonlySet&lt;string&gt; = new Set(),
+): Promise&lt;RelevantMemory[]&gt;
+</code></pre>
+<h3>8.3 Selector System Prompt</h3>
+<pre><code class="language-typescript">const SELECT_MEMORIES_SYSTEM_PROMPT = `You are selecting memories that will be
+useful to Claude Code as it processes a user&#39;s query...
+- Only include memories that you are certain will be helpful
+- If you are unsure, do not include
+- If a list of recently-used tools is provided, do not select memories that are
+  usage reference or API documentation for those tools -- DO still select memories
+  containing warnings, gotchas, or known issues about those tools`
+</code></pre>
+<p>关键设计决策：</p>
+<ul>
+<li><strong>模型驱动选择</strong>：使用 Sonnet 模型做 side-query，而非关键词匹配或嵌入向量</li>
+<li><strong>最多选 5 个</strong>：硬限制，防止 context 膨胀</li>
+<li><strong>去重机制</strong>：<code>alreadySurfaced</code> 参数过滤之前 turn 已展示的记忆</li>
+<li><strong>工具上下文感知</strong>：当工具正在使用中，不选该工具的参考文档（已在对话中），但仍选相关的 warnings/gotchas</li>
+</ul>
+<h3>8.4 sideQuery 调用参数</h3>
+<pre><code class="language-typescript">// src/memdir/findRelevantMemories.ts:98-122
+const result = await sideQuery({
+  model: getDefaultSonnetModel(),
+  system: SELECT_MEMORIES_SYSTEM_PROMPT,
+  skipSystemPromptPrefix: true,
+  messages: [{ role: &#39;user&#39;, content: `Query: ...\n\nAvailable memories:\n${manifest}${toolsSection}` }],
+  max_tokens: 256,
+  output_format: {
+    type: &#39;json_schema&#39;,
+    schema: {
+      type: &#39;object&#39;,
+      properties: {
+        selected_memories: { type: &#39;array&#39;, items: { type: &#39;string&#39; } },
+      },
+      required: [&#39;selected_memories&#39;],
+      additionalProperties: false,
+    },
+  },
+  querySource: &#39;memdir_relevance&#39;,
+})
+</code></pre>
+<h3>8.5 Telemetry</h3>
+<p>当 <code>feature(&#39;MEMORY_SHAPE_TELEMETRY&#39;)</code> 启用时，调用 <code>logMemoryRecallShape(memories, selected)</code> 记录选择率指标（即使选择为空也记录，以提供分母）。</p>
+<hr>
+<h2>9. 记忆新鲜度与过期管理</h2>
+<blockquote>
+<p>源文件：<code>src/memdir/memoryAge.ts</code></p>
+</blockquote>
+<h3>9.1 年龄计算</h3>
+<pre><code class="language-typescript">// src/memdir/memoryAge.ts:6-8
+export function memoryAgeDays(mtimeMs: number): number {
+  return Math.max(0, Math.floor((Date.now() - mtimeMs) / 86_400_000))
+}
+</code></pre>
+<h3>9.2 可读年龄字符串</h3>
+<pre><code class="language-typescript">export function memoryAge(mtimeMs: number): string {
+  // 0 -&gt; &#39;today&#39;, 1 -&gt; &#39;yesterday&#39;, N -&gt; &#39;47 days ago&#39;
+}
+</code></pre>
+<p>设计理由：模型不擅长日期算术 -- 原始 ISO 时间戳不会触发过期推理，但 “47 days ago” 会。</p>
+<h3>9.3 Staleness 警告</h3>
+<pre><code class="language-typescript">// src/memdir/memoryAge.ts:33-42
+export function memoryFreshnessText(mtimeMs: number): string {
+  const d = memoryAgeDays(mtimeMs)
+  if (d &lt;= 1) return &#39;&#39;  // today/yesterday 不警告
+  return (
+    `This memory is ${d} days old. ` +
+    `Memories are point-in-time observations, not live state -- ` +
+    `claims about code behavior or file:line citations may be outdated. ` +
+    `Verify against current code before asserting as fact.`
+  )
+}
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>年龄</th>
+<th>处理方式</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>0-1 天</td>
+<td>无警告</td>
+</tr>
+<tr>
+<td>&gt; 1 天</td>
+<td>附加 staleness caveat，要求验证后才可断言</td>
+</tr>
+</tbody></table>
+<h3>9.4 注入形式</h3>
+<ul>
+<li><code>memoryFreshnessText()</code> -- 纯文本，由调用方自行包装（如 <code>relevant_memories</code> attachment）</li>
+<li><code>memoryFreshnessNote()</code> -- 自带 <code>&lt;system-reminder&gt;</code> 包装（如 <code>FileReadTool</code> 输出）</li>
+</ul>
+<hr>
+<h2>10. 记忆与 System Prompt 的耦合</h2>
+<blockquote>
+<p>源文件：<code>src/memdir/memdir.ts</code>, <code>src/constants/prompts.ts</code>, <code>src/utils/claudemd.ts</code>, <code>src/utils/attachments.ts</code></p>
+</blockquote>
+<h3>10.1 三层注入机制</h3>
+<pre><code>Layer 1: System Prompt (静态，每 session 一次)
+  prompts.ts -&gt; systemPromptSection(&#39;memory&#39;, loadMemoryPrompt)
+  -&gt; 注入记忆系统行为指令（类型学、保存规则、访问规则、验证规则）
+
+Layer 2: User Context (静态，每 session 一次)
+  claudemd.ts -&gt; getMemoryFiles() -&gt; MEMORY.md 内容
+  -&gt; 注入索引文件的实际内容
+
+Layer 3: Attachment (动态，每 turn)
+  attachments.ts -&gt; findRelevantMemories() -&gt; relevant_memories
+  -&gt; 注入当前 query 相关的 topic 文件内容 + staleness warning
+</code></pre>
+<h3>10.2 loadMemoryPrompt 调度逻辑</h3>
+<pre><code class="language-typescript">// src/memdir/memdir.ts:419-507
+export async function loadMemoryPrompt(): Promise&lt;string | null&gt; {
+  // KAIROS 模式: 使用 daily log 而非 MEMORY.md 索引
+  if (feature(&#39;KAIROS&#39;) &amp;&amp; autoEnabled &amp;&amp; getKairosActive()) {
+    return buildAssistantDailyLogPrompt(skipIndex)
+  }
+  // TEAMMEM + enabled: combined prompt (private + team)
+  if (feature(&#39;TEAMMEM&#39;) &amp;&amp; isTeamMemoryEnabled()) {
+    await ensureMemoryDirExists(teamDir)
+    return buildCombinedMemoryPrompt(extraGuidelines, skipIndex)
+  }
+  // Auto only: individual prompt
+  if (autoEnabled) {
+    await ensureMemoryDirExists(autoDir)
+    return buildMemoryLines(...).join(&#39;\n&#39;)
+  }
+  // Disabled
+  return null
+}
+</code></pre>
+<h3>10.3 KAIROS 日志模式（Assistant 长会话）</h3>
+<pre><code class="language-typescript">// src/memdir/memdir.ts:327-370
+// Assistant 会话是半永久的，agent 写入 append-only 日期命名日志
+// 路径模式: &lt;autoMemPath&gt;/logs/YYYY/MM/YYYY-MM-DD.md
+// 独立的 /dream skill 在夜间将日志蒸馏成 topic 文件 + MEMORY.md
+</code></pre>
+<h3>10.4 Searching Past Context</h3>
+<p>系统提供搜索过往上下文的指导（feature gate <code>tengu_coral_fern</code>）：</p>
+<pre><code>1. 搜索记忆目录的 topic 文件:
+   Grep pattern=”&lt;search term&gt;” path=”&lt;autoMemDir&gt;” glob=”*.md”
+
+2. 会话 transcript 日志 (last resort):
+   Grep pattern=”&lt;search term&gt;” path=”&lt;projectDir&gt;/” glob=”*.jsonl”
+</code></pre>
+<h3>10.5 记忆与其他持久化的区分</h3>
+<p>prompt 中明确区分了记忆与其他持久化机制：</p>
+<table>
+<thead>
+<tr>
+<th>机制</th>
+<th>用途</th>
+<th>范围</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Memory</td>
+<td>跨会话持久化信息</td>
+<td>未来会话</td>
+</tr>
+<tr>
+<td>Plan</td>
+<td>实施方案对齐</td>
+<td>当前会话</td>
+</tr>
+<tr>
+<td>Tasks</td>
+<td>工作分解与进度</td>
+<td>当前会话</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>11. 记忆提取 (extractMemories)</h2>
+<blockquote>
+<p>源文件：<code>src/services/extractMemories/extractMemories.ts</code>, <code>src/services/extractMemories/prompts.ts</code></p>
+</blockquote>
+<h3>11.1 触发时机</h3>
+<p>记忆提取在每个完整的 query loop 结束时（模型产生无 tool call 的最终响应）通过 <code>handleStopHooks</code> 触发，采用 <strong>fire-and-forget</strong> 模式。</p>
+<h3>11.2 Closure-Scoped 状态模型</h3>
+<pre><code class="language-typescript">// src/services/extractMemories/extractMemories.ts:296-326
+export function initExtractMemories(): void {
+  // 闭包内部状态:
+  let lastMemoryMessageUuid: string | undefined  // 游标
+  let inProgress = false                          // 重叠保护
+  let turnsSinceLastExtraction = 0                // 节流计数器
+  let pendingContext: {...} | undefined            // 暂存上下文
+  const inFlightExtractions = new Set&lt;Promise&lt;void&gt;&gt;()
+  // ...
+}
+</code></pre>
+<h3>11.3 门控条件</h3>
+<pre><code>executeExtractMemoriesImpl 检查链:
+  1. context.toolUseContext.agentId -&gt; 仅主 agent，跳过子 agent
+  2. tengu_passport_quail feature gate -&gt; 全局开关
+  3. isAutoMemoryEnabled() -&gt; auto memory 启用
+  4. !getIsRemoteMode() -&gt; 非远程模式
+  5. !inProgress -&gt; 防止重叠运行
+</code></pre>
+<h3>11.4 主 Agent 写入互斥</h3>
+<pre><code class="language-typescript">// src/services/extractMemories/extractMemories.ts:121-148
+function hasMemoryWritesSince(messages, sinceUuid): boolean {
+  // 扫描 assistant 消息中的 Write/Edit tool_use，
+  // 检查 file_path 是否在 auto-memory 路径内
+}
+</code></pre>
+<p>当主 agent 自己写了记忆时，forked extraction agent 跳过该范围并推进游标。两者<strong>互斥</strong>：主 agent 写了就不提取，没写则由后台补充。</p>
+<h3>11.5 节流机制</h3>
+<pre><code class="language-typescript">// src/services/extractMemories/extractMemories.ts:377-385
+if (!isTrailingRun) {
+  turnsSinceLastExtraction++
+  if (turnsSinceLastExtraction &lt;
+      (getFeatureValue_CACHED_MAY_BE_STALE(&#39;tengu_bramble_lintel&#39;, null) ?? 1)) {
+    return
+  }
+}
+turnsSinceLastExtraction = 0
+</code></pre>
+<p>通过 <code>tengu_bramble_lintel</code>（默认为 1）控制每 N 个合格 turn 才执行一次提取。Trailing run（暂存上下文的后续运行）跳过此检查。</p>
+<h3>11.6 Forked Agent 执行</h3>
+<pre><code class="language-typescript">const result = await runForkedAgent({
+  promptMessages: [createUserMessage({ content: userPrompt })],
+  cacheSafeParams,
+  canUseTool,
+  querySource: &#39;extract_memories&#39;,
+  forkLabel: &#39;extract_memories&#39;,
+  skipTranscript: true,  // 不写入 transcript（避免竞态）
+  maxTurns: 5,           // 硬上限防止验证兔子洞
+})
+</code></pre>
+<h3>11.7 工具权限</h3>
+<pre><code class="language-typescript">// src/services/extractMemories/extractMemories.ts:171-222
+export function createAutoMemCanUseTool(memoryDir: string): CanUseToolFn {
+  // 允许:
+  //   - REPL（REPL 模式下原始工具被隐藏）
+  //   - FileRead / Grep / Glob（全部只读，无限制）
+  //   - Bash（仅 isReadOnly 命令: ls/find/grep/cat/stat/wc/head/tail）
+  //   - FileEdit / FileWrite（仅限 auto-memory 路径内）
+  // 拒绝:
+  //   - 所有其他工具（MCP、Agent、write-capable Bash 等）
+}
+</code></pre>
+<h3>11.8 Extraction Prompt 结构</h3>
+<pre><code class="language-typescript">// src/services/extractMemories/prompts.ts:29-44
+function opener(newMessageCount: number, existingMemories: string): string {
+  // “You are now acting as the memory extraction subagent.”
+  // “Analyze the most recent ~{N} messages above”
+  // “Available tools: FileRead, Grep, Glob, read-only Bash, Edit/Write for memory dir”
+  // “You have a limited turn budget” -&gt; 建议: turn 1 读，turn 2 写
+  // “You MUST only use content from the last ~{N} messages”
+  // “Do not waste turns attempting to investigate or verify”
+  //
+  // + Existing memory files manifest (如果有)
+}
+</code></pre>
+<p>高效策略指导：</p>
+<ul>
+<li>Turn 1：并行 Read 所有可能更新的文件</li>
+<li>Turn 2：并行 Write/Edit 所有变更</li>
+<li>不交错读写跨多个 turn</li>
+</ul>
+<h3>11.9 Drain 机制</h3>
+<pre><code class="language-typescript">// src/services/extractMemories/extractMemories.ts:611-615
+export async function drainPendingExtraction(timeoutMs?: number): Promise&lt;void&gt; {
+  // 在响应刷新后、gracefulShutdown 前等待所有 in-flight 提取完成
+  // 默认 60s 超时
+}
+</code></pre>
+<h3>11.10 Trailing Run 机制</h3>
+<p>当提取正在进行时新调用到来：</p>
+<ol>
+<li>暂存新上下文到 <code>pendingContext</code>（仅保留最新的）</li>
+<li>当前提取完成后的 <code>finally</code> 块中检测 <code>pendingContext</code></li>
+<li>如果有，执行 trailing extraction（<code>isTrailingRun: true</code>，跳过节流检查）</li>
+<li>Trailing run 的 <code>newMessageCount</code> 基于刚推进的游标，只处理两次调用之间的增量消息</li>
+</ol>
+<hr>
+<h2>12. SessionMemory -- 会话级持续总结</h2>
+<blockquote>
+<p>源文件：<code>src/services/SessionMemory/sessionMemory.ts</code>, <code>src/services/SessionMemory/prompts.ts</code>, <code>src/services/SessionMemory/sessionMemoryUtils.ts</code></p>
+</blockquote>
+<h3>12.1 定位</h3>
+<p>SessionMemory 不同于 memdir 的长期记忆。它是<strong>会话内的结构化笔记</strong>，用于为 auto-compaction 提供上下文。</p>
+<h3>12.2 默认模板</h3>
+<pre><code class="language-typescript">// src/services/SessionMemory/prompts.ts:11-41
+export const DEFAULT_SESSION_MEMORY_TEMPLATE = `
+# Session Title
+_A short and distinctive 5-10 word descriptive title..._
+
+# Current State
+_What is actively being worked on right now?..._
+
+# Task specification
+_What did the user ask to build?..._
+
+# Files and Functions
+_What are the important files?..._
+
+# Workflow
+_What bash commands are usually run?..._
+
+# Errors &amp; Corrections
+_Errors encountered and how they were fixed..._
+
+# Codebase and System Documentation
+_What are the important system components?..._
+
+# Learnings
+_What has worked well? What has not?..._
+
+# Key results
+_If the user asked a specific output..._
+
+# Worklog
+_Step by step, what was attempted, done?..._
+`
+</code></pre>
+<p>用户可将自定义模板放在 <code>~/.claude/session-memory/config/template.md</code>。</p>
+<h3>12.3 配置与门槛</h3>
+<pre><code class="language-typescript">// src/services/SessionMemory/sessionMemoryUtils.ts:32-36
+export const DEFAULT_SESSION_MEMORY_CONFIG: SessionMemoryConfig = {
+  minimumMessageTokensToInit: 10000,   // 首次初始化前最低 token 数
+  minimumTokensBetweenUpdate: 5000,    // 两次更新间最低 token 增长
+  toolCallsBetweenUpdates: 3,          // 两次更新间最低 tool call 数
+}
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>默认值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>minimumMessageTokensToInit</code></td>
+<td>10,000</td>
+<td>会话 context 达到此 token 数才启动 SessionMemory</td>
+</tr>
+<tr>
+<td><code>minimumTokensBetweenUpdate</code></td>
+<td>5,000</td>
+<td>自上次提取以来 context 增长达到此 token 数才触发</td>
+</tr>
+<tr>
+<td><code>toolCallsBetweenUpdates</code></td>
+<td>3</td>
+<td>自上次提取以来 tool call 数达到此数才触发</td>
+</tr>
+</tbody></table>
+<p>远程配置通过 <code>tengu_sm_config</code> GrowthBook flag 覆盖。</p>
+<h3>12.4 触发条件</h3>
+<pre><code class="language-typescript">// src/services/SessionMemory/sessionMemory.ts:134-181
+export function shouldExtractMemory(messages: Message[]): boolean {
+  // 1. 检查初始化门槛（首次需达到 minimumMessageTokensToInit）
+  // 2. 检查 token 增长门槛（minimumTokensBetweenUpdate，始终必需）
+  // 3. 检查 tool call 门槛（toolCallsBetweenUpdates）
+  // 4. 检查最后 assistant turn 是否有 tool calls
+  //
+  // 触发条件:
+  //   (token门槛达标 AND tool-call门槛达标)
+  //   OR (token门槛达标 AND 最后一轮无tool call -- 对话自然断点)
+  //
+  // 重要: token 门槛始终必需，防止过度提取
+}
+</code></pre>
+<h3>12.5 执行流程</h3>
+<pre><code>initSessionMemory() -&gt; registerPostSamplingHook(extractSessionMemory)
+    |
+    v (每次 post-sampling)
+extractSessionMemory (sequential wrapper 防并发)
+    |
+    +-- querySource !== &#39;repl_main_thread&#39; -&gt; return
+    +-- !isSessionMemoryGateEnabled() -&gt; return
+    +-- !shouldExtractMemory() -&gt; return
+    |
+    v
+setupSessionMemoryFile()
+    | -&gt; 创建目录 (mode 0o700)
+    | -&gt; 创建文件 (mode 0o600, flag &#39;wx&#39; -&gt; EEXIST 安全)
+    | -&gt; FileReadTool.call() 读取当前内容
+    v
+buildSessionMemoryUpdatePrompt()
+    | -&gt; 模板变量替换 ({{currentNotes}}, {{notesPath}})
+    | -&gt; 分析各 section 大小
+    | -&gt; 超限 section 生成压缩提示
+    v
+runForkedAgent()
+    | -&gt; canUseTool: 仅允许 FileEdit 对 memoryPath
+    | -&gt; querySource: &#39;session_memory&#39;
+    v
+recordExtractionTokenCount() + updateLastSummarizedMessageIdIfSafe()
+</code></pre>
+<h3>12.6 Section 大小管理</h3>
+<pre><code class="language-typescript">// src/services/SessionMemory/prompts.ts:8-9
+const MAX_SECTION_LENGTH = 2000           // 单 section 最大 ~2000 tokens
+const MAX_TOTAL_SESSION_MEMORY_TOKENS = 12000  // 总文件最大 ~12000 tokens
+</code></pre>
+<p>当超限时生成压缩指令：</p>
+<table>
+<thead>
+<tr>
+<th>情况</th>
+<th>指令</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>总量超限</td>
+<td><code>CRITICAL: ~{N} tokens, exceeds max {12000}. MUST condense.</code></td>
+</tr>
+<tr>
+<td>单 section 超限</td>
+<td><code>IMPORTANT: {section} is ~{N} tokens (limit: {2000}). MUST condense.</code></td>
+</tr>
+</tbody></table>
+<h3>12.7 工具权限</h3>
+<p>SessionMemory 的 forked agent 仅允许 <code>FileEdit</code> 对精确的 memory 文件路径：</p>
+<pre><code class="language-typescript">// src/services/SessionMemory/sessionMemory.ts:460-482
+export function createMemoryFileCanUseTool(memoryPath: string): CanUseToolFn {
+  // 仅允许 FILE_EDIT_TOOL_NAME 且 file_path 精确匹配 memoryPath
+  // 其他所有工具均拒绝
+}
+</code></pre>
+<h3>12.8 Update Prompt 关键规则</h3>
+<ul>
+<li><strong>绝不修改或删除 section 标题</strong>（<code>#</code> 开头的行）</li>
+<li><strong>绝不修改或删除斜体描述行</strong>（<code>_..._</code> 行是模板指令）</li>
+<li><strong>仅更新</strong>每个 section 中描述行之后的实际内容</li>
+<li>写入<strong>详细、信息密集</strong>的内容（文件路径、函数名、错误消息、精确命令）</li>
+<li><strong>始终更新 “Current State”</strong>（对 compaction 后的上下文连续性至关重要）</li>
+<li>不引用笔记抽取过程本身</li>
+</ul>
+<h3>12.9 与 AutoCompact 的关系</h3>
+<p><code>initSessionMemory()</code> 检查 <code>isAutoCompactEnabled()</code> -- SessionMemory 是为 compaction 服务的，如果 auto-compact 未启用则不初始化。</p>
+<h3>12.10 Compaction 截断</h3>
+<pre><code class="language-typescript">// src/services/SessionMemory/prompts.ts:256-296
+export function truncateSessionMemoryForCompact(content: string): {
+  truncatedContent: string; wasTruncated: boolean
+}
+// 按 section 截断，每个 section 最多 MAX_SECTION_LENGTH * 4 字符
+// 在行边界截断，附加 “[... section truncated for length ...]”
+</code></pre>
+<hr>
+<h2>13. Agent Memory -- 子代理记忆</h2>
+<blockquote>
+<p>源文件：<code>src/tools/AgentTool/agentMemory.ts</code></p>
+</blockquote>
+<h3>13.1 三种作用域</h3>
+<pre><code class="language-typescript">export type AgentMemoryScope = &#39;user&#39; | &#39;project&#39; | &#39;local&#39;
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>作用域</th>
+<th>路径</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>user</code></td>
+<td><code>~/.claude/agent-memory/&lt;agentType&gt;/</code></td>
+<td>跨项目通用学习</td>
+</tr>
+<tr>
+<td><code>project</code></td>
+<td><code>&lt;cwd&gt;/.claude/agent-memory/&lt;agentType&gt;/</code></td>
+<td>项目特定，通过 VCS 共享</td>
+</tr>
+<tr>
+<td><code>local</code></td>
+<td><code>&lt;cwd&gt;/.claude/agent-memory-local/&lt;agentType&gt;/</code></td>
+<td>项目特定，不入 VCS</td>
+</tr>
+</tbody></table>
+<p>当 <code>CLAUDE_CODE_REMOTE_MEMORY_DIR</code> 设置时，<code>local</code> 作用域重定向到持久化挂载点。</p>
+<h3>13.2 Agent Memory Prompt</h3>
+<pre><code class="language-typescript">// src/tools/AgentTool/agentMemory.ts:138-177
+export function loadAgentMemoryPrompt(agentType, scope): string {
+  // 调用 buildMemoryPrompt({
+  //   displayName: &#39;Persistent Agent Memory&#39;,
+  //   memoryDir,
+  //   extraGuidelines: [scopeNote, coworkExtraGuidelines?],
+  // })
+}
+</code></pre>
+<p>Agent Memory 使用与 auto memory 相同的 <code>buildMemoryPrompt</code> 构建器，但包含 <code>MEMORY.md</code> 内容（agent 没有 <code>getClaudeMds()</code> 等价物来单独注入索引）。</p>
+<hr>
+<h2>14. Team Memory Sync 同步服务</h2>
+<blockquote>
+<p>源文件：<code>src/services/teamMemorySync/index.ts</code>, <code>src/services/teamMemorySync/types.ts</code></p>
+</blockquote>
+<h3>14.1 API 契约</h3>
+<pre><code>GET  /api/claude_code/team_memory?repo={owner/repo}             -&gt; TeamMemoryData
+GET  /api/claude_code/team_memory?repo={owner/repo}&amp;view=hashes  -&gt; metadata + checksums only
+PUT  /api/claude_code/team_memory?repo={owner/repo}             -&gt; upsert entries
+404 = no data exists yet
+</code></pre>
+<h3>14.2 核心数据类型</h3>
+<pre><code class="language-typescript">// src/services/teamMemorySync/types.ts
+export const TeamMemoryContentSchema = z.object({
+  entries: z.record(z.string(), z.string()),      // key -&gt; content
+  entryChecksums: z.record(z.string(), z.string()) // key -&gt; sha256:hex
+    .optional(),
+})
+
+export const TeamMemoryDataSchema = z.object({
+  organizationId: z.string(),
+  repo: z.string(),
+  version: z.number(),
+  lastModified: z.string(),  // ISO 8601
+  checksum: z.string(),      // SHA256 with &#39;sha256:&#39; prefix
+  content: TeamMemoryContentSchema(),
+})
+</code></pre>
+<h3>14.3 Sync 语义</h3>
+<table>
+<thead>
+<tr>
+<th>操作</th>
+<th>语义</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Pull</td>
+<td>Server wins per-key：服务器内容覆盖本地文件</td>
+</tr>
+<tr>
+<td>Push</td>
+<td>Delta upload：仅上传 content hash 与 <code>serverChecksums</code> 不同的 key</td>
+</tr>
+<tr>
+<td>Delete</td>
+<td><strong>不传播</strong>：删除本地文件不会从服务器删除，下次 pull 会恢复</td>
+</tr>
+</tbody></table>
+<h3>14.4 SyncState</h3>
+<pre><code class="language-typescript">// src/services/teamMemorySync/index.ts:100-119
+export type SyncState = {
+  lastKnownChecksum: string | null         // ETag for conditional requests
+  serverChecksums: Map&lt;string, string&gt;     // per-key sha256:hex
+  serverMaxEntries: number | null          // 从 413 响应学习的上限
+}
+</code></pre>
+<h3>14.5 Content Hash</h3>
+<pre><code class="language-typescript">export function hashContent(content: string): string {
+  return &#39;sha256:&#39; + createHash(&#39;sha256&#39;).update(content, &#39;utf8&#39;).digest(&#39;hex&#39;)
+}
+</code></pre>
+<p>格式与服务器的 <code>entryChecksums</code> 一致，可直接字符串比较。</p>
+<h3>14.6 关键常量</h3>
+<table>
+<thead>
+<tr>
+<th>常量</th>
+<th>值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>TEAM_MEMORY_SYNC_TIMEOUT_MS</code></td>
+<td>30,000</td>
+<td>HTTP 请求超时</td>
+</tr>
+<tr>
+<td><code>MAX_FILE_SIZE_BYTES</code></td>
+<td>250,000</td>
+<td>单文件大小上限</td>
+</tr>
+<tr>
+<td><code>MAX_PUT_BODY_BYTES</code></td>
+<td>200,000</td>
+<td>单次 PUT body 大小上限</td>
+</tr>
+<tr>
+<td><code>MAX_RETRIES</code></td>
+<td>3</td>
+<td>网络重试次数</td>
+</tr>
+<tr>
+<td><code>MAX_CONFLICT_RETRIES</code></td>
+<td>2</td>
+<td>412 冲突重试次数</td>
+</tr>
+</tbody></table>
+<h3>14.7 认证要求</h3>
+<pre><code class="language-typescript">// 必须满足:
+// 1. firstParty API provider
+// 2. First-party Anthropic base URL
+// 3. OAuth tokens with scopes: CLAUDE_AI_INFERENCE_SCOPE + CLAUDE_AI_PROFILE_SCOPE
+</code></pre>
+<h3>14.8 Conflict Resolution (412)</h3>
+<p>当 push 遇到 412 Precondition Failed：</p>
+<ol>
+<li>通过 <code>fetchTeamMemoryHashes</code> 廉价获取最新的 per-key checksums（无 entry bodies）</li>
+<li>用新的 <code>serverChecksums</code> 重新计算 delta</li>
+<li>重试 push（最多 <code>MAX_CONFLICT_RETRIES</code> 次）</li>
+</ol>
+<h3>14.9 Batch Splitting</h3>
+<p>当 PUT body 超过 <code>MAX_PUT_BODY_BYTES</code> (200KB) 时，entries 被分成多个批次顺序上传。Server 的 upsert-merge 语义使此安全 -- 每个批次只更新它包含的 keys。</p>
+<hr>
+<h2>15. Secret Scanner -- 敏感信息防护</h2>
+<blockquote>
+<p>源文件：<code>src/services/teamMemorySync/secretScanner.ts</code>, <code>src/services/teamMemorySync/teamMemSecretGuard.ts</code></p>
+</blockquote>
+<h3>15.1 设计目标</h3>
+<p>在上传前在客户端扫描内容，确保 secrets <strong>永远不离开用户的机器</strong>。</p>
+<h3>15.2 规则来源</h3>
+<p>使用 <a href="https://github.com/gitleaks/gitleaks">gitleaks</a> 的精选子集 -- 仅包含有独特前缀、近零误报率的高置信度规则。排除基于通用关键词上下文的规则。</p>
+<h3>15.3 覆盖的 secret 类型</h3>
+<table>
+<thead>
+<tr>
+<th>类别</th>
+<th>规则数</th>
+<th>代表性规则</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Cloud Providers</td>
+<td>5</td>
+<td><code>aws-access-token</code>, <code>gcp-api-key</code>, <code>azure-ad-client-secret</code>, <code>digitalocean-*</code></td>
+</tr>
+<tr>
+<td>AI APIs</td>
+<td>4</td>
+<td><code>anthropic-api-key</code>, <code>anthropic-admin-api-key</code>, <code>openai-api-key</code>, <code>huggingface-*</code></td>
+</tr>
+<tr>
+<td>Version Control</td>
+<td>7</td>
+<td><code>github-pat</code>, <code>github-fine-grained-pat</code>, <code>github-app-token</code>, <code>gitlab-*</code></td>
+</tr>
+<tr>
+<td>Communication</td>
+<td>4</td>
+<td><code>slack-bot-token</code>, <code>slack-user-token</code>, <code>twilio-api-key</code>, <code>sendgrid-*</code></td>
+</tr>
+<tr>
+<td>Dev Tooling</td>
+<td>5</td>
+<td><code>npm-access-token</code>, <code>pypi-upload-token</code>, <code>databricks-*</code>, <code>hashicorp-*</code>, <code>pulumi-*</code></td>
+</tr>
+<tr>
+<td>Observability</td>
+<td>4</td>
+<td><code>grafana-api-key</code>, <code>grafana-cloud-*</code>, <code>sentry-*</code></td>
+</tr>
+<tr>
+<td>Payment</td>
+<td>3</td>
+<td><code>stripe-access-token</code>, <code>shopify-*</code></td>
+</tr>
+<tr>
+<td>Crypto</td>
+<td>1</td>
+<td><code>private-key</code> (PEM format)</td>
+</tr>
+</tbody></table>
+<p>共 <strong>33 条</strong> 高置信度规则。</p>
+<h3>15.4 Go Regex -&gt; JS Regex 适配</h3>
+<pre><code>gitleaks Go regex: (?i)[a-z0-9]{14}\.(?-i:atlasv1)\.[a-z0-9\-_=]{60,70}
+-&gt; JS regex: [a-zA-Z0-9]{14}\.atlasv1\.[a-zA-Z0-9\-_=]{60,70}
+
+原因: JS 不支持 inline (?i) 和 mode groups (?-i:...)
+</code></pre>
+<h3>15.5 反编译保护</h3>
+<pre><code class="language-typescript">// Anthropic API key 前缀通过 runtime 拼接规避 excluded-strings 检查
+const ANT_KEY_PFX = [&#39;sk&#39;, &#39;ant&#39;, &#39;api&#39;].join(&#39;-&#39;)
+// join() 不会被 minifier 常量折叠
+</code></pre>
+<h3>15.6 Write-time Guard</h3>
+<pre><code class="language-typescript">// src/services/teamMemorySync/teamMemSecretGuard.ts:16-44
+export function checkTeamMemSecrets(filePath: string, content: string): string | null {
+  // 1. 检查是否在 team memory 路径内
+  // 2. 扫描内容中的 secrets
+  // 3. 如果发现，返回错误消息（包含匹配的 label 列表）
+  // 4. 从 FileWriteTool/FileEditTool 的 validateInput 调用
+}
+</code></pre>
+<h3>15.7 Redaction</h3>
+<pre><code class="language-typescript">export function redactSecrets(content: string): string {
+  // 仅替换捕获组，保留边界字符（空格、引号、分号）
+  // 替换为 [REDACTED]
+}
+</code></pre>
+<hr>
+<h2>16. Team Memory Watcher -- 文件监听与推送</h2>
+<blockquote>
+<p>源文件：<code>src/services/teamMemorySync/watcher.ts</code></p>
+</blockquote>
+<h3>16.1 启动条件</h3>
+<pre><code>startTeamMemoryWatcher() 检查链:
+  1. feature(&#39;TEAMMEM&#39;) 编译时 flag
+  2. isTeamMemoryEnabled() 运行时 gate
+  3. isTeamMemorySyncAvailable() OAuth 可用
+  4. getGithubRepo() 有 github.com remote
+     （非 github.com 的 remote 永远无法同步）
+</code></pre>
+<h3>16.2 启动流程</h3>
+<pre><code>startTeamMemoryWatcher()
+    |
+    +-- createSyncState() -&gt; 初始化 SyncState
+    |
+    +-- pullTeamMemory(syncState) -&gt; 首次 pull 从服务器获取内容
+    |   +-- (在 watcher 启动前完成，避免触发 schedulePush)
+    |
+    +-- startFileWatcher(teamDir) -&gt; 启动 fs.watch
+        +-- mkdir(teamDir, { recursive: true })
+        +-- watch(teamDir, { persistent: true, recursive: true })
+        +-- registerCleanup(stopTeamMemoryWatcher)
+</code></pre>
+<h3>16.3 为什么用 fs.watch 而非 chokidar</h3>
+<pre><code>chokidar 4+ 已移除 fsevents，Bun 的 fs.watch fallback 使用 kqueue
+-&gt; 每个被监听文件一个 open fd
+-&gt; 500+ team memory 文件 = 500+ 永久持有的 fd
+
+fs.watch({ recursive: true }):
+  - macOS: FSEvents -&gt; O(1) fd（验证: 60 文件、5 子目录仅 2 fd）
+  - Linux: inotify -&gt; O(subdirs) watch（team memory 很少嵌套）
+</code></pre>
+<h3>16.4 Debounced Push</h3>
+<pre><code class="language-typescript">const DEBOUNCE_MS = 2000 // 等待写入稳定后 2s 再 push
+</code></pre>
+<pre><code>fs.watch event -&gt; schedulePush()
+    |
+    +-- pushSuppressedReason !== null -&gt; 返回（永久失败后抑制）
+    |
+    +-- clearTimeout(debounceTimer)
+    +-- setTimeout(2000ms) -&gt; executePush()
+        |
+        +-- pushInProgress -&gt; schedulePush()（重新入队）
+        +-- pushTeamMemory(syncState)
+</code></pre>
+<h3>16.5 Permanent Failure Suppression</h3>
+<pre><code class="language-typescript">// src/services/teamMemorySync/watcher.ts:61-73
+export function isPermanentFailure(r: TeamMemorySyncPushResult): boolean {
+  if (r.errorType === &#39;no_oauth&#39; || r.errorType === &#39;no_repo&#39;) return true
+  if (r.httpStatus &gt;= 400 &amp;&amp; r.httpStatus &lt; 500
+      &amp;&amp; r.httpStatus !== 409   // transient conflict
+      &amp;&amp; r.httpStatus !== 429)  // rate limit
+    return true
+  return false
+}
+</code></pre>
+<p>永久失败后设置 <code>pushSuppressedReason</code>，阻止 watch 事件触发无限重试循环（实际案例：一个 no_oauth 设备在 2.5 天内产生了 167K push 事件）。</p>
+<p>恢复机制：</p>
+<ul>
+<li><strong>文件删除</strong> (unlink) 清除抑制（too-many-entries 场景的恢复操作）</li>
+<li><code>fs.watch</code> 不区分 add/change/unlink -- 通过 <code>stat()</code> 区分：ENOENT -&gt; 视为 unlink</li>
+</ul>
+<h3>16.6 Shutdown</h3>
+<pre><code class="language-typescript">export async function stopTeamMemoryWatcher(): Promise&lt;void&gt; {
+  // 1. clearTimeout(debounceTimer)
+  // 2. watcher.close()
+  // 3. await currentPushPromise (等待 in-flight push)
+  // 4. 如果有 pending changes -&gt; pushTeamMemory(syncState) (best-effort)
+  // 注: 在 2s graceful shutdown budget 内运行
+}
+</code></pre>
+<hr>
+<h2>17. 记忆验证策略</h2>
+<blockquote>
+<p>源文件：<code>src/memdir/memoryTypes.ts:200-256</code></p>
+</blockquote>
+<h3>17.1 读取侧 (Recall-side) 验证</h3>
+<p>系统在多个层面强化 stale memory 管理：</p>
+<p><strong>Layer 1 -- 访问规则（WHEN_TO_ACCESS_SECTION）：</strong></p>
+<pre><code>- 相关时访问，或用户引用先前对话工作
+- 用户明确要求 check/recall/remember 时必须访问
+- 用户说 ignore/not use -&gt; 当 MEMORY.md 为空处理
+  -&gt; 不应用、不引用、不比较、不提及记忆内容
+</code></pre>
+<p><strong>Layer 2 -- 漂移警告（MEMORY_DRIFT_CAVEAT）：</strong></p>
+<pre><code>Memory records can become stale over time...
+Verify that the memory is still correct...
+If a recalled memory conflicts with current information, trust what you observe now
+-- and update or remove the stale memory.
+</code></pre>
+<p><strong>Layer 3 -- 使用前验证（TRUSTING_RECALL_SECTION）：</strong></p>
+<pre><code>A memory that names a specific function, file, or flag is a claim that it existed
+*when the memory was written*. It may have been renamed, removed, or never merged.
+
+Before recommending:
+  - If the memory names a file path: check the file exists.
+  - If the memory names a function or flag: grep for it.
+  - If the user is about to act on recommendation: verify first.
+
+“The memory says X exists” is not the same as “X exists now.”
+</code></pre>
+<p><strong>Layer 4 -- Per-memory Staleness Note（memoryAge.ts）：</strong></p>
+<ul>
+<li>超过 1 天的记忆自动附加时间相关的验证警告</li>
+<li>警告明确指出 “file:line citations may be outdated”</li>
+</ul>
+<h3>17.2 写入侧 (Write-side) 验证</h3>
+<ul>
+<li>提取 agent 在写入前检查现有记忆列表（manifest）避免重复</li>
+<li><code>## What NOT to save</code> 即使在用户明确要求时也生效</li>
+<li>Team memory 写入时经过 secret scanner 过滤</li>
+</ul>
+<h3>17.3 Eval 验证记录</h3>
+<p>源码注释中记录了多个 eval 验证结果：</p>
+<table>
+<thead>
+<tr>
+<th>Eval Case</th>
+<th>修复前</th>
+<th>修复后</th>
+<th>修复方式</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>H1 (verify function/file claims)</td>
+<td>0/2</td>
+<td>3/3</td>
+<td><code>appendSystemPrompt</code> -- 独立 section</td>
+</tr>
+<tr>
+<td>H5 (read-side noise rejection)</td>
+<td>0/2</td>
+<td>3/3</td>
+<td><code>appendSystemPrompt</code>；in-place 仅 2/3</td>
+</tr>
+<tr>
+<td>H6 (branch-pollution #22856 case 5)</td>
+<td>1/3</td>
+<td>3/3</td>
+<td>添加 “ignore” 反模式显式命名</td>
+</tr>
+<tr>
+<td>Explicit-save gate (case 3)</td>
+<td>0/2</td>
+<td>3/3</td>
+<td>即使用户要求也过滤</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>18. 关键常量表</h2>
+<table>
+<thead>
+<tr>
+<th>常量</th>
+<th>值</th>
+<th>位置</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>MEMORY_TYPES</code></td>
+<td><code>[&#39;user&#39;,&#39;feedback&#39;,&#39;project&#39;,&#39;reference&#39;]</code></td>
+<td><code>memoryTypes.ts:14</code></td>
+<td>四种记忆类型</td>
+</tr>
+<tr>
+<td><code>MAX_MEMORY_FILES</code></td>
+<td>200</td>
+<td><code>memoryScan.ts:21</code></td>
+<td>扫描文件上限</td>
+</tr>
+<tr>
+<td><code>FRONTMATTER_MAX_LINES</code></td>
+<td>30</td>
+<td><code>memoryScan.ts:22</code></td>
+<td>frontmatter 读取行数</td>
+</tr>
+<tr>
+<td><code>ENTRYPOINT_NAME</code></td>
+<td><code>&#39;MEMORY.md&#39;</code></td>
+<td><code>memdir.ts:34</code></td>
+<td>索引文件名</td>
+</tr>
+<tr>
+<td><code>MAX_ENTRYPOINT_LINES</code></td>
+<td>200</td>
+<td><code>memdir.ts:35</code></td>
+<td>索引行数上限</td>
+</tr>
+<tr>
+<td><code>MAX_ENTRYPOINT_BYTES</code></td>
+<td>25,000</td>
+<td><code>memdir.ts:37</code></td>
+<td>索引字节上限</td>
+</tr>
+<tr>
+<td><code>maxTurns</code> (extract)</td>
+<td>5</td>
+<td><code>extractMemories.ts:427</code></td>
+<td>提取 agent 最大 turn 数</td>
+</tr>
+<tr>
+<td><code>max_tokens</code> (selector)</td>
+<td>256</td>
+<td><code>findRelevantMemories.ts:110</code></td>
+<td>选择器最大输出 token</td>
+</tr>
+<tr>
+<td>选择上限</td>
+<td>5</td>
+<td><code>findRelevantMemories.ts</code> prompt</td>
+<td>最多选择 5 个相关记忆</td>
+</tr>
+<tr>
+<td><code>minimumMessageTokensToInit</code></td>
+<td>10,000</td>
+<td><code>sessionMemoryUtils.ts:33</code></td>
+<td>SessionMemory 初始化门槛</td>
+</tr>
+<tr>
+<td><code>minimumTokensBetweenUpdate</code></td>
+<td>5,000</td>
+<td><code>sessionMemoryUtils.ts:34</code></td>
+<td>SessionMemory 更新门槛</td>
+</tr>
+<tr>
+<td><code>toolCallsBetweenUpdates</code></td>
+<td>3</td>
+<td><code>sessionMemoryUtils.ts:35</code></td>
+<td>SessionMemory tool-call 门槛</td>
+</tr>
+<tr>
+<td><code>MAX_SECTION_LENGTH</code></td>
+<td>2,000</td>
+<td><code>SessionMemory/prompts.ts:8</code></td>
+<td>Session 笔记单 section token 上限</td>
+</tr>
+<tr>
+<td><code>MAX_TOTAL_SESSION_MEMORY_TOKENS</code></td>
+<td>12,000</td>
+<td><code>SessionMemory/prompts.ts:9</code></td>
+<td>Session 笔记总 token 上限</td>
+</tr>
+<tr>
+<td><code>EXTRACTION_WAIT_TIMEOUT_MS</code></td>
+<td>15,000</td>
+<td><code>sessionMemoryUtils.ts:13</code></td>
+<td>等待提取完成超时</td>
+</tr>
+<tr>
+<td><code>EXTRACTION_STALE_THRESHOLD_MS</code></td>
+<td>60,000</td>
+<td><code>sessionMemoryUtils.ts:14</code></td>
+<td>提取过期阈值</td>
+</tr>
+<tr>
+<td><code>DEBOUNCE_MS</code></td>
+<td>2,000</td>
+<td><code>watcher.ts:35</code></td>
+<td>文件变更防抖时间</td>
+</tr>
+<tr>
+<td><code>TEAM_MEMORY_SYNC_TIMEOUT_MS</code></td>
+<td>30,000</td>
+<td><code>teamMemorySync/index.ts:71</code></td>
+<td>同步 HTTP 超时</td>
+</tr>
+<tr>
+<td><code>MAX_FILE_SIZE_BYTES</code></td>
+<td>250,000</td>
+<td><code>teamMemorySync/index.ts:75</code></td>
+<td>团队记忆单文件大小上限</td>
+</tr>
+<tr>
+<td><code>MAX_PUT_BODY_BYTES</code></td>
+<td>200,000</td>
+<td><code>teamMemorySync/index.ts:89</code></td>
+<td>PUT body 大小上限</td>
+</tr>
+<tr>
+<td><code>MAX_RETRIES</code></td>
+<td>3</td>
+<td><code>teamMemorySync/index.ts:90</code></td>
+<td>网络重试上限</td>
+</tr>
+<tr>
+<td><code>MAX_CONFLICT_RETRIES</code></td>
+<td>2</td>
+<td><code>teamMemorySync/index.ts:91</code></td>
+<td>412 冲突重试上限</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>19. 设计模式总结</h2>
+<h3>19.1 Forked Agent Pattern</h3>
+<p>extractMemories 和 SessionMemory 都使用 <code>runForkedAgent</code>：</p>
+<ul>
+<li><strong>完美 fork</strong>：共享主对话的 prompt cache（tools 是 cache key 的一部分，不能给 fork 不同的工具列表）</li>
+<li><strong>工具白名单</strong>：通过 <code>canUseTool</code> 函数限制可用工具</li>
+<li><strong>隔离上下文</strong>：<code>createSubagentContext</code> 防止污染父状态</li>
+<li><strong>安静运行</strong>：<code>skipTranscript: true</code> 避免与主线程竞态</li>
+</ul>
+<h3>19.2 Closure-Scoped State</h3>
+<p>extractMemories 采用闭包作用域而非模块级可变状态：</p>
+<ul>
+<li><code>initExtractMemories()</code> 创建新闭包</li>
+<li>测试在 <code>beforeEach</code> 中调用获取干净闭包</li>
+<li>遵循与 <code>confidenceRating.ts</code> 相同的模式</li>
+</ul>
+<h3>19.3 Two-Phase Write</h3>
+<p>记忆写入是原子化的两步操作：</p>
+<ol>
+<li>写入独立 topic 文件（真正的记忆内容）</li>
+<li>更新 MEMORY.md 索引（一行指针）</li>
+</ol>
+<p>MEMORY.md 更新是机械性的 -- 提取 agent 计数时排除 <code>ENTRYPOINT_NAME</code>。</p>
+<h3>19.4 Delta Upload</h3>
+<p>Team memory push 仅上传 content hash 不同的 entries：</p>
+<ul>
+<li>本地 <code>hashContent()</code> -&gt; <code>sha256:hex</code></li>
+<li>与 <code>SyncState.serverChecksums</code> 比较</li>
+<li>仅差异部分上传</li>
+</ul>
+<h3>19.5 Defense-in-Depth Security</h3>
+<p>Team memory 路径验证采用纵深防御：</p>
+<ol>
+<li>字符串级别 sanitization（null byte、URL-encoded 遍历、Unicode 正规化、反斜杠、绝对路径）</li>
+<li><code>path.resolve()</code> 消除 <code>..</code> 段</li>
+<li><code>realpath()</code> 解析 symlink 后重新验证 containment</li>
+<li>悬空 symlink 通过 <code>lstat</code> 检测</li>
+<li>Secret scanner 在上传前扫描</li>
+</ol>
+<h3>19.6 Staleness-Aware Memory</h3>
+<p>记忆不是简单的键值存储 -- 系统在多个层面管理过期性：</p>
+<ul>
+<li>Prompt 级别：行为指令教模型验证</li>
+<li>Attachment 级别：per-file 时间戳 + 过期警告</li>
+<li>Eval 验证：多个 eval case 确认过期管理行为</li>
+</ul>
+<h3>19.7 记忆是行为调节器</h3>
+<p>与传统 RAG 不同，Claude Code 的记忆系统更像<strong>长期行为调节器</strong>：</p>
+<ul>
+<li><code>feedback</code> 类型改变工作方式而非提供信息</li>
+<li><code>user</code> 类型调整交互风格而非回答问题</li>
+<li>记忆直接写入 system prompt（非检索时临时注入）</li>
+<li>验证策略使记忆成为”可信但需验证的建议”而非”权威事实”</li>
+</ul>
+<hr>
+<h2>20. 关键证据文件索引</h2>
+<table>
+<thead>
+<tr>
+<th>文件路径</th>
+<th>主题</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>src/memdir/memoryTypes.ts</code></td>
+<td>记忆类型学、prompt 模板、验证规则、frontmatter 格式</td>
+</tr>
+<tr>
+<td><code>src/memdir/memoryScan.ts</code></td>
+<td>记忆扫描、frontmatter 解析、manifest 格式化</td>
+</tr>
+<tr>
+<td><code>src/memdir/findRelevantMemories.ts</code></td>
+<td>相关性选择、Sonnet side-query、telemetry</td>
+</tr>
+<tr>
+<td><code>src/memdir/memoryAge.ts</code></td>
+<td>年龄计算、staleness 警告</td>
+</tr>
+<tr>
+<td><code>src/memdir/memdir.ts</code></td>
+<td>prompt 构建、MEMORY.md 截断、KAIROS 日志模式、搜索指导</td>
+</tr>
+<tr>
+<td><code>src/memdir/paths.ts</code></td>
+<td>路径解析、启用条件、安全验证、worktree 感知</td>
+</tr>
+<tr>
+<td><code>src/memdir/teamMemPaths.ts</code></td>
+<td>Team 路径、PathTraversalError、symlink 防护</td>
+</tr>
+<tr>
+<td><code>src/memdir/teamMemPrompts.ts</code></td>
+<td>Combined prompt（private + team）</td>
+</tr>
+<tr>
+<td><code>src/services/extractMemories/extractMemories.ts</code></td>
+<td>后台提取、forked agent、门控条件、互斥逻辑</td>
+</tr>
+<tr>
+<td><code>src/services/extractMemories/prompts.ts</code></td>
+<td>提取 prompt 模板（auto-only / combined）</td>
+</tr>
+<tr>
+<td><code>src/services/SessionMemory/sessionMemory.ts</code></td>
+<td>会话摘要、post-sampling hook、触发条件</td>
+</tr>
+<tr>
+<td><code>src/services/SessionMemory/prompts.ts</code></td>
+<td>会话笔记模板、update prompt、section 大小管理</td>
+</tr>
+<tr>
+<td><code>src/services/SessionMemory/sessionMemoryUtils.ts</code></td>
+<td>配置、门槛计算、提取状态管理</td>
+</tr>
+<tr>
+<td><code>src/services/teamMemorySync/index.ts</code></td>
+<td>Sync 服务、pull/push、conflict resolution</td>
+</tr>
+<tr>
+<td><code>src/services/teamMemorySync/types.ts</code></td>
+<td>Zod schema、API 数据类型</td>
+</tr>
+<tr>
+<td><code>src/services/teamMemorySync/secretScanner.ts</code></td>
+<td>Gitleaks 规则、secret 扫描、redaction</td>
+</tr>
+<tr>
+<td><code>src/services/teamMemorySync/teamMemSecretGuard.ts</code></td>
+<td>Write-time secret 检查</td>
+</tr>
+<tr>
+<td><code>src/services/teamMemorySync/watcher.ts</code></td>
+<td>fs.watch、debounced push、permanent failure suppression</td>
+</tr>
+<tr>
+<td><code>src/tools/AgentTool/agentMemory.ts</code></td>
+<td>Agent memory 作用域、路径、prompt</td>
+</tr>
+<tr>
+<td><code>src/constants/prompts.ts</code></td>
+<td>system prompt 中 memory section 注入</td>
+</tr>
+<tr>
+<td><code>src/utils/claudemd.ts</code></td>
+<td>MEMORY.md 内容注入到 user context</td>
+</tr>
+<tr>
+<td><code>src/utils/attachments.ts</code></td>
+<td>relevant_memories attachment 生成</td>
+</tr>
+</tbody></table>
+</body>
+</html>

@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>15-sandbox</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1>Claude Code 命令沙箱与边界控制详细分析</h1>
+<blockquote>
+<p>源码版本: 2026-04 主干 | 分析日期: 2026-04-01</p>
+</blockquote>
+<hr>
+<h2>目录</h2>
+<ul>
+<li><a href="#1-%E6%B2%99%E7%AE%B1%E6%9E%B6%E6%9E%84%E6%80%BB%E8%A7%88">1. 沙箱架构总览</a><ul>
+<li><a href="#11-%E6%A8%A1%E5%9D%97%E6%80%BB%E8%A7%88">1.1 模块总览</a></li>
+<li><a href="#12-%E6%9E%B6%E6%9E%84%E5%88%86%E5%B1%82-ascii-%E5%9B%BE">1.2 架构分层 ASCII 图</a></li>
+<li><a href="#13-isandboxmanager-%E6%8E%A5%E5%8F%A3">1.3 ISandboxManager 接口</a></li>
+</ul>
+</li>
+<li><a href="#2-macos-seatbelt-%E5%AE%9E%E7%8E%B0">2. macOS seatbelt 实现</a><ul>
+<li><a href="#21-sandbox-runtime-%E5%8C%85">2.1 sandbox-runtime 包</a></li>
+<li><a href="#22-%E5%88%9D%E5%A7%8B%E5%8C%96%E6%B5%81%E7%A8%8B">2.2 初始化流程</a></li>
+<li><a href="#23-%E5%91%BD%E4%BB%A4%E5%8C%85%E8%A3%85">2.3 命令包装</a></li>
+</ul>
+</li>
+<li><a href="#3-linux-%E6%B2%99%E7%AE%B1%E5%AE%9E%E7%8E%B0">3. Linux 沙箱实现</a><ul>
+<li><a href="#31-bubblewrap-bwrap">3.1 bubblewrap (bwrap)</a></li>
+<li><a href="#32-%E5%B9%B3%E5%8F%B0%E6%94%AF%E6%8C%81%E7%9F%A9%E9%98%B5">3.2 平台支持矩阵</a></li>
+<li><a href="#33-linux-%E7%89%B9%E6%9C%89%E9%99%90%E5%88%B6">3.3 Linux 特有限制</a></li>
+</ul>
+</li>
+<li><a href="#4-%E6%96%87%E4%BB%B6%E7%B3%BB%E7%BB%9F%E8%AE%BF%E9%97%AE%E6%8E%A7%E5%88%B6">4. 文件系统访问控制</a><ul>
+<li><a href="#41-%E8%AF%BB%E5%86%99%E6%9D%83%E9%99%90%E6%A8%A1%E5%9E%8B">4.1 读写权限模型</a></li>
+<li><a href="#42-%E8%B7%AF%E5%BE%84%E8%A7%A3%E6%9E%90%E8%A7%84%E5%88%99">4.2 路径解析规则</a></li>
+<li><a href="#43-%E5%AE%89%E5%85%A8%E5%85%B3%E9%94%AE%E7%9A%84-denywrite-%E8%B7%AF%E5%BE%84">4.3 安全关键的 denyWrite 路径</a></li>
+<li><a href="#44-%E9%A2%9D%E5%A4%96%E7%9B%AE%E5%BD%95%E6%94%AF%E6%8C%81">4.4 额外目录支持</a></li>
+</ul>
+</li>
+<li><a href="#5-%E7%BD%91%E7%BB%9C%E8%AE%BF%E9%97%AE%E6%8E%A7%E5%88%B6">5. 网络访问控制</a><ul>
+<li><a href="#51-%E5%9F%9F%E5%90%8D%E7%99%BD%E5%90%8D%E5%8D%95%E9%BB%91%E5%90%8D%E5%8D%95">5.1 域名白名单/黑名单</a></li>
+<li><a href="#52-unix-socket-%E4%B8%8E%E6%9C%AC%E5%9C%B0%E7%BB%91%E5%AE%9A">5.2 Unix Socket 与本地绑定</a></li>
+<li><a href="#53-%E4%BB%A3%E7%90%86%E7%AB%AF%E5%8F%A3">5.3 代理端口</a></li>
+<li><a href="#54-%E7%AD%96%E7%95%A5%E7%BA%A7%E5%BC%BA%E5%88%B6%E7%AE%A1%E6%8E%A7">5.4 策略级强制管控</a></li>
+</ul>
+</li>
+<li><a href="#6-%E6%B2%99%E7%AE%B1%E9%85%8D%E7%BD%AE%E4%B8%8E%E7%A6%81%E7%94%A8">6. 沙箱配置与禁用</a><ul>
+<li><a href="#61-%E5%90%AF%E7%94%A8%E5%88%A4%E6%96%AD%E9%93%BE">6.1 启用判断链</a></li>
+<li><a href="#62-%E9%85%8D%E7%BD%AE%E9%A1%B9">6.2 配置项</a></li>
+<li><a href="#63-%E6%8E%92%E9%99%A4%E5%91%BD%E4%BB%A4%E5%88%97%E8%A1%A8">6.3 排除命令列表</a></li>
+<li><a href="#64-%E7%AD%96%E7%95%A5%E9%94%81%E5%AE%9A">6.4 策略锁定</a></li>
+<li><a href="#65-%E4%B8%8D%E5%8F%AF%E7%94%A8%E6%97%B6%E7%9A%84%E8%AF%8A%E6%96%AD%E5%8F%8D%E9%A6%88">6.5 不可用时的诊断反馈</a></li>
+</ul>
+</li>
+<li><a href="#7-settings-%E5%88%B0-sandboxruntimeconfig-%E8%BD%AC%E6%8D%A2">7. Settings 到 SandboxRuntimeConfig 转换</a><ul>
+<li><a href="#71-%E8%BD%AC%E6%8D%A2%E5%87%BD%E6%95%B0%E7%AD%BE%E5%90%8D">7.1 转换函数签名</a></li>
+<li><a href="#72-%E6%96%87%E4%BB%B6%E7%B3%BB%E7%BB%9F%E8%A7%84%E5%88%99%E6%8F%90%E5%8F%96">7.2 文件系统规则提取</a></li>
+<li><a href="#73-%E7%BD%91%E7%BB%9C%E8%A7%84%E5%88%99%E6%8F%90%E5%8F%96">7.3 网络规则提取</a></li>
+<li><a href="#74-%E5%8A%A8%E6%80%81%E9%85%8D%E7%BD%AE%E6%9B%B4%E6%96%B0">7.4 动态配置更新</a></li>
+</ul>
+</li>
+<li><a href="#8-git-worktree-%E4%B8%8E%E8%A3%B8%E4%BB%93%E5%BA%93%E9%98%B2%E6%8A%A4">8. Git Worktree 与裸仓库防护</a><ul>
+<li><a href="#81-worktree-%E6%A3%80%E6%B5%8B">8.1 Worktree 检测</a></li>
+<li><a href="#82-%E8%A3%B8%E4%BB%93%E5%BA%93%E6%94%BB%E5%87%BB%E9%98%B2%E6%8A%A4">8.2 裸仓库攻击防护</a></li>
+</ul>
+</li>
+<li><a href="#9-%E8%BF%9D%E8%A7%84%E6%A3%80%E6%B5%8B%E4%B8%8E%E6%B8%85%E7%90%86">9. 违规检测与清理</a><ul>
+<li><a href="#91-sandboxviolationstore">9.1 SandboxViolationStore</a></li>
+<li><a href="#92-%E5%91%BD%E4%BB%A4%E5%90%8E%E6%B8%85%E7%90%86">9.2 命令后清理</a></li>
+<li><a href="#93-ui-%E5%B7%A5%E5%85%B7%E5%87%BD%E6%95%B0">9.3 UI 工具函数</a></li>
+</ul>
+</li>
+<li><a href="#10-%E5%85%B3%E9%94%AE%E8%AE%BE%E8%AE%A1%E6%A8%A1%E5%BC%8F%E6%80%BB%E7%BB%93">10. 关键设计模式总结</a></li>
+</ul>
+<hr>
+<h2>1. 沙箱架构总览</h2>
+<h3>1.1 模块总览</h3>
+<table>
+<thead>
+<tr>
+<th>源文件</th>
+<th>职责</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>src/utils/sandbox/sandbox-adapter.ts</code></td>
+<td>Claude CLI 适配层: 将 settings 转换为 runtime config, 管理生命周期</td>
+</tr>
+<tr>
+<td><code>src/utils/sandbox/sandbox-ui-utils.ts</code></td>
+<td>UI 工具: 清理违规标签</td>
+</tr>
+<tr>
+<td><code>@anthropic-ai/sandbox-runtime</code> (外部包)</td>
+<td>平台沙箱引擎: macOS seatbelt / Linux bwrap 实现</td>
+</tr>
+<tr>
+<td><code>src/tools/BashTool/</code></td>
+<td>Bash 工具: 调用沙箱包装命令</td>
+</tr>
+</tbody></table>
+<h3>1.2 架构分层 ASCII 图</h3>
+<pre><code>+---------------------------------------------------------------+
+|                    Claude Code Settings                        |
+|  (userSettings / projectSettings / policySettings / flags)     |
++---------------------------------------------------------------+
+        |
+        v
++---------------------------------------------------------------+
+|            sandbox-adapter.ts (CLI 适配层)                      |
+|  - convertToSandboxRuntimeConfig()                             |
+|  - resolvePathPatternForSandbox()                              |
+|  - resolveSandboxFilesystemPath()                              |
+|  - 会话初始化 / 配置热更新 / worktree 检测                      |
+|  - 裸仓库文件扫描与清理 (scrubBareGitRepoFiles)                |
++---------------------------------------------------------------+
+        |  SandboxRuntimeConfig
+        v
++---------------------------------------------------------------+
+|         @anthropic-ai/sandbox-runtime (外部包)                  |
+|  BaseSandboxManager:                                           |
+|    - initialize(config, askCallback)                           |
+|    - wrapWithSandbox(command, shell, config, signal)           |
+|    - updateConfig(config)                                      |
+|    - cleanupAfterCommand()                                     |
+|    - checkDependencies()                                       |
+|    - isSupportedPlatform()                                     |
+|  +-------------------+  +--------------------+                 |
+|  | macOS seatbelt    |  | Linux bubblewrap   |                 |
+|  | (sandbox-exec)    |  | (bwrap + socat)    |                 |
+|  +-------------------+  +--------------------+                 |
++---------------------------------------------------------------+
+        |
+        v
++---------------------------------------------------------------+
+|              OS 内核级隔离                                      |
+|  macOS: sandbox-exec + .sb profile                             |
+|  Linux: bwrap namespace + seccomp + bind mounts                |
++---------------------------------------------------------------+
+</code></pre>
+<h3>1.3 ISandboxManager 接口</h3>
+<blockquote>
+<p>源文件: <code>src/utils/sandbox/sandbox-adapter.ts</code> L880-922</p>
+</blockquote>
+<pre><code class="language-typescript">export interface ISandboxManager {
+  // 生命周期
+  initialize(sandboxAskCallback?: SandboxAskCallback): Promise&lt;void&gt;
+  reset(): Promise&lt;void&gt;
+
+  // 状态查询
+  isSupportedPlatform(): boolean
+  isPlatformInEnabledList(): boolean
+  isSandboxingEnabled(): boolean
+  isSandboxEnabledInSettings(): boolean
+  isSandboxRequired(): boolean
+  getSandboxUnavailableReason(): string | undefined
+  checkDependencies(): SandboxDependencyCheck
+
+  // 行为开关
+  isAutoAllowBashIfSandboxedEnabled(): boolean
+  areUnsandboxedCommandsAllowed(): boolean
+  areSandboxSettingsLockedByPolicy(): boolean
+
+  // 配置管理
+  setSandboxSettings(options: {
+    enabled?: boolean
+    autoAllowBashIfSandboxed?: boolean
+    allowUnsandboxedCommands?: boolean
+  }): Promise&lt;void&gt;
+  refreshConfig(): void
+  getExcludedCommands(): string[]
+
+  // 限制信息查询
+  getFsReadConfig(): FsReadRestrictionConfig
+  getFsWriteConfig(): FsWriteRestrictionConfig
+  getNetworkRestrictionConfig(): NetworkRestrictionConfig
+  getAllowUnixSockets(): string[] | undefined
+  getAllowLocalBinding(): boolean | undefined
+  getIgnoreViolations(): IgnoreViolationsConfig | undefined
+  getEnableWeakerNestedSandbox(): boolean | undefined
+  getLinuxGlobPatternWarnings(): string[]
+
+  // 代理端口
+  getProxyPort(): number | undefined
+  getSocksProxyPort(): number | undefined
+  getLinuxHttpSocketPath(): string | undefined
+  getLinuxSocksSocketPath(): string | undefined
+  waitForNetworkInitialization(): Promise&lt;boolean&gt;
+
+  // 命令执行
+  wrapWithSandbox(
+    command: string, binShell?: string,
+    customConfig?: Partial&lt;SandboxRuntimeConfig&gt;, abortSignal?: AbortSignal
+  ): Promise&lt;string&gt;
+  cleanupAfterCommand(): void
+
+  // 违规与诊断
+  getSandboxViolationStore(): SandboxViolationStore
+  annotateStderrWithSandboxFailures(command: string, stderr: string): string
+}
+</code></pre>
+<hr>
+<h2>2. macOS seatbelt 实现</h2>
+<h3>2.1 sandbox-runtime 包</h3>
+<p><code>@anthropic-ai/sandbox-runtime</code> 是独立 npm 包, Claude Code 通过 <code>BaseSandboxManager</code> 引用。macOS 上使用 Apple 的 <code>sandbox-exec</code> 工具, 通过 <code>.sb</code> (Seatbelt) profile 定义:</p>
+<ul>
+<li>文件系统: 按路径的读/写/拒绝</li>
+<li>网络: 按域名/端口的允许/拒绝</li>
+<li>进程: 限制可 fork 的子进程类型</li>
+</ul>
+<h3>2.2 初始化流程</h3>
+<blockquote>
+<p>源文件: <code>src/utils/sandbox/sandbox-adapter.ts</code> L730-792</p>
+</blockquote>
+<pre><code>伪代码 initialize(askCallback?):
+  if initializationPromise 已存在: return (幂等)
+  if NOT isSandboxingEnabled(): return
+
+  wrappedCallback = 包装 askCallback, 强制 allowManagedDomainsOnly 策略
+
+  initializationPromise = async:
+    1. 检测 git worktree (一次性缓存)
+    2. convertToSandboxRuntimeConfig(getSettings())
+    3. BaseSandboxManager.initialize(runtimeConfig, wrappedCallback)
+    4. 订阅 settings 变更 -&gt; BaseSandboxManager.updateConfig()
+</code></pre>
+<h3>2.3 命令包装</h3>
+<p><code>wrapWithSandbox(command, binShell?, customConfig?, abortSignal?)</code> 等待初始化完成后委托 <code>BaseSandboxManager.wrapWithSandbox()</code>, 返回包含沙箱包装器前缀的新 shell 命令字符串。</p>
+<hr>
+<h2>3. Linux 沙箱实现</h2>
+<h3>3.1 bubblewrap (bwrap)</h3>
+<p>Linux 上使用 <code>bubblewrap</code> (bwrap) 作为沙箱引擎:</p>
+<ul>
+<li>利用 Linux namespaces (mount, user, network, PID)</li>
+<li>Bind mount 控制文件系统可见性</li>
+<li>可选的 seccomp 过滤</li>
+</ul>
+<p>网络代理使用 <code>socat</code> 将沙箱内部流量转发到外部。</p>
+<h3>3.2 平台支持矩阵</h3>
+<table>
+<thead>
+<tr>
+<th>平台</th>
+<th>支持状态</th>
+<th>引擎</th>
+<th>备注</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>macOS</td>
+<td>完整支持</td>
+<td>seatbelt (sandbox-exec)</td>
+<td>日志监控自动启用</td>
+</tr>
+<tr>
+<td>Linux</td>
+<td>完整支持</td>
+<td>bubblewrap (bwrap) + socat</td>
+<td>需要安装 bwrap 和 socat</td>
+</tr>
+<tr>
+<td>WSL2</td>
+<td>支持</td>
+<td>bubblewrap</td>
+<td>需要 WSL2+ (WSL1 不支持)</td>
+</tr>
+<tr>
+<td>WSL1</td>
+<td>不支持</td>
+<td>--</td>
+<td>namespace 支持不足</td>
+</tr>
+<tr>
+<td>Windows</td>
+<td>不支持</td>
+<td>--</td>
+<td>需要 WSL2</td>
+</tr>
+</tbody></table>
+<p><code>isSupportedPlatform()</code> 由 <code>BaseSandboxManager.isSupportedPlatform()</code> 实现, 结果被 memoize 缓存。</p>
+<h3>3.3 Linux 特有限制</h3>
+<blockquote>
+<p>源文件: <code>src/utils/sandbox/sandbox-adapter.ts</code> L596-642</p>
+</blockquote>
+<p>bubblewrap 不支持 glob 模式的路径匹配。<code>getLinuxGlobPatternWarnings()</code> 检查配置中的 permission rules:</p>
+<pre><code>伪代码:
+  if platform != &#39;linux&#39; &amp;&amp; platform != &#39;wsl&#39;:
+    return []              // 仅 Linux/WSL 检查
+
+  if sandbox 未启用:
+    return []
+
+  for each rule in permissions.allow + permissions.deny:
+    if rule 是 Edit 或 Read 工具
+       &amp;&amp; ruleContent 中有 glob 字符 (*, ?, [, ])
+       &amp;&amp; 不是尾部 /**:
+      warnings.push(ruleString)
+
+  return warnings
+</code></pre>
+<p>此函数在 <code>/sandbox</code> 命令中展示, 提示用户这些规则在 Linux 上不会被沙箱强制执行。</p>
+<hr>
+<h2>4. 文件系统访问控制</h2>
+<h3>4.1 读写权限模型</h3>
+<p>沙箱的文件系统控制分为四个列表:</p>
+<pre><code class="language-typescript">// convertToSandboxRuntimeConfig() 中构建
+const allowWrite: string[] = [&#39;.&#39;, getClaudeTempDir()]  // 默认: 当前目录 + 临时目录
+const denyWrite: string[]  = []
+const allowRead: string[]  = []
+const denyRead: string[]   = []
+</code></pre>
+<p>最终传入 <code>SandboxRuntimeConfig.filesystem</code>:</p>
+<pre><code class="language-typescript">type SandboxRuntimeConfig = {
+  filesystem: {
+    allowWrite: string[]
+    denyWrite: string[]
+    allowRead: string[]
+    denyRead: string[]
+  }
+  network: { ... }
+  ignoreViolations?: IgnoreViolationsConfig
+  enableWeakerNestedSandbox?: boolean
+  enableWeakerNetworkIsolation?: boolean
+  ripgrep: { command, args, argv0 }
+}
+</code></pre>
+<h3>4.2 路径解析规则</h3>
+<p>Claude Code 有两套路径解析语义:</p>
+<p><strong>Permission rule 路径</strong> (<code>resolvePathPatternForSandbox</code>):</p>
+<table>
+<thead>
+<tr>
+<th>前缀</th>
+<th>含义</th>
+<th>示例</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>//path</code></td>
+<td>绝对路径 (去掉一个 <code>/</code>)</td>
+<td><code>//.aws/**</code> -&gt; <code>/.aws/**</code></td>
+</tr>
+<tr>
+<td><code>/path</code></td>
+<td>相对于 settings 文件所在目录</td>
+<td><code>/src/**</code> -&gt; <code>$SETTINGS_DIR/src/**</code></td>
+</tr>
+<tr>
+<td><code>~/path</code></td>
+<td>用户 home 目录 (传递给 sandbox-runtime)</td>
+<td>原样传递</td>
+</tr>
+<tr>
+<td><code>./path</code> 或 <code>path</code></td>
+<td>相对路径 (传递给 sandbox-runtime)</td>
+<td>原样传递</td>
+</tr>
+</tbody></table>
+<p><strong>Sandbox filesystem 路径</strong> (<code>resolveSandboxFilesystemPath</code>):</p>
+<table>
+<thead>
+<tr>
+<th>前缀</th>
+<th>含义</th>
+<th>示例</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>//path</code></td>
+<td>遗留兼容: 同 permission rule</td>
+<td><code>//.cargo</code> -&gt; <code>/.cargo</code></td>
+</tr>
+<tr>
+<td><code>/path</code></td>
+<td>绝对路径 (标准语义, 非 settings-relative)</td>
+<td>原样处理</td>
+</tr>
+<tr>
+<td><code>~/path</code></td>
+<td>展开为 home 目录</td>
+<td><code>expandPath()</code> 处理</td>
+</tr>
+<tr>
+<td><code>./path</code></td>
+<td>相对于 settings 文件目录</td>
+<td><code>expandPath()</code> 处理</td>
+</tr>
+</tbody></table>
+<p>两套语义的差异源于 issue #30067: 用户期望 <code>sandbox.filesystem.allowWrite</code> 中的 <code>/Users/foo/.cargo</code> 是绝对路径, 而非 settings-relative 路径。</p>
+<h3>4.3 安全关键的 denyWrite 路径</h3>
+<blockquote>
+<p>源文件: <code>src/utils/sandbox/sandbox-adapter.ts</code> L230-280</p>
+</blockquote>
+<pre><code class="language-typescript">// 1. settings.json 文件 -- 防止沙箱逃逸
+const settingsPaths = SETTING_SOURCES.map(source =&gt;
+  getSettingsFilePathForSource(source)
+).filter(Boolean)
+denyWrite.push(...settingsPaths)
+denyWrite.push(getManagedSettingsDropInDir())
+
+// 2. 如果 cwd 变更, 也封锁新 cwd 的 settings
+if (cwd !== originalCwd) {
+  denyWrite.push(resolve(cwd, &#39;.claude&#39;, &#39;settings.json&#39;))
+  denyWrite.push(resolve(cwd, &#39;.claude&#39;, &#39;settings.local.json&#39;))
+}
+
+// 3. .claude/skills 目录 -- 同等权限级别, 需要 OS 级保护
+denyWrite.push(resolve(originalCwd, &#39;.claude&#39;, &#39;skills&#39;))
+if (cwd !== originalCwd) {
+  denyWrite.push(resolve(cwd, &#39;.claude&#39;, &#39;skills&#39;))
+}
+
+// 4. 裸仓库文件 -- 防止 core.fsmonitor 攻击 (issue #29316)
+const bareGitRepoFiles = [&#39;HEAD&#39;, &#39;objects&#39;, &#39;refs&#39;, &#39;hooks&#39;, &#39;config&#39;]
+for (const dir of [originalCwd, cwd]) {
+  for (const gitFile of bareGitRepoFiles) {
+    const p = resolve(dir, gitFile)
+    if (existsSync(p)):
+      denyWrite.push(p)      // 已存在: read-only bind mount
+    else:
+      bareGitRepoScrubPaths.push(p)  // 不存在: 命令后清理
+  }
+}
+</code></pre>
+<h3>4.4 额外目录支持</h3>
+<pre><code class="language-typescript">// --add-dir CLI 参数 和 /add-dir 命令的目录
+const additionalDirs = new Set([
+  ...(settings.permissions?.additionalDirectories || []),
+  ...getAdditionalDirectoriesForClaudeMd(),
+])
+allowWrite.push(...additionalDirs)
+
+// Git worktree 主仓库路径
+if (worktreeMainRepoPath &amp;&amp; worktreeMainRepoPath !== cwd) {
+  allowWrite.push(worktreeMainRepoPath)
+}
+</code></pre>
+<hr>
+<h2>5. 网络访问控制</h2>
+<h3>5.1 域名白名单/黑名单</h3>
+<blockquote>
+<p>源文件: <code>src/utils/sandbox/sandbox-adapter.ts</code> L179-221</p>
+</blockquote>
+<p>从两个来源提取域名:</p>
+<ol>
+<li><code>settings.sandbox.network.allowedDomains</code> -- 直接配置</li>
+<li><code>permissions.allow</code> 中的 <code>WebFetch(domain:xxx)</code> 规则 -- 从权限规则提取</li>
+</ol>
+<pre><code class="language-typescript">// 白名单提取
+for (const ruleString of permissions.allow || []) {
+  const rule = permissionRuleValueFromString(ruleString)
+  if (rule.toolName === WEB_FETCH_TOOL_NAME
+      &amp;&amp; rule.ruleContent?.startsWith(&#39;domain:&#39;)) {
+    allowedDomains.push(rule.ruleContent.substring(&#39;domain:&#39;.length))
+  }
+}
+
+// 黑名单提取 (deny 规则)
+for (const ruleString of permissions.deny || []) {
+  // 同样逻辑提取到 deniedDomains
+}
+</code></pre>
+<h3>5.2 Unix Socket 与本地绑定</h3>
+<pre><code class="language-typescript">network: {
+  allowedDomains: string[]
+  deniedDomains: string[]
+  allowUnixSockets?: string[]      // 允许的 Unix Socket 路径
+  allowAllUnixSockets?: boolean    // 允许所有 Unix Socket
+  allowLocalBinding?: boolean      // 允许绑定本地端口
+  httpProxyPort?: number           // HTTP 代理端口
+  socksProxyPort?: number          // SOCKS 代理端口
+}
+</code></pre>
+<h3>5.3 代理端口</h3>
+<p>沙箱通过代理端口转发网络请求:</p>
+<ul>
+<li><code>getProxyPort()</code> -- HTTP 代理</li>
+<li><code>getSocksProxyPort()</code> -- SOCKS 代理</li>
+<li><code>getLinuxHttpSocketPath()</code> / <code>getLinuxSocksSocketPath()</code> -- Linux 上的 socket 路径</li>
+<li><code>waitForNetworkInitialization()</code> -- 等待代理初始化完成</li>
+</ul>
+<h3>5.4 策略级强制管控</h3>
+<blockquote>
+<p>源文件: <code>src/utils/sandbox/sandbox-adapter.ts</code> L152-157</p>
+</blockquote>
+<pre><code class="language-typescript">export function shouldAllowManagedSandboxDomainsOnly(): boolean {
+  return (
+    getSettingsForSource(&#39;policySettings&#39;)?.sandbox?.network
+      ?.allowManagedDomainsOnly === true
+  )
+}
+</code></pre>
+<p>当 <code>allowManagedDomainsOnly</code> 启用时:</p>
+<ol>
+<li>仅从 <code>policySettings</code> 提取域名白名单 (忽略 user/project settings)</li>
+<li>初始化时的 <code>askCallback</code> 也被包装: 直接拒绝所有非策略域名</li>
+</ol>
+<p>类似地, <code>shouldAllowManagedReadPathsOnly()</code> 限制文件系统 <code>allowRead</code> 仅来自策略配置。</p>
+<hr>
+<h2>6. 沙箱配置与禁用</h2>
+<h3>6.1 启用判断链</h3>
+<blockquote>
+<p>源文件: <code>src/utils/sandbox/sandbox-adapter.ts</code> L532-547</p>
+</blockquote>
+<pre><code>isSandboxingEnabled():
+  1. isSupportedPlatform()         -- macOS / Linux / WSL2
+  2. checkDependencies().errors.length == 0  -- 无关键依赖缺失
+  3. isPlatformInEnabledList()     -- 在 enabledPlatforms 列表中 (默认全部)
+  4. getSandboxEnabledSetting()    -- settings.sandbox.enabled === true
+  全部 true 才启用
+</code></pre>
+<h3>6.2 配置项</h3>
+<table>
+<thead>
+<tr>
+<th>设置键</th>
+<th>默认值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>sandbox.enabled</code></td>
+<td><code>false</code></td>
+<td>主开关</td>
+</tr>
+<tr>
+<td><code>sandbox.autoAllowBashIfSandboxed</code></td>
+<td><code>true</code></td>
+<td>沙箱启用时自动允许 Bash</td>
+</tr>
+<tr>
+<td><code>sandbox.allowUnsandboxedCommands</code></td>
+<td><code>true</code></td>
+<td>是否允许不经沙箱的命令</td>
+</tr>
+<tr>
+<td><code>sandbox.failIfUnavailable</code></td>
+<td><code>false</code></td>
+<td>依赖缺失时是否报错 (vs 静默退化)</td>
+</tr>
+<tr>
+<td><code>sandbox.enabledPlatforms</code></td>
+<td>undefined (全部)</td>
+<td>限制沙箱到指定平台</td>
+</tr>
+<tr>
+<td><code>sandbox.excludedCommands</code></td>
+<td><code>[]</code></td>
+<td>不经沙箱执行的命令模式</td>
+</tr>
+<tr>
+<td><code>sandbox.enableWeakerNestedSandbox</code></td>
+<td>undefined</td>
+<td>允许较弱的嵌套沙箱</td>
+</tr>
+<tr>
+<td><code>sandbox.enableWeakerNetworkIsolation</code></td>
+<td>undefined</td>
+<td>允许较弱的网络隔离</td>
+</tr>
+<tr>
+<td><code>sandbox.ignoreViolations</code></td>
+<td>undefined</td>
+<td>忽略特定违规类型</td>
+</tr>
+</tbody></table>
+<h3>6.3 排除命令列表</h3>
+<blockquote>
+<p>源文件: <code>src/utils/sandbox/sandbox-adapter.ts</code> L828-874</p>
+</blockquote>
+<p><code>addToExcludedCommands(command, permissionUpdates?)</code>:</p>
+<ol>
+<li>从 <code>permissionUpdates</code> 中提取 Bash 规则的命令模式 (如 <code>Bash(npm run test:*)</code> -&gt; <code>npm run test</code>)</li>
+<li>如果模式不在 <code>excludedCommands</code> 中, 追加到 <code>localSettings.sandbox.excludedCommands</code></li>
+<li>返回实际添加的命令模式</li>
+</ol>
+<h3>6.4 策略锁定</h3>
+<blockquote>
+<p>源文件: <code>src/utils/sandbox/sandbox-adapter.ts</code> L647-664</p>
+</blockquote>
+<pre><code class="language-typescript">function areSandboxSettingsLockedByPolicy(): boolean {
+  // 检查 flagSettings 和 policySettings 中是否有沙箱配置
+  // 如果有, 则本地设置无法覆盖
+  for (const source of [&#39;flagSettings&#39;, &#39;policySettings&#39;]) {
+    const settings = getSettingsForSource(source)
+    if (settings?.sandbox?.enabled !== undefined
+        || settings?.sandbox?.autoAllowBashIfSandboxed !== undefined
+        || settings?.sandbox?.allowUnsandboxedCommands !== undefined) {
+      return true
+    }
+  }
+  return false
+}
+</code></pre>
+<h3>6.5 不可用时的诊断反馈</h3>
+<p><code>getSandboxUnavailableReason()</code> -- 仅当 <code>sandbox.enabled: true</code> 但沙箱无法运行时返回原因 (平台不支持 / 不在 enabledPlatforms / 依赖缺失), 附带修复建议。修复 issue #34044 的静默退化问题。</p>
+<hr>
+<h2>7. Settings 到 SandboxRuntimeConfig 转换</h2>
+<h3>7.1 转换函数签名</h3>
+<blockquote>
+<p>源文件: <code>src/utils/sandbox/sandbox-adapter.ts</code> L172-381</p>
+</blockquote>
+<pre><code class="language-typescript">export function convertToSandboxRuntimeConfig(
+  settings: SettingsJson,
+): SandboxRuntimeConfig
+</code></pre>
+<h3>7.2 文件系统规则提取</h3>
+<p>遍历每个 <code>SettingSource</code>, 从两类配置提取路径:</p>
+<ol>
+<li><strong>Permission rules</strong>: <code>permissions.allow</code> 中的 <code>Edit(path)</code> -&gt; <code>allowWrite</code>; <code>permissions.deny</code> 中的 <code>Edit(path)</code> -&gt; <code>denyWrite</code>, <code>Read(path)</code> -&gt; <code>denyRead</code></li>
+<li><strong>Sandbox filesystem</strong>: <code>sandbox.filesystem.allowWrite/denyWrite/denyRead/allowRead</code></li>
+</ol>
+<p>路径通过各自的解析函数处理后合并。<code>allowRead</code> 受策略约束: 当 <code>shouldAllowManagedReadPathsOnly()</code> 时仅接受 <code>policySettings</code> 来源。</p>
+<h3>7.3 网络规则提取</h3>
+<p>正常模式从所有 settings source 提取 <code>allowedDomains</code> + <code>WebFetch(domain:*)</code> 规则; 策略管控模式 (<code>allowManagedDomainsOnly</code>) 仅从 <code>policySettings</code> 提取。</p>
+<h3>7.4 动态配置更新</h3>
+<p>初始化时通过 <code>settingsChangeDetector.subscribe()</code> 订阅变更, 自动调用 <code>BaseSandboxManager.updateConfig()</code>。<code>refreshConfig()</code> 提供手动刷新入口 (权限变更后立即生效)。</p>
+<hr>
+<h2>8. Git Worktree 与裸仓库防护</h2>
+<h3>8.1 Worktree 检测</h3>
+<blockquote>
+<p>源文件: <code>src/utils/sandbox/sandbox-adapter.ts</code> L422-445</p>
+</blockquote>
+<pre><code class="language-typescript">async function detectWorktreeMainRepoPath(cwd: string): Promise&lt;string | null&gt; {
+  // 在 worktree 中, .git 是文件而非目录
+  // 内容格式: &quot;gitdir: /path/to/main/repo/.git/worktrees/name&quot;
+  const gitContent = await readFile(join(cwd, &#39;.git&#39;), &#39;utf8&#39;)
+  const gitdirMatch = gitContent.match(/^gitdir:\s*(.+)$/m)
+  const gitdir = resolve(cwd, gitdirMatch[1].trim())
+
+  // 精确匹配 /.git/worktrees/ 段
+  const marker = `${sep}.git${sep}worktrees${sep}`
+  const markerIndex = gitdir.lastIndexOf(marker)
+  if (markerIndex &gt; 0) {
+    return gitdir.substring(0, markerIndex)  // 主仓库根路径
+  }
+  return null
+}
+</code></pre>
+<p>检测结果缓存在 <code>worktreeMainRepoPath</code> 中, 在 <code>initialize()</code> 时执行一次。主仓库路径被加入 <code>allowWrite</code>, 确保 git 操作 (如 <code>index.lock</code>) 能正常工作。</p>
+<h3>8.2 裸仓库攻击防护</h3>
+<blockquote>
+<p>安全问题: anthropics/claude-code#29316</p>
+</blockquote>
+<p>Git 的 <code>is_git_directory()</code> 会检查 <code>HEAD + objects/ + refs/</code> 是否存在。攻击者可以在 cwd 中放置这些文件加上带 <code>core.fsmonitor</code> 的 <code>config</code>, 使 Claude 的非沙箱 git 命令执行任意代码。</p>
+<p>防护策略:</p>
+<pre><code>对 bareGitRepoFiles = [HEAD, objects, refs, hooks, config]:
+  if 文件已存在:
+    denyWrite (read-only bind mount, 不创建 stub)
+  if 文件不存在:
+    记录到 bareGitRepoScrubPaths
+    命令执行后 scrubBareGitRepoFiles() 删除新出现的文件
+</code></pre>
+<p>不能对不存在的文件使用 denyWrite, 因为 sandbox-runtime 会在宿主机上创建 0 字节的 <code>/dev/null</code> stub, 破坏 <code>git log HEAD</code> 等命令。</p>
+<hr>
+<h2>9. 违规检测与清理</h2>
+<h3>9.1 SandboxViolationStore</h3>
+<p><code>SandboxViolationStore</code> (来自 <code>@anthropic-ai/sandbox-runtime</code>) 记录沙箱运行时检测到的违规事件:</p>
+<pre><code class="language-typescript">export type SandboxViolationEvent = {
+  // 由外部包定义
+}
+</code></pre>
+<h3>9.2 命令后清理</h3>
+<blockquote>
+<p>源文件: <code>src/utils/sandbox/sandbox-adapter.ts</code> L963-966</p>
+</blockquote>
+<pre><code class="language-typescript">cleanupAfterCommand: (): void =&gt; {
+  BaseSandboxManager.cleanupAfterCommand()  // 底层引擎清理
+  scrubBareGitRepoFiles()                    // 删除攻击者可能放置的裸仓库文件
+}
+</code></pre>
+<p><code>scrubBareGitRepoFiles()</code> 同步执行 (<code>rmSync</code>), 必须在下一个 unsandboxed git 命令前完成。</p>
+<h3>9.3 UI 工具函数</h3>
+<blockquote>
+<p>源文件: <code>src/utils/sandbox/sandbox-ui-utils.ts</code></p>
+</blockquote>
+<pre><code class="language-typescript">export function removeSandboxViolationTags(text: string): string {
+  return text.replace(/&lt;sandbox_violations&gt;[\s\S]*?&lt;\/sandbox_violations&gt;/g, &#39;&#39;)
+}
+</code></pre>
+<p>用于清理 stderr 中的 <code>&lt;sandbox_violations&gt;</code> XML 标签, 使 UI 展示更简洁。</p>
+<hr>
+<h2>10. 关键设计模式总结</h2>
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>说明</th>
+<th>源文件</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>适配器模式</strong></td>
+<td><code>sandbox-adapter.ts</code> 包装外部 <code>@anthropic-ai/sandbox-runtime</code>, 将 Claude Code 的 settings 系统与平台无关的沙箱引擎桥接</td>
+<td><code>sandbox-adapter.ts</code> 全文</td>
+</tr>
+<tr>
+<td><strong>命令级隔离</strong></td>
+<td>沙箱不是会话容器, 而是逐命令包装; 每个 shell 命令独立受限</td>
+<td><code>wrapWithSandbox()</code></td>
+</tr>
+<tr>
+<td><strong>多源配置合并</strong></td>
+<td>遍历 5 个 SettingSource, 分别解析路径后合并到统一的 SandboxRuntimeConfig</td>
+<td><code>convertToSandboxRuntimeConfig()</code></td>
+</tr>
+<tr>
+<td><strong>路径语义双轨制</strong></td>
+<td>Permission rule 中 <code>/</code> 是 settings-relative, filesystem config 中 <code>/</code> 是绝对路径; 两套解析函数独立处理</td>
+<td><code>resolvePathPatternForSandbox()</code> vs <code>resolveSandboxFilesystemPath()</code></td>
+</tr>
+<tr>
+<td><strong>策略优先级</strong></td>
+<td><code>allowManagedDomainsOnly</code> 和 <code>allowManagedReadPathsOnly</code> 强制仅使用策略配置, 忽略用户/项目级设置</td>
+<td>L152-164, L182-210, L343-348</td>
+</tr>
+<tr>
+<td><strong>动态配置热更新</strong></td>
+<td>通过 <code>settingsChangeDetector.subscribe()</code> 订阅设置变更, 即时调用 <code>updateConfig()</code>, 无需重启</td>
+<td><code>initialize()</code> L776-781</td>
+</tr>
+<tr>
+<td><strong>幂等初始化</strong></td>
+<td><code>initializationPromise</code> 确保多次调用 <code>initialize()</code> 只执行一次, 且 <code>wrapWithSandbox()</code> 等待初始化完成</td>
+<td>L733-735, L711-714</td>
+</tr>
+<tr>
+<td><strong>深度防御 (裸仓库)</strong></td>
+<td>已存在文件 read-only mount + 不存在文件命令后清理, 两层防护互补</td>
+<td>L258-280, L404-414</td>
+</tr>
+<tr>
+<td><strong>安全关键路径锁定</strong></td>
+<td>settings.json、managed 目录、.claude/skills 始终在 denyWrite 中, 与用户配置无关</td>
+<td>L232-255</td>
+</tr>
+<tr>
+<td><strong>memoize 缓存</strong></td>
+<td><code>isSupportedPlatform()</code>, <code>checkDependencies()</code> 使用 lodash memoize, 避免重复的系统调用</td>
+<td>L451-457, L491-493</td>
+</tr>
+<tr>
+<td><strong>优雅降级</strong></td>
+<td>沙箱不可用时不报错 (除非 <code>failIfUnavailable</code>), 而是透明退化为无沙箱执行</td>
+<td><code>isSandboxingEnabled()</code> 返回 false 时跳过</td>
+</tr>
+<tr>
+<td><strong>诊断可见性</strong></td>
+<td><code>getSandboxUnavailableReason()</code> 仅在用户显式启用沙箱但不可用时输出原因, 修复 #34044 的静默失败问题</td>
+<td>L562-592</td>
+</tr>
+</tbody></table>
+</body>
+</html>

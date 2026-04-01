@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>03-system-prompt</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1>Claude Code System Prompt 拼装机制详细分析</h1>
+<blockquote>
+<p>源码版本：2026-04 主干<br>核心文件：<code>src/constants/prompts.ts</code>、<code>src/utils/systemPrompt.ts</code>、<code>src/constants/systemPromptSections.ts</code>、<code>src/utils/api.ts</code></p>
+</blockquote>
+<hr>
+<h2>目录</h2>
+<ol>
+<li><a href="#1-%E6%9E%B6%E6%9E%84%E6%80%BB%E8%A7%88">架构总览</a></li>
+<li><a href="#2-buildeffectivesystemprompt-%E4%BC%98%E5%85%88%E7%BA%A7%E9%93%BE">buildEffectiveSystemPrompt 优先级链</a></li>
+<li><a href="#3-getsystemprompt-%E6%8B%BC%E8%A3%85%E7%AE%A1%E7%BA%BF">getSystemPrompt 拼装管线</a></li>
+<li><a href="#4-%E9%9D%99%E6%80%81-section-%E8%AF%A6%E8%A7%A3">静态 Section 详解</a></li>
+<li><a href="#5-%E5%8A%A8%E6%80%81-section-%E6%B3%A8%E5%86%8C%E4%B8%8E%E7%BC%93%E5%AD%98">动态 Section 注册与缓存</a></li>
+<li><a href="#6-system_prompt_dynamic_boundary-%E7%BC%93%E5%AD%98%E8%BE%B9%E7%95%8C">SYSTEM_PROMPT_DYNAMIC_BOUNDARY 缓存边界</a></li>
+<li><a href="#7-splitsyspromptprefix-%E4%B8%8E-api-%E7%BC%93%E5%AD%98%E6%8E%A7%E5%88%B6">splitSysPromptPrefix 与 API 缓存控制</a></li>
+<li><a href="#8-%E6%A8%A1%E5%BC%8F%E5%8F%98%E4%BD%93">模式变体</a></li>
+<li><a href="#9-%E8%AE%B0%E5%BF%86%E6%B3%A8%E5%85%A5">记忆注入</a></li>
+<li><a href="#10-mcp-%E6%8C%87%E4%BB%A4%E6%B3%A8%E5%85%A5">MCP 指令注入</a></li>
+<li><a href="#11-agent-%E6%8C%87%E4%BB%A4%E6%B3%A8%E5%85%A5">Agent 指令注入</a></li>
+<li><a href="#12-subagent-%E5%A2%9E%E5%BC%BA">Subagent 增强</a></li>
+<li><a href="#13-%E5%85%B3%E9%94%AE%E8%AE%BE%E8%AE%A1%E6%A8%A1%E5%BC%8F%E6%80%BB%E7%BB%93">关键设计模式总结</a></li>
+</ol>
+<hr>
+<h2>1. 架构总览</h2>
+<p>Claude Code 的 system prompt 不是单块静态文本，而是一个<strong>分段拼装 + 优先级覆盖 + 缓存意识分割</strong>的管线系统。整体流程如下：</p>
+<pre><code>                            用户请求
+                               |
+                               v
+                  +----------------------------+
+                  | buildEffectiveSystemPrompt |  &lt;-- src/utils/systemPrompt.ts
+                  |  (优先级选择)               |
+                  +----------------------------+
+                      |         |         |
+           override   |  agent/ |  default|
+           prompt     |  coord  |  prompt |
+                      v         v         v
+                  +--------------------------+
+                  |   getSystemPrompt()      |  &lt;-- src/constants/prompts.ts
+                  |   (拼装静态+动态段)       |
+                  +--------------------------+
+                      |
+                      v
+          +-----------------------------+
+          | string[] (prompt segments)  |
+          +-----------------------------+
+                      |
+                      v
+          +-------------------------------+
+          | splitSysPromptPrefix()        |  &lt;-- src/utils/api.ts
+          | (按 cacheScope 切分为 blocks) |
+          +-------------------------------+
+                      |
+                      v
+          +-------------------------------+
+          | SystemPromptBlock[]           |
+          | {text, cacheScope}            |
+          | 发送到 API                     |
+          +-------------------------------+
+</code></pre>
+<p><strong>关键数据结构：</strong></p>
+<pre><code class="language-typescript">// src/utils/systemPromptType.ts
+type SystemPrompt = readonly string[] &amp; { readonly __brand: &#39;SystemPrompt&#39; }
+function asSystemPrompt(arr: string[]): SystemPrompt
+
+// src/utils/api.ts
+type SystemPromptBlock = {
+  text: string
+  cacheScope: &#39;global&#39; | &#39;org&#39; | null
+}
+</code></pre>
+<p><code>SystemPrompt</code> 是一个带品牌标记的 <code>string[]</code>，每个元素是一个 prompt section。最终发送 API 时，由 <code>splitSysPromptPrefix</code> 按缓存策略重新组装为 <code>SystemPromptBlock[]</code>。</p>
+<hr>
+<h2>2. buildEffectiveSystemPrompt 优先级链</h2>
+<blockquote>
+<p>源文件：<code>src/utils/systemPrompt.ts</code></p>
+</blockquote>
+<p>这是顶层调度函数，决定哪些 prompt 段参与最终拼装。优先级如下（高 → 低）：</p>
+<pre><code>优先级 0: overrideSystemPrompt   (loop mode 等场景，完全替换)
+优先级 1: coordinator prompt      (COORDINATOR_MODE 环境变量启用)
+优先级 2: agent prompt            (mainThreadAgentDefinition 存在)
+优先级 3: customSystemPrompt      (--system-prompt CLI 参数)
+优先级 4: defaultSystemPrompt     (标准 getSystemPrompt 输出)
+追加段:   appendSystemPrompt      (除 override 外，总是追加在末尾)
+</code></pre>
+<p><strong>函数签名：</strong></p>
+<pre><code class="language-typescript">export function buildEffectiveSystemPrompt({
+  mainThreadAgentDefinition,
+  toolUseContext,
+  customSystemPrompt,
+  defaultSystemPrompt,
+  appendSystemPrompt,
+  overrideSystemPrompt,
+}: {
+  mainThreadAgentDefinition: AgentDefinition | undefined
+  toolUseContext: Pick&lt;ToolUseContext, &#39;options&#39;&gt;
+  customSystemPrompt: string | undefined
+  defaultSystemPrompt: string[]
+  appendSystemPrompt: string | undefined
+  overrideSystemPrompt?: string | null
+}): SystemPrompt
+</code></pre>
+<p><strong>行为伪代码：</strong></p>
+<pre><code>function buildEffectiveSystemPrompt(params):
+    // Level 0: 完全覆盖
+    if overrideSystemPrompt:
+        return [overrideSystemPrompt]
+
+    // Level 1: Coordinator 模式
+    if COORDINATOR_MODE &amp;&amp; !mainThreadAgentDefinition:
+        return [getCoordinatorSystemPrompt(), ...appendSystemPrompt?]
+
+    // Level 2: Agent 模式
+    agentPrompt = mainThreadAgentDefinition?.getSystemPrompt()
+
+    // 特殊路径: Proactive 模式下 agent prompt 追加而非替换
+    if agentPrompt &amp;&amp; proactiveActive:
+        return [...defaultSystemPrompt,
+                &quot;\n# Custom Agent Instructions\n&quot; + agentPrompt,
+                ...appendSystemPrompt?]
+
+    // 标准路径: agent 替换 &gt; custom 替换 &gt; default
+    return [
+        ...(agentPrompt ? [agentPrompt]
+           : customSystemPrompt ? [customSystemPrompt]
+           : defaultSystemPrompt),
+        ...appendSystemPrompt?
+    ]
+</code></pre>
+<p><strong>关键设计要点：</strong></p>
+<table>
+<thead>
+<tr>
+<th>特性</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Override 完全隔离</td>
+<td>loop mode 设置的 override 不受任何 append 影响</td>
+</tr>
+<tr>
+<td>Agent 有两种模式</td>
+<td>普通模式替换 default；proactive 模式追加到 default</td>
+</tr>
+<tr>
+<td>appendSystemPrompt 韧性</td>
+<td>除 override 外始终生效，保证用户追加指令不丢失</td>
+</tr>
+<tr>
+<td>Built-in vs Custom Agent</td>
+<td><code>isBuiltInAgent</code> 决定 getSystemPrompt 是否接收 toolUseContext</td>
+</tr>
+<tr>
+<td>Agent memory 日志</td>
+<td>如果 agent 定义有 memory 字段，记录 analytics 事件</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>3. getSystemPrompt 拼装管线</h2>
+<blockquote>
+<p>源文件：<code>src/constants/prompts.ts</code> — <code>getSystemPrompt()</code></p>
+</blockquote>
+<p>这是默认 prompt 的核心拼装函数，返回 <code>string[]</code>（每个元素一个 section）。</p>
+<p><strong>函数签名：</strong></p>
+<pre><code class="language-typescript">export async function getSystemPrompt(
+  tools: Tools,
+  model: string,
+  additionalWorkingDirectories?: string[],
+  mcpClients?: MCPServerConnection[],
+): Promise&lt;string[]&gt;
+</code></pre>
+<p><strong>极简模式快速返回：</strong></p>
+<p>当设置 <code>CLAUDE_CODE_SIMPLE=1</code> 时，直接返回一行最小提示：</p>
+<pre><code class="language-typescript">if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
+  return [`You are Claude Code, Anthropic&#39;s official CLI for Claude.\n\nCWD: ${getCwd()}\nDate: ${getSessionStartDate()}`]
+}
+</code></pre>
+<p><strong>标准模式拼装结构：</strong></p>
+<pre><code>返回数组 = [
+    // ─── 静态段（可跨组织缓存）───
+    getSimpleIntroSection()           // 身份 + 安全指令
+    getSimpleSystemSection()          // 系统行为规则
+    getSimpleDoingTasksSection()      // 任务执行准则（条件包含）
+    getActionsSection()               // 谨慎行动原则
+    getUsingYourToolsSection()        // 工具使用指南
+    getSimpleToneAndStyleSection()    // 语气与风格
+    getOutputEfficiencySection()      // 输出效率/沟通指南
+
+    // ─── 缓存边界标记 ───
+    SYSTEM_PROMPT_DYNAMIC_BOUNDARY    // 仅当 shouldUseGlobalCacheScope()
+
+    // ─── 动态段（注册+按需缓存）───
+    session_guidance                  // 会话特定工具指导
+    memory                           // 记忆目录加载
+    ant_model_override               // Ant 模型覆盖
+    env_info_simple                  // 环境信息
+    language                         // 语言偏好
+    output_style                     // 输出风格
+    mcp_instructions                 // MCP 服务器指令
+    scratchpad                       // 临时目录指令
+    frc                              // Function Result Clearing
+    summarize_tool_results           // 工具结果摘要提示
+    numeric_length_anchors           // 数值长度锚点 (ant-only)
+    token_budget                     // token 预算指令
+    brief                            // Brief 模式指令
+]
+</code></pre>
+<hr>
+<h2>4. 静态 Section 详解</h2>
+<p>静态段位于缓存边界标记之前，可跨组织、跨会话共享缓存。</p>
+<h3>4.1 Intro Section — <code>getSimpleIntroSection()</code></h3>
+<p>提供模型身份定义和基础安全指令。</p>
+<pre><code>内容要点:
+- 角色定义: &quot;interactive agent that helps users with software engineering tasks&quot;
+- 如果有 outputStyle: 引用 &quot;Output Style&quot; 而非固定软件工程任务
+- CYBER_RISK_INSTRUCTION: 安全/CTF/渗透测试行为边界
+- URL 生成禁令: 除非确信 URL 是编程相关的
+</code></pre>
+<p><code>CYBER_RISK_INSTRUCTION</code> 来自 <code>src/constants/cyberRiskInstruction.ts</code>，由 Safeguards 团队维护，禁止 DoS、供应链攻击、恶意检测规避等。</p>
+<h3>4.2 System Section — <code>getSimpleSystemSection()</code></h3>
+<p>定义系统层面的行为规则。</p>
+<table>
+<thead>
+<tr>
+<th>规则</th>
+<th>内容概要</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>输出渲染</td>
+<td>所有非工具调用文本直接显示给用户，支持 GFM</td>
+</tr>
+<tr>
+<td>权限模式</td>
+<td>工具调用可能被用户拒绝，被拒绝后不重试相同调用</td>
+</tr>
+<tr>
+<td>system-reminder</td>
+<td>工具结果中可能包含 <code>&lt;system-reminder&gt;</code> 标签</td>
+</tr>
+<tr>
+<td>prompt 注入警告</td>
+<td>工具结果如疑似 prompt 注入应标记给用户</td>
+</tr>
+<tr>
+<td>Hooks</td>
+<td>用户可配置 shell hooks，hook 反馈视为用户输入</td>
+</tr>
+<tr>
+<td>无限上下文</td>
+<td>系统会自动压缩先前消息</td>
+</tr>
+</tbody></table>
+<h3>4.3 Doing Tasks Section — <code>getSimpleDoingTasksSection()</code></h3>
+<p>最长的静态段，定义任务执行准则。<strong>当 outputStyle 存在且 <code>keepCodingInstructions === false</code> 时跳过此段。</strong></p>
+<p><strong>核心准则分类：</strong></p>
+<pre><code>1. 任务理解
+   - 上下文化理解（&quot;改为 snake case&quot; = 找到代码并修改）
+   - 先读再改（不对未读代码提出修改）
+   - 不预测耗时
+
+2. 代码风格 (codeStyleSubitems)
+   - 不添加超出要求的功能
+   - 不添加不可能场景的错误处理
+   - 不创建一次性操作的辅助函数
+   - [ant-only] 默认不写注释（仅 WHY 非显而易见时写）
+   - [ant-only] 完成前验证实际可用
+
+3. 安全
+   - 避免 OWASP Top 10 漏洞
+   - 发现不安全代码立即修复
+
+4. 准确报告 [ant-only]
+   - 测试失败如实报告
+   - 不隐瞒失败的检查
+   - 不过度免责确认通过的结果
+
+5. 用户帮助
+   - /help 命令
+   - [ant-only] /issue 和 /share 命令推荐
+</code></pre>
+<h3>4.4 Actions Section — <code>getActionsSection()</code></h3>
+<p>定义行动谨慎原则（&quot;Executing actions with care&quot;）。</p>
+<pre><code>核心原则:
+- 评估行动的可逆性和影响范围
+- 本地可逆操作可自由执行（编辑文件、运行测试）
+- 不可逆/高风险操作需确认
+- 单次授权不等于全面授权
+
+高风险操作示例:
+- 破坏性操作: 删除文件/分支、drop table、rm -rf
+- 难逆操作: force-push、git reset --hard
+- 对他人可见的操作: push 代码、创建/关闭 PR
+- 上传到第三方工具
+
+障碍处理:
+- 不用破坏性操作绕过障碍
+- 不删除不熟悉的状态
+- 调查根因而非绕过安全检查
+</code></pre>
+<h3>4.5 Using Your Tools Section — <code>getUsingYourToolsSection()</code></h3>
+<p>工具使用指南，根据启用的工具集动态生成。</p>
+<pre><code>核心规则:
+1. 专用工具优先于 Bash
+   - Read &gt; cat/head/tail
+   - Edit &gt; sed/awk
+   - Write &gt; echo/heredoc
+   - Glob &gt; find/ls         (非 embedded search 模式)
+   - Grep &gt; grep/rg          (非 embedded search 模式)
+
+2. 任务管理
+   - 如果有 TaskCreate/TodoWrite 工具, 用来分解和跟踪工作
+
+3. 并行调用
+   - 无依赖的多个工具调用应并行
+   - 有依赖的工具调用串行
+
+特殊模式:
+- REPL 模式下 Read/Write/Edit/Glob/Grep/Bash 隐藏
+- embedded search 模式下跳过 Glob/Grep 指引
+</code></pre>
+<h3>4.6 Tone and Style — <code>getSimpleToneAndStyleSection()</code></h3>
+<pre><code>- 不用 emoji（除非用户要求）
+- [non-ant] 回复简短精炼
+- 引用代码时包含 file_path:line_number
+- GitHub 引用用 owner/repo#123 格式
+- 工具调用前不用冒号
+</code></pre>
+<h3>4.7 Output Efficiency — <code>getOutputEfficiencySection()</code></h3>
+<p><strong>Ant 与非 Ant 有完全不同的版本：</strong></p>
+<table>
+<thead>
+<tr>
+<th>版本</th>
+<th>标题</th>
+<th>核心指导</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Ant</td>
+<td>&quot;Communicating with the user&quot;</td>
+<td>面向人写作，假设用户不在场；完整句子；流畅散文；避免碎片化</td>
+</tr>
+<tr>
+<td>Non-Ant</td>
+<td>&quot;Output efficiency&quot;</td>
+<td>直达要点；跳过填充词；一句能说的别用三句</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>5. 动态 Section 注册与缓存</h2>
+<blockquote>
+<p>源文件：<code>src/constants/systemPromptSections.ts</code></p>
+</blockquote>
+<p>动态段使用注册机制管理，有两种类型：</p>
+<h3>5.1 类型定义</h3>
+<pre><code class="language-typescript">type ComputeFn = () =&gt; string | null | Promise&lt;string | null&gt;
+
+type SystemPromptSection = {
+  name: string
+  compute: ComputeFn
+  cacheBreak: boolean
+}
+</code></pre>
+<h3>5.2 两种注册函数</h3>
+<pre><code class="language-typescript">// 缓存型：计算一次，缓存到 /clear 或 /compact
+function systemPromptSection(name: string, compute: ComputeFn): SystemPromptSection
+// =&gt; { name, compute, cacheBreak: false }
+
+// 易失型：每 turn 重新计算，会破坏 prompt cache
+function DANGEROUS_uncachedSystemPromptSection(
+  name: string, compute: ComputeFn, _reason: string
+): SystemPromptSection
+// =&gt; { name, compute, cacheBreak: true }
+</code></pre>
+<h3>5.3 解析流程</h3>
+<pre><code class="language-typescript">async function resolveSystemPromptSections(
+  sections: SystemPromptSection[]
+): Promise&lt;(string | null)[]&gt; {
+  // 对每个 section:
+  //   如果 !cacheBreak &amp;&amp; 已缓存 → 返回缓存值
+  //   否则 → 调用 compute() → 存入缓存 → 返回
+}
+</code></pre>
+<h3>5.4 动态段注册表</h3>
+<table>
+<thead>
+<tr>
+<th>名称</th>
+<th>缓存类型</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>session_guidance</code></td>
+<td>cached</td>
+<td>会话特定工具/agent 指导</td>
+</tr>
+<tr>
+<td><code>memory</code></td>
+<td>cached</td>
+<td>记忆目录 prompt</td>
+</tr>
+<tr>
+<td><code>ant_model_override</code></td>
+<td>cached</td>
+<td>Ant 模型覆盖后缀</td>
+</tr>
+<tr>
+<td><code>env_info_simple</code></td>
+<td>cached</td>
+<td>环境信息（CWD、Git、OS、模型等）</td>
+</tr>
+<tr>
+<td><code>language</code></td>
+<td>cached</td>
+<td>语言偏好</td>
+</tr>
+<tr>
+<td><code>output_style</code></td>
+<td>cached</td>
+<td>输出风格 prompt</td>
+</tr>
+<tr>
+<td><code>mcp_instructions</code></td>
+<td><strong>DANGEROUS</strong></td>
+<td>MCP 服务器指令（理由：MCP 连接/断开）</td>
+</tr>
+<tr>
+<td><code>scratchpad</code></td>
+<td>cached</td>
+<td>临时目录指令</td>
+</tr>
+<tr>
+<td><code>frc</code></td>
+<td>cached</td>
+<td>Function Result Clearing</td>
+</tr>
+<tr>
+<td><code>summarize_tool_results</code></td>
+<td>cached</td>
+<td>工具结果摘要提示</td>
+</tr>
+<tr>
+<td><code>numeric_length_anchors</code></td>
+<td>cached</td>
+<td>数值长度锚点 (ant-only)</td>
+</tr>
+<tr>
+<td><code>token_budget</code></td>
+<td>cached</td>
+<td>token 预算指令</td>
+</tr>
+<tr>
+<td><code>brief</code></td>
+<td>cached</td>
+<td>Brief 模式指令</td>
+</tr>
+</tbody></table>
+<h3>5.5 清理时机</h3>
+<pre><code class="language-typescript">function clearSystemPromptSections(): void {
+  clearSystemPromptSectionState()   // 清除所有缓存值
+  clearBetaHeaderLatches()          // 重置 beta 头锁存器
+}
+</code></pre>
+<p>调用场景：<code>/clear</code>、<code>/compact</code>、以及 <code>runPostCompactCleanup()</code>。</p>
+<hr>
+<h2>6. SYSTEM_PROMPT_DYNAMIC_BOUNDARY 缓存边界</h2>
+<blockquote>
+<p>源文件：<code>src/constants/prompts.ts</code> 第 114 行</p>
+</blockquote>
+<pre><code class="language-typescript">export const SYSTEM_PROMPT_DYNAMIC_BOUNDARY =
+  &#39;__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__&#39;
+</code></pre>
+<p><strong>作用：</strong> 将 system prompt 数组分为两个区域：</p>
+<pre><code>[ 静态段... ]                → cacheScope: &#39;global&#39;
+[ SYSTEM_PROMPT_DYNAMIC_BOUNDARY ]  → 标记（API 时剥离）
+[ 动态段... ]                → cacheScope: null 或 &#39;org&#39;
+</code></pre>
+<p><strong>插入条件：</strong></p>
+<pre><code class="language-typescript">// 仅当全局缓存作用域启用时插入
+...(shouldUseGlobalCacheScope() ? [SYSTEM_PROMPT_DYNAMIC_BOUNDARY] : [])
+</code></pre>
+<p><strong>WARNING 注释原文：</strong></p>
+<blockquote>
+<p>Do not remove or reorder this marker without updating cache logic in:</p>
+<ul>
+<li><code>src/utils/api.ts</code> (splitSysPromptPrefix)</li>
+<li><code>src/services/api/claude.ts</code> (buildSystemPromptBlocks)</li>
+</ul>
+</blockquote>
+<p><strong>设计意图：</strong> 边界前的静态内容（角色定义、行为准则等）在所有用户之间相同，可被 Anthropic API 全局缓存。边界后的动态内容（环境信息、记忆、MCP 指令等）因用户而异，只能使用组织级或无缓存。</p>
+<hr>
+<h2>7. splitSysPromptPrefix 与 API 缓存控制</h2>
+<blockquote>
+<p>源文件：<code>src/utils/api.ts</code></p>
+</blockquote>
+<p>该函数将 <code>SystemPrompt</code>（string[]）转换为 <code>SystemPromptBlock[]</code>，每个 block 携带 <code>cacheScope</code>。</p>
+<h3>7.1 三种模式</h3>
+<pre><code>模式 1: MCP 工具存在 (skipGlobalCacheForSystemPrompt=true)
+  → 最多 3 个 block，全部 org 级缓存
+  → [attribution(null), prefix(org), rest(org)]
+
+模式 2: 全局缓存模式 + 找到边界标记 (1P only)
+  → 最多 4 个 block
+  → [attribution(null), prefix(null), static(global), dynamic(null)]
+
+模式 3: 默认模式 (3P 提供商，或无边界标记)
+  → 最多 3 个 block，org 级缓存
+  → [attribution(null), prefix(org), rest(org)]
+</code></pre>
+<h3>7.2 Block 分割逻辑伪代码</h3>
+<pre><code>function splitSysPromptPrefix(systemPrompt, options):
+    // 模式 1: MCP 覆盖
+    if useGlobalCache &amp;&amp; skipGlobalCacheForSystemPrompt:
+        过滤 DYNAMIC_BOUNDARY 标记
+        分离 attribution / prefix / rest
+        全部 rest 合并为一个 org block
+        return blocks
+
+    // 模式 2: 全局缓存
+    if useGlobalCache:
+        找到 DYNAMIC_BOUNDARY 的 index
+        if found:
+            boundary 之前 → static blocks → cacheScope: &#39;global&#39;
+            boundary 之后 → dynamic blocks → cacheScope: null
+            return [attribution, prefix, static(global), dynamic(null)]
+
+    // 模式 3: 默认 (org 级)
+    分离 attribution / prefix / rest
+    return [attribution(null), prefix(org), rest(org)]
+</code></pre>
+<h3>7.3 系统 Prompt 前缀集</h3>
+<p><code>CLI_SYSPROMPT_PREFIXES</code> 是已知的 system prompt 开头集合，用于匹配前缀 block 以实现跨会话缓存命中。</p>
+<hr>
+<h2>8. 模式变体</h2>
+<h3>8.1 Proactive / KAIROS 模式</h3>
+<p>当 <code>isProactiveActive()</code> 时，<code>getSystemPrompt</code> 返回精简的自治 agent prompt：</p>
+<pre><code class="language-typescript">return [
+  &quot;\nYou are an autonomous agent. Use the available tools to do useful work.\n\n&quot; + CYBER_RISK_INSTRUCTION,
+  getSystemRemindersSection(),
+  await loadMemoryPrompt(),
+  envInfo,
+  getLanguageSection(...),
+  getMcpInstructionsSection(...),  // 条件
+  getScratchpadInstructions(),
+  getFunctionResultClearingSection(...),
+  SUMMARIZE_TOOL_RESULTS_SECTION,
+  getProactiveSection(),          // 自治行为指令
+]
+</code></pre>
+<p><code>getProactiveSection()</code> 包含：</p>
+<ul>
+<li>tick 机制说明</li>
+<li>节奏控制（Sleep 工具）</li>
+<li>首次唤醒行为</li>
+<li>行动偏好（bias toward action）</li>
+<li>简洁输出规则</li>
+<li>终端聚焦感知（focused/unfocused）</li>
+</ul>
+<h3>8.2 Coordinator 模式</h3>
+<pre><code class="language-typescript">if (CLAUDE_CODE_COORDINATOR_MODE &amp;&amp; !mainThreadAgentDefinition) {
+  return [getCoordinatorSystemPrompt(), ...appendSystemPrompt?]
+}
+</code></pre>
+<p>Coordinator prompt 来自 <code>src/coordinator/coordinatorMode.ts</code>，完全替换默认 prompt。</p>
+<h3>8.3 REPL 模式</h3>
+<p><code>isReplModeEnabled()</code> 下，<code>getUsingYourToolsSection</code> 跳过专用工具指引（Read/Write/Edit/Glob/Grep/Bash 由 REPL 自身 prompt 覆盖），仅保留任务管理指引。</p>
+<h3>8.4 Output Style 变体</h3>
+<p>当 outputStyle 存在：</p>
+<ul>
+<li>intro section 引用 &quot;Output Style&quot; 而非固定任务描述</li>
+<li>如果 <code>keepCodingInstructions === false</code>，跳过 <code>getSimpleDoingTasksSection()</code></li>
+<li>在动态段中注入 <code># Output Style: &lt;name&gt;\n&lt;prompt&gt;</code></li>
+</ul>
+<h3>8.5 CLAUDE_CODE_SIMPLE 极简模式</h3>
+<p><code>CLAUDE_CODE_SIMPLE=1</code> 时直接返回一行，跳过全部拼装逻辑。用于测试和极简场景。</p>
+<hr>
+<h2>9. 记忆注入</h2>
+<blockquote>
+<p>源文件：<code>src/memdir/memdir.ts</code> — <code>loadMemoryPrompt()</code></p>
+</blockquote>
+<p>记忆 prompt 作为动态段通过 <code>systemPromptSection(&#39;memory&#39;, () =&gt; loadMemoryPrompt())</code> 注册。</p>
+<p><strong>记忆系统架构：</strong></p>
+<pre><code>~/.claude/memory/MEMORY.md          ← 用户全局记忆入口
+.claude/memory/MEMORY.md            ← 项目记忆入口
+  └── 子目录下的 .md 文件            ← 分类记忆
+
+记忆入口文件限制:
+  MAX_ENTRYPOINT_LINES = 200
+  MAX_ENTRYPOINT_BYTES = 25_000
+</code></pre>
+<p><code>loadMemoryPrompt()</code> 扫描记忆目录，构建包含以下内容的 prompt：</p>
+<ul>
+<li>记忆类型说明 (<code>TYPES_SECTION_INDIVIDUAL</code>)</li>
+<li>何时访问记忆 (<code>WHEN_TO_ACCESS_SECTION</code>)</li>
+<li>不应保存的内容 (<code>WHAT_NOT_TO_SAVE_SECTION</code>)</li>
+<li>信任召回 (<code>TRUSTING_RECALL_SECTION</code>)</li>
+<li>记忆 frontmatter 示例</li>
+<li>实际记忆内容</li>
+</ul>
+<p>在 proactive 模式和标准模式中均作为动态段注入。</p>
+<hr>
+<h2>10. MCP 指令注入</h2>
+<blockquote>
+<p>源文件：<code>src/constants/prompts.ts</code> — <code>getMcpInstructionsSection()</code> / <code>getMcpInstructions()</code></p>
+</blockquote>
+<h3>10.1 标准注入</h3>
+<pre><code class="language-typescript">function getMcpInstructions(mcpClients: MCPServerConnection[]): string | null {
+  // 过滤已连接且有 instructions 的客户端
+  const clientsWithInstructions = connectedClients.filter(c =&gt; c.instructions)
+  if (clientsWithInstructions.length === 0) return null
+
+  // 构建格式:
+  // # MCP Server Instructions
+  // ## &lt;server_name&gt;
+  // &lt;instructions&gt;
+}
+</code></pre>
+<h3>10.2 两种注入路径</h3>
+<table>
+<thead>
+<tr>
+<th>路径</th>
+<th>条件</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>System prompt section</td>
+<td><code>!isMcpInstructionsDeltaEnabled()</code></td>
+<td>每 turn 重新计算（DANGEROUS_uncached）</td>
+</tr>
+<tr>
+<td>Delta attachment</td>
+<td><code>isMcpInstructionsDeltaEnabled()</code></td>
+<td>通过 <code>getMcpInstructionsDeltaAttachment()</code> 作为消息附件增量注入</td>
+</tr>
+</tbody></table>
+<p>Delta 模式的优势：避免 MCP 服务器延迟连接时破坏 system prompt 缓存。</p>
+<h3>10.3 Compact 后重注入</h3>
+<p>压缩后 MCP 指令通过 <code>getMcpInstructionsDeltaAttachment()</code> 重新注入，传入空消息历史作为基线，确保完整指令集恢复。</p>
+<hr>
+<h2>11. Agent 指令注入</h2>
+<blockquote>
+<p>源文件：<code>src/utils/systemPrompt.ts</code></p>
+</blockquote>
+<p>Agent 的 system prompt 通过 <code>mainThreadAgentDefinition.getSystemPrompt()</code> 获取。</p>
+<h3>11.1 Built-in vs Custom Agent</h3>
+<pre><code class="language-typescript">const agentSystemPrompt = mainThreadAgentDefinition
+  ? isBuiltInAgent(mainThreadAgentDefinition)
+    ? mainThreadAgentDefinition.getSystemPrompt({
+        toolUseContext: { options: toolUseContext.options },
+      })
+    : mainThreadAgentDefinition.getSystemPrompt()
+  : undefined
+</code></pre>
+<ul>
+<li><strong>Built-in agent</strong>: 接收 <code>toolUseContext</code>，可访问运行时选项</li>
+<li><strong>Custom agent</strong>: 无参数调用，返回用户定义的静态 prompt</li>
+</ul>
+<h3>11.2 Proactive 模式下的追加逻辑</h3>
+<pre><code class="language-typescript">if (agentPrompt &amp;&amp; proactiveActive) {
+  return asSystemPrompt([
+    ...defaultSystemPrompt,               // 自治 agent 基础 prompt
+    `\n# Custom Agent Instructions\n${agentSystemPrompt}`,  // 追加
+    ...(appendSystemPrompt ? [appendSystemPrompt] : []),
+  ])
+}
+</code></pre>
+<p>这与标准模式的&quot;替换&quot;行为形成对比——proactive 模式中，agent 指令叠加在自治基础 prompt 之上。</p>
+<hr>
+<h2>12. Subagent 增强</h2>
+<blockquote>
+<p>源文件：<code>src/constants/prompts.ts</code> — <code>enhanceSystemPromptWithEnvDetails()</code></p>
+</blockquote>
+<p>Subagent（通过 AgentTool 派生）不走 <code>getSystemPrompt()</code>，而是通过增强函数获得额外上下文：</p>
+<pre><code class="language-typescript">export async function enhanceSystemPromptWithEnvDetails(
+  existingSystemPrompt: string[],
+  model: string,
+  additionalWorkingDirectories?: string[],
+  enabledToolNames?: ReadonlySet&lt;string&gt;,
+): Promise&lt;string[]&gt; {
+  return [
+    ...existingSystemPrompt,
+    notes,                        // 绝对路径要求、无 emoji 等
+    discoverSkillsGuidance?,      // 技能发现指引
+    envInfo,                      // computeEnvInfo 完整环境信息
+  ]
+}
+</code></pre>
+<p><strong>DEFAULT_AGENT_PROMPT：</strong></p>
+<pre><code class="language-typescript">export const DEFAULT_AGENT_PROMPT = `You are an agent for Claude Code, Anthropic&#39;s official CLI for Claude. Given the user&#39;s message, you should use the tools available to complete the task. Complete the task fully—don&#39;t gold-plate, but don&#39;t leave it half-done. When you complete the task, respond with a concise report covering what was done and any key findings — the caller will relay this to the user, so it only needs the essentials.`
+</code></pre>
+<hr>
+<h2>13. 关键设计模式总结</h2>
+<h3>模式 1: Prompt-as-Control-Plane（Prompt 即控制面）</h3>
+<p>System prompt 不仅是文本配置，而是系统的核心编排层。新模式、新 agent、新行为通常先通过 prompt section 进入系统，而非修改 loop 逻辑。</p>
+<h3>模式 2: 缓存意识设计（Cache-Aware Prompt Engineering）</h3>
+<pre><code>设计决策                          缓存影响
+─────────────────────────────────────────────────────
+静态段排在前面                    maximizes global cache hit
+动态段排在后面                    changes don&#39;t bust static cache
+DANGEROUS_uncached 显式标记        forces code author to justify
+section 缓存（memoize）           avoids recompute within session
+boundary marker 分割              enables global vs org scope split
+</code></pre>
+<h3>模式 3: 条件编译（Dead Code Elimination）</h3>
+<pre><code class="language-typescript">// feature() 是编译时常量
+if (feature(&#39;CACHED_MICROCOMPACT&#39;)) { ... }
+if (feature(&#39;PROACTIVE&#39;) || feature(&#39;KAIROS&#39;)) { ... }
+</code></pre>
+<p>外部构建（non-ant）中，feature gate 为 false 的代码块被彻底剪除，不泄露内部功能字符串。</p>
+<h3>模式 4: Ant/Non-Ant 双轨</h3>
+<p>几乎每个 section 都有 <code>process.env.USER_TYPE === &#39;ant&#39;</code> 分支：</p>
+<ul>
+<li>Ant 版本更详细、更具体（如&quot;注释应只解释 WHY&quot;）</li>
+<li>Non-Ant 版本更通用、更简洁</li>
+<li>某些段落完全限于 Ant（如 assertiveness counterweight、false-claims mitigation）</li>
+</ul>
+<h3>模式 5: 渐进式增强</h3>
+<pre><code>基础身份 → 系统规则 → 任务准则 → 谨慎行动 → 工具使用 → 风格 → 效率
+                              ↓ (boundary)
+会话指导 → 记忆 → 环境 → 语言 → 风格 → MCP → 特性段...
+</code></pre>
+<p>每一层在前一层基础上叠加约束，不依赖前层的存在（某段为 null 时自动跳过）。</p>
+<h3>模式 6: 最小 Prompt 原则</h3>
+<ul>
+<li><code>CLAUDE_CODE_SIMPLE</code> 模式证明系统能以一行运行</li>
+<li>Output style 可跳过 coding instructions</li>
+<li>REPL 模式跳过工具指引</li>
+<li>每个 section 返回 <code>null</code> 即被过滤，不产生空内容</li>
+</ul>
+<h3>常量参考表</h3>
+<table>
+<thead>
+<tr>
+<th>常量</th>
+<th>值</th>
+<th>来源</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>SYSTEM_PROMPT_DYNAMIC_BOUNDARY</code></td>
+<td><code>&#39;__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__&#39;</code></td>
+<td><code>prompts.ts:114</code></td>
+</tr>
+<tr>
+<td><code>FRONTIER_MODEL_NAME</code></td>
+<td><code>&#39;Claude Opus 4.6&#39;</code></td>
+<td><code>prompts.ts:118</code></td>
+</tr>
+<tr>
+<td><code>DEFAULT_AGENT_PROMPT</code></td>
+<td>(见上文)</td>
+<td><code>prompts.ts:758</code></td>
+</tr>
+<tr>
+<td><code>CLAUDE_CODE_DOCS_MAP_URL</code></td>
+<td><code>&#39;https://code.claude.com/docs/en/claude_code_docs_map.md&#39;</code></td>
+<td><code>prompts.ts:102</code></td>
+</tr>
+<tr>
+<td><code>MAX_ENTRYPOINT_LINES</code></td>
+<td><code>200</code></td>
+<td><code>memdir.ts:35</code></td>
+</tr>
+<tr>
+<td><code>MAX_ENTRYPOINT_BYTES</code></td>
+<td><code>25_000</code></td>
+<td><code>memdir.ts:38</code></td>
+</tr>
+</tbody></table>
+<hr>
+<blockquote>
+<p>本文档基于源码静态分析生成。所有路径均为项目根目录的相对路径。</p>
+</blockquote>
+</body>
+</html>

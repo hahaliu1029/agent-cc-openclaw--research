@@ -1,0 +1,1211 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>11-state</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1>Claude Code 运行时状态模型详细分析</h1>
+<blockquote>
+<p>源码版本: 2026-04-01 快照
+核心文件: <code>src/bootstrap/state.ts</code>, <code>src/state/store.ts</code>, <code>src/state/AppStateStore.ts</code>, <code>src/state/onChangeAppState.ts</code>, <code>src/state/selectors.ts</code></p>
+</blockquote>
+<hr>
+<h2>目录</h2>
+<ul>
+<li><a href="#1-%E4%B8%89%E5%B1%82%E7%8A%B6%E6%80%81%E6%A8%A1%E5%9E%8B%E6%80%BB%E8%A7%88">1. 三层状态模型总览</a><ul>
+<li><a href="#11-ascii-%E6%9E%B6%E6%9E%84%E5%9B%BE">1.1 ASCII 架构图</a></li>
+<li><a href="#12-%E4%B8%89%E5%B1%82%E6%A8%A1%E5%9E%8B%E5%AF%B9%E6%AF%94%E8%A1%A8">1.2 三层模型对比表</a></li>
+<li><a href="#13-%E8%AE%BE%E8%AE%A1%E7%90%86%E5%BF%B5">1.3 设计理念</a></li>
+</ul>
+</li>
+<li><a href="#2-bootstrapstatets-%E5%85%A8%E5%B1%80%E5%8D%95%E4%BE%8B%E8%AF%A6%E8%A7%A3">2. bootstrap/state.ts 全局单例详解</a><ul>
+<li><a href="#21-state-%E7%B1%BB%E5%9E%8B%E5%AE%9A%E4%B9%89">2.1 State 类型定义</a></li>
+<li><a href="#22-%E5%85%B3%E9%94%AE%E5%AD%97%E6%AE%B5%E5%88%86%E7%B1%BB">2.2 关键字段分类</a></li>
+<li><a href="#23-%E5%88%9D%E5%A7%8B%E5%8C%96-getinitialstate">2.3 初始化 (getInitialState)</a></li>
+<li><a href="#24-%E8%AE%BF%E9%97%AE%E5%99%A8-gettersetter">2.4 访问器 (Getter/Setter)</a></li>
+<li><a href="#25-channelentry-%E7%B1%BB%E5%9E%8B">2.5 ChannelEntry 类型</a></li>
+<li><a href="#26-attributedcounter-%E7%B1%BB%E5%9E%8B">2.6 AttributedCounter 类型</a></li>
+<li><a href="#27-latch-%E6%A8%A1%E5%BC%8F-sticky-on">2.7 Latch 模式 (Sticky-on)</a></li>
+</ul>
+</li>
+<li><a href="#3-store-%E6%8A%BD%E8%B1%A1%E5%B1%82">3. Store 抽象层</a><ul>
+<li><a href="#31-createstore-%E5%AE%9E%E7%8E%B0">3.1 createStore 实现</a></li>
+<li><a href="#32-store-%E6%8E%A5%E5%8F%A3%E7%B1%BB%E5%9E%8B">3.2 Store 接口类型</a></li>
+<li><a href="#33-%E4%B8%8D%E5%8F%AF%E5%8F%98%E6%9B%B4%E6%96%B0%E4%B8%8E%E5%8F%98%E6%9B%B4%E6%A3%80%E6%B5%8B">3.3 不可变更新与变更检测</a></li>
+</ul>
+</li>
+<li><a href="#4-appstate-%E7%B1%BB%E5%9E%8B%E5%92%8C-appstatestoremd">4. AppState 类型和 AppStateStore</a><ul>
+<li><a href="#41-appstate-%E5%AE%8C%E6%95%B4%E7%B1%BB%E5%9E%8B%E7%BB%93%E6%9E%84">4.1 AppState 完整类型结构</a></li>
+<li><a href="#42-deepimmutable-%E4%B8%8E%E5%8F%AF%E5%8F%98%E8%B1%81%E5%85%8D">4.2 DeepImmutable 与可变豁免</a></li>
+<li><a href="#43-mcp-%E5%AD%90%E7%8A%B6%E6%80%81">4.3 MCP 子状态</a></li>
+<li><a href="#44-plugin-%E5%AD%90%E7%8A%B6%E6%80%81">4.4 Plugin 子状态</a></li>
+<li><a href="#45-bridge-%E5%AD%90%E7%8A%B6%E6%80%81">4.5 Bridge 子状态</a></li>
+<li><a href="#46-permission-%E5%AD%90%E7%8A%B6%E6%80%81">4.6 Permission 子状态</a></li>
+<li><a href="#47-ui-%E5%AD%90%E7%8A%B6%E6%80%81">4.7 UI 子状态</a></li>
+<li><a href="#48-speculation-%E5%AD%90%E7%8A%B6%E6%80%81">4.8 Speculation 子状态</a></li>
+<li><a href="#49-getdefaultappstate-%E5%88%9D%E5%A7%8B%E5%8C%96">4.9 getDefaultAppState() 初始化</a></li>
+</ul>
+</li>
+<li><a href="#5-feature-gate-%E6%9C%BA%E5%88%B6">5. Feature Gate 机制</a><ul>
+<li><a href="#51-growthbook-feature-flags">5.1 GrowthBook Feature Flags</a></li>
+<li><a href="#52-compile-time-feature-gates">5.2 Compile-time Feature Gates</a></li>
+<li><a href="#53-%E7%8E%AF%E5%A2%83%E5%8F%98%E9%87%8F%E6%8E%A7%E5%88%B6">5.3 环境变量控制</a></li>
+<li><a href="#54-settings-%E6%8E%A7%E5%88%B6">5.4 Settings 控制</a></li>
+</ul>
+</li>
+<li><a href="#6-%E8%AE%BE%E7%BD%AE-settings-%E5%8A%A0%E8%BD%BD%E4%B8%8E%E8%A6%86%E7%9B%96">6. 设置 (Settings) 加载与覆盖</a><ul>
+<li><a href="#61-settings-%E6%9D%A5%E6%BA%90%E4%B8%8E%E4%BC%98%E5%85%88%E7%BA%A7">6.1 Settings 来源与优先级</a></li>
+<li><a href="#62-settingsjson-%E7%B1%BB%E5%9E%8B-%E9%83%A8%E5%88%86">6.2 SettingsJson 类型 (部分)</a></li>
+<li><a href="#63-%E8%AE%BE%E7%BD%AE%E5%8F%98%E6%9B%B4%E7%9A%84%E5%89%AF%E4%BD%9C%E7%94%A8">6.3 设置变更的副作用</a></li>
+</ul>
+</li>
+<li><a href="#7-onchangeappstate-%E7%8A%B6%E6%80%81%E5%8F%98%E6%9B%B4%E5%93%8D%E5%BA%94">7. onChangeAppState 状态变更响应</a><ul>
+<li><a href="#71-%E6%9D%83%E9%99%90%E6%A8%A1%E5%BC%8F%E5%90%8C%E6%AD%A5-ccrsdk">7.1 权限模式同步 (CCR/SDK)</a></li>
+<li><a href="#72-%E6%A8%A1%E5%9E%8B%E8%AE%BE%E7%BD%AE%E6%8C%81%E4%B9%85%E5%8C%96">7.2 模型设置持久化</a></li>
+<li><a href="#73-ui-%E5%81%8F%E5%A5%BD%E6%8C%81%E4%B9%85%E5%8C%96">7.3 UI 偏好持久化</a></li>
+<li><a href="#74-%E8%AE%A4%E8%AF%81%E7%BC%93%E5%AD%98%E6%B8%85%E7%90%86">7.4 认证缓存清理</a></li>
+<li><a href="#75-%E7%8E%AF%E5%A2%83%E5%8F%98%E9%87%8F%E5%90%8C%E6%AD%A5">7.5 环境变量同步</a></li>
+<li><a href="#76-externalmetadatatoappstate-%E5%8F%8D%E5%90%91%E5%90%8C%E6%AD%A5">7.6 externalMetadataToAppState (反向同步)</a></li>
+</ul>
+</li>
+<li><a href="#8-%E7%8A%B6%E6%80%81%E5%9C%A8%E7%BB%84%E4%BB%B6%E9%97%B4%E7%9A%84%E4%BC%A0%E9%80%92">8. 状态在组件间的传递</a><ul>
+<li><a href="#81-react-hooks-useappstate">8.1 React Hooks (useAppState)</a></li>
+<li><a href="#82-selectors">8.2 Selectors</a></li>
+<li><a href="#83-bootstrap-state-%E4%B8%8E-appstate-%E7%9A%84%E8%BE%B9%E7%95%8C">8.3 bootstrap state 与 AppState 的边界</a></li>
+</ul>
+</li>
+<li><a href="#9-%E5%85%B3%E9%94%AE%E8%AE%BE%E8%AE%A1%E6%A8%A1%E5%BC%8F%E6%80%BB%E7%BB%93">9. 关键设计模式总结</a></li>
+</ul>
+<hr>
+<h2>1. 三层状态模型总览</h2>
+<h3>1.1 ASCII 架构图</h3>
+<pre><code>┌─────────────────────────────────────────────────────────────────────┐
+│                      Claude Code Runtime                            │
+│                                                                     │
+│  ┌───────────────────────────────────────────────────────────────┐  │
+│  │  Layer 1: Bootstrap State (全局单例, 模块级变量)               │  │
+│  │  src/bootstrap/state.ts                                       │  │
+│  │                                                               │  │
+│  │  - 进程生命周期状态 (sessionId, cwd, startTime)               │  │
+│  │  - 累计统计 (cost, tokens, lines, durations)                  │  │
+│  │  - 遥测 provider (meter, logger, tracer)                      │  │
+│  │  - 认证/安全 (sessionIngressToken, oauthTokenFromFd)          │  │
+│  │  - Prompt cache latches (sticky-on 标志)                      │  │
+│  │  - 模型配置 (initialMainLoopModel, modelStrings)              │  │
+│  │  - Channel/Plugin 配置                                        │  │
+│  │                                                               │  │
+│  │  访问方式: getter/setter 函数 (非 store)                      │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+│                                │                                    │
+│                                │ getSessionId() / getCwd() etc.     │
+│                                ▼                                    │
+│  ┌───────────────────────────────────────────────────────────────┐  │
+│  │  Layer 2: AppState Store (createStore + React integration)    │  │
+│  │  src/state/AppStateStore.ts + src/state/store.ts              │  │
+│  │                                                               │  │
+│  │  - UI 状态 (verbose, expandedView, footerSelection)           │  │
+│  │  - MCP 连接状态 (clients, tools, resources)                   │  │
+│  │  - Plugin 状态 (enabled, disabled, errors)                    │  │
+│  │  - 权限状态 (toolPermissionContext, mode)                     │  │
+│  │  - Bridge 状态 (replBridge*)                                  │  │
+│  │  - 任务状态 (tasks, foregroundedTaskId)                       │  │
+│  │  - 思考/建议/投机 (thinking, suggestion, speculation)         │  │
+│  │  - Remote/Teams/Tmux 状态                                     │  │
+│  │                                                               │  │
+│  │  访问方式: useAppState() / useSetAppState() React hooks       │  │
+│  │  变更触发: onChangeAppState (副作用: 持久化, CCR 同步)        │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+│                                │                                    │
+│                                │ subscribe() / getState()           │
+│                                ▼                                    │
+│  ┌───────────────────────────────────────────────────────────────┐  │
+│  │  Layer 3: Selectors (计算派生状态)                             │  │
+│  │  src/state/selectors.ts                                       │  │
+│  │                                                               │  │
+│  │  - getViewedTeammateTask()                                    │  │
+│  │  - getActiveAgentForInput()                                   │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h3>1.2 三层模型对比表</h3>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>Bootstrap State</th>
+<th>AppState Store</th>
+<th>Selectors</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>文件</td>
+<td><code>src/bootstrap/state.ts</code></td>
+<td><code>src/state/AppStateStore.ts</code></td>
+<td><code>src/state/selectors.ts</code></td>
+</tr>
+<tr>
+<td>存储</td>
+<td>模块级变量 (单例)</td>
+<td><code>createStore&lt;AppState&gt;</code></td>
+<td>纯函数</td>
+</tr>
+<tr>
+<td>生命周期</td>
+<td>进程级</td>
+<td>会话级</td>
+<td>无 (按需计算)</td>
+</tr>
+<tr>
+<td>访问</td>
+<td>具名 getter/setter</td>
+<td><code>useAppState()</code> / <code>getState()</code></td>
+<td>直接调用</td>
+</tr>
+<tr>
+<td>可变性</td>
+<td>直接赋值</td>
+<td>不可变更新 (<code>setState(updater)</code>)</td>
+<td>只读</td>
+</tr>
+<tr>
+<td>React 集成</td>
+<td>无 (命令式)</td>
+<td><code>subscribe()</code> + hooks</td>
+<td>传入 AppState</td>
+</tr>
+<tr>
+<td>副作用</td>
+<td>无</td>
+<td><code>onChangeAppState</code></td>
+<td>无</td>
+</tr>
+<tr>
+<td>适合</td>
+<td>低级基础设施, 遥测, 认证</td>
+<td>UI 状态, 业务逻辑</td>
+<td>派生/计算状态</td>
+</tr>
+</tbody></table>
+<h3>1.3 设计理念</h3>
+<p>源码注释明确警告: <code>// DO NOT ADD MORE STATE HERE - BE JUDICIOUS WITH GLOBAL STATE</code></p>
+<p>三层分离的原因:</p>
+<ol>
+<li><strong>Bootstrap State</strong>: 启动期最早可用, 无 React 依赖, 无 store 开销。供 bootstrap 阶段的底层模块使用。</li>
+<li><strong>AppState Store</strong>: 需要 React 响应式更新的状态。变更触发 UI 重渲染和外部同步 (CCR, 持久化)。</li>
+<li><strong>Selectors</strong>: 避免在 store 中存储可计算的派生值。纯函数确保无副作用。</li>
+</ol>
+<hr>
+<h2>2. bootstrap/state.ts 全局单例详解</h2>
+<blockquote>
+<p>源文件: <code>src/bootstrap/state.ts</code></p>
+</blockquote>
+<h3>2.1 State 类型定义</h3>
+<pre><code class="language-typescript">type State = {
+  // === 路径/身份 ===
+  originalCwd: string           // 进程原始工作目录
+  projectRoot: string           // 稳定项目根 (启动时设置, 不受 EnterWorktree 影响)
+  cwd: string                   // 当前工作目录 (可变)
+  sessionId: SessionId          // UUID, 进程级唯一
+
+  // === 累计统计 ===
+  totalCostUSD: number
+  totalAPIDuration: number
+  totalAPIDurationWithoutRetries: number
+  totalToolDuration: number
+  totalLinesAdded: number
+  totalLinesRemoved: number
+  hasUnknownModelCost: boolean
+  modelUsage: { [modelName: string]: ModelUsage }
+
+  // === Turn 级统计 (每轮重置) ===
+  turnHookDurationMs: number
+  turnToolDurationMs: number
+  turnClassifierDurationMs: number
+  turnToolCount: number
+  turnHookCount: number
+  turnClassifierCount: number
+
+  // === 时间 ===
+  startTime: number
+  lastInteractionTime: number
+
+  // === 模型配置 ===
+  mainLoopModelOverride: ModelSetting | undefined
+  initialMainLoopModel: ModelSetting
+  modelStrings: ModelStrings | null
+
+  // === 会话配置 ===
+  isInteractive: boolean
+  kairosActive: boolean
+  strictToolResultPairing: boolean
+  sdkAgentProgressSummariesEnabled: boolean
+  userMsgOptIn: boolean
+  clientType: string            // &#39;cli&#39; | &#39;sdk&#39; | ...
+  sessionSource: string | undefined
+
+  // === 认证/安全 ===
+  sessionIngressToken: string | null | undefined
+  oauthTokenFromFd: string | null | undefined
+  apiKeyFromFd: string | null | undefined
+
+  // === 设置覆盖 ===
+  flagSettingsPath: string | undefined
+  flagSettingsInline: Record&lt;string, unknown&gt; | null
+  allowedSettingSources: SettingSource[]
+
+  // === 遥测 (OpenTelemetry) ===
+  meter: Meter | null
+  sessionCounter: AttributedCounter | null
+  locCounter: AttributedCounter | null
+  prCounter: AttributedCounter | null
+  commitCounter: AttributedCounter | null
+  costCounter: AttributedCounter | null
+  tokenCounter: AttributedCounter | null
+  codeEditToolDecisionCounter: AttributedCounter | null
+  activeTimeCounter: AttributedCounter | null
+  statsStore: { observe(name: string, value: number): void } | null
+  loggerProvider: LoggerProvider | null
+  eventLogger: ReturnType&lt;typeof logs.getLogger&gt; | null
+  meterProvider: MeterProvider | null
+  tracerProvider: BasicTracerProvider | null
+
+  // === Agent 颜色 ===
+  agentColorMap: Map&lt;string, AgentColorName&gt;
+  agentColorIndex: number
+
+  // === 诊断/调试 ===
+  lastAPIRequest: Omit&lt;BetaMessageStreamParams, &#39;messages&#39;&gt; | null
+  lastAPIRequestMessages: BetaMessageStreamParams[&#39;messages&#39;] | null
+  lastClassifierRequests: unknown[] | null
+  cachedClaudeMdContent: string | null
+  inMemoryErrorLog: Array&lt;{ error: string; timestamp: string }&gt;
+  slowOperations: Array&lt;{ operation: string; durationMs: number; timestamp: number }&gt;
+
+  // === Plugin/Channel/Session 配置 ===
+  inlinePlugins: Array&lt;string&gt;
+  chromeFlagOverride: boolean | undefined
+  useCoworkPlugins: boolean
+  sessionBypassPermissionsMode: boolean
+  scheduledTasksEnabled: boolean
+  sessionCronTasks: SessionCronTask[]
+  sessionCreatedTeams: Set&lt;string&gt;
+  sessionTrustAccepted: boolean
+  sessionPersistenceDisabled: boolean
+  allowedChannels: ChannelEntry[]
+  hasDevChannels: boolean
+  sessionProjectDir: string | null
+
+  // === Plan Mode ===
+  hasExitedPlanMode: boolean
+  needsPlanModeExitAttachment: boolean
+  needsAutoModeExitAttachment: boolean
+
+  // === SDK ===
+  initJsonSchema: Record&lt;string, unknown&gt; | null
+  registeredHooks: Partial&lt;Record&lt;HookEvent, RegisteredHookMatcher[]&gt;&gt; | null
+  sdkBetas: string[] | undefined
+
+  // === Prompt Cache Latches (Sticky-on) ===
+  promptCache1hAllowlist: string[] | null
+  promptCache1hEligible: boolean | null
+  afkModeHeaderLatched: boolean | null
+  fastModeHeaderLatched: boolean | null
+  cacheEditingHeaderLatched: boolean | null
+  thinkingClearLatched: boolean | null
+
+  // === Prompt/API 追踪 ===
+  promptId: string | null
+  lastMainRequestId: string | undefined
+  lastApiCompletionTimestamp: number | null
+  pendingPostCompaction: boolean
+
+  // === 其他 ===
+  parentSessionId: SessionId | undefined
+  mainThreadAgentType: string | undefined
+  isRemoteMode: boolean
+  directConnectServerUrl: string | undefined
+  invokedSkills: Map&lt;string, { skillName; skillPath; content; invokedAt; agentId }&gt;
+  systemPromptSectionCache: Map&lt;string, string | null&gt;
+  lastEmittedDate: string | null
+  additionalDirectoriesForClaudeMd: string[]
+  lspRecommendationShownThisSession: boolean
+  questionPreviewFormat: &#39;markdown&#39; | &#39;html&#39; | undefined
+  planSlugCache: Map&lt;string, string&gt;
+  teleportedSessionInfo: { ... } | null
+}
+</code></pre>
+<h3>2.2 关键字段分类</h3>
+<p><strong>进程身份</strong> (不可变):</p>
+<ul>
+<li><code>originalCwd</code>, <code>projectRoot</code>, <code>sessionId</code>, <code>startTime</code></li>
+</ul>
+<p><strong>累计统计</strong> (单调递增):</p>
+<ul>
+<li><code>totalCostUSD</code>, <code>totalAPIDuration</code>, <code>totalLinesAdded</code>, <code>totalLinesRemoved</code></li>
+<li><code>modelUsage</code> (按模型名聚合)</li>
+</ul>
+<p><strong>Turn 级统计</strong> (每轮重置):</p>
+<ul>
+<li><code>turnHookDurationMs</code>, <code>turnToolCount</code>, <code>turnClassifierCount</code></li>
+</ul>
+<p><strong>遥测 Provider</strong> (启动后设置一次):</p>
+<ul>
+<li><code>meter</code>, <code>sessionCounter</code>, <code>loggerProvider</code>, <code>eventLogger</code>, <code>tracerProvider</code></li>
+</ul>
+<p><strong>Sticky-on Latches</strong> (一旦激活不可关闭):</p>
+<ul>
+<li><code>afkModeHeaderLatched</code>: auto mode 激活后始终发送 AFK header</li>
+<li><code>fastModeHeaderLatched</code>: fast mode 启用后始终发送 header</li>
+<li><code>cacheEditingHeaderLatched</code>: cache editing 启用后始终发送 header</li>
+<li><code>promptCache1hEligible</code>: 首次评估后锁定 (mid-session 超量不改变 TTL)</li>
+</ul>
+<h3>2.3 初始化 (getInitialState)</h3>
+<pre><code class="language-typescript">function getInitialState(): State {
+  // 解析 cwd symlink, NFC 标准化
+  let resolvedCwd = &#39;&#39;
+  try {
+    resolvedCwd = realpathSync(cwd()).normalize(&#39;NFC&#39;)
+  } catch {
+    resolvedCwd = cwd().normalize(&#39;NFC&#39;)  // CloudStorage EPERM 回退
+  }
+
+  return {
+    originalCwd: resolvedCwd,
+    projectRoot: resolvedCwd,
+    sessionId: randomUUID() as SessionId,
+    startTime: Date.now(),
+    // ... 其余全部为默认值 (0, null, false, [], new Map(), etc.)
+    clientType: &#39;cli&#39;,
+    allowedSettingSources: [
+      &#39;userSettings&#39;, &#39;projectSettings&#39;, &#39;localSettings&#39;,
+      &#39;flagSettings&#39;, &#39;policySettings&#39;,
+    ],
+  }
+}
+</code></pre>
+<h3>2.4 访问器 (Getter/Setter)</h3>
+<p>Bootstrap state 通过具名函数暴露，不使用 store 模式:</p>
+<pre><code class="language-typescript">// 典型 getter (推断自代码中的导入)
+export function getSessionId(): SessionId
+export function getCwd(): string
+export function getOriginalCwd(): string
+export function getIsNonInteractiveSession(): boolean
+export function getAllowedChannels(): ChannelEntry[]
+
+// 典型 setter
+export function setMainLoopModelOverride(model: ModelSetting | null): void
+</code></pre>
+<p>这种模式确保:</p>
+<ul>
+<li>无 React 依赖 (bootstrap 阶段可用)</li>
+<li>无 store 开销 (直接读写)</li>
+<li>编译器可以 tree-shake 未使用的 getter</li>
+</ul>
+<h3>2.5 ChannelEntry 类型</h3>
+<pre><code class="language-typescript">export type ChannelEntry =
+  | { kind: &#39;plugin&#39;; name: string; marketplace: string; dev?: boolean }
+  | { kind: &#39;server&#39;; name: string; dev?: boolean }
+</code></pre>
+<p><code>dev</code> 标志是 per-entry 的 (非 session 级), 防止 <code>--dangerously-load-development-channels</code> 的 dev 接受泄漏到 <code>--channels</code> 条目。</p>
+<h3>2.6 AttributedCounter 类型</h3>
+<pre><code class="language-typescript">export type AttributedCounter = {
+  add(value: number, additionalAttributes?: Attributes): void
+}
+</code></pre>
+<p>封装 OpenTelemetry Counter，附加维度属性。</p>
+<h3>2.7 Latch 模式 (Sticky-on)</h3>
+<p>多个字段使用 &quot;latch&quot; 模式: 一旦设置为 true/non-null，后续不会回退:</p>
+<pre><code class="language-typescript">// 例: AFK mode header
+afkModeHeaderLatched: boolean | null
+// null -&gt; 未评估
+// true -&gt; 已激活, 会话剩余时间保持
+// 目的: 防止 Shift+Tab 切换 auto mode 时反复 bust prompt cache
+</code></pre>
+<p>这些 latch 的共同目的是<strong>保护 prompt cache</strong>: API 请求的 beta header 变化会导致 prompt cache miss (~50-70K token 重新传输)。</p>
+<hr>
+<h2>3. Store 抽象层</h2>
+<blockquote>
+<p>源文件: <code>src/state/store.ts</code></p>
+</blockquote>
+<h3>3.1 createStore 实现</h3>
+<pre><code class="language-typescript">type Listener = () =&gt; void
+type OnChange&lt;T&gt; = (args: { newState: T; oldState: T }) =&gt; void
+
+export type Store&lt;T&gt; = {
+  getState: () =&gt; T
+  setState: (updater: (prev: T) =&gt; T) =&gt; void
+  subscribe: (listener: Listener) =&gt; () =&gt; void
+}
+
+export function createStore&lt;T&gt;(
+  initialState: T,
+  onChange?: OnChange&lt;T&gt;,
+): Store&lt;T&gt; {
+  let state = initialState
+  const listeners = new Set&lt;Listener&gt;()
+
+  return {
+    getState: () =&gt; state,
+
+    setState: (updater: (prev: T) =&gt; T) =&gt; {
+      const prev = state
+      const next = updater(prev)
+      if (Object.is(next, prev)) return  // 引用相等 -&gt; 跳过
+      state = next
+      onChange?.({ newState: next, oldState: prev })
+      for (const listener of listeners) listener()
+    },
+
+    subscribe: (listener: Listener) =&gt; {
+      listeners.add(listener)
+      return () =&gt; listeners.delete(listener)
+    },
+  }
+}
+</code></pre>
+<h3>3.2 Store 接口类型</h3>
+<pre><code class="language-typescript">export type Store&lt;T&gt; = {
+  getState: () =&gt; T
+  setState: (updater: (prev: T) =&gt; T) =&gt; void
+  subscribe: (listener: Listener) =&gt; () =&gt; void
+}
+</code></pre>
+<p>设计特点:</p>
+<ul>
+<li><strong>函数式更新</strong>: <code>setState</code> 接受 <code>(prev) =&gt; next</code>，不接受直接赋值</li>
+<li><strong>引用相等跳过</strong>: <code>Object.is(next, prev)</code> 防止无意义的更新</li>
+<li><strong>onChange 回调</strong>: 在 listeners 之前调用，用于副作用 (持久化, CCR 同步)</li>
+<li><strong>极简</strong>: 约 20 行代码，无依赖</li>
+</ul>
+<h3>3.3 不可变更新与变更检测</h3>
+<pre><code class="language-typescript">// 典型用法 (React 组件中)
+const setAppState = useSetAppState()
+
+setAppState(prev =&gt; ({
+  ...prev,
+  verbose: !prev.verbose,
+}))
+
+// 变更检测: 基于引用相等
+// 如果 updater 返回 prev 自身 -&gt; 不触发 onChange/listeners
+</code></pre>
+<hr>
+<h2>4. AppState 类型和 AppStateStore</h2>
+<blockquote>
+<p>源文件: <code>src/state/AppStateStore.ts</code></p>
+</blockquote>
+<h3>4.1 AppState 完整类型结构</h3>
+<pre><code class="language-typescript">export type AppState = DeepImmutable&lt;{
+  // === 设置 ===
+  settings: SettingsJson
+  verbose: boolean
+
+  // === 模型 ===
+  mainLoopModel: ModelSetting
+  mainLoopModelForSession: ModelSetting
+
+  // === UI 状态 ===
+  statusLineText: string | undefined
+  expandedView: &#39;none&#39; | &#39;tasks&#39; | &#39;teammates&#39;
+  isBriefOnly: boolean
+  showTeammateMessagePreview?: boolean
+  selectedIPAgentIndex: number
+  coordinatorTaskIndex: number
+  viewSelectionMode: &#39;none&#39; | &#39;selecting-agent&#39; | &#39;viewing-agent&#39;
+  footerSelection: FooterItem | null
+  spinnerTip?: string
+  agent: string | undefined
+  activeOverlays: ReadonlySet&lt;string&gt;
+
+  // === Kairos (Assistant mode) ===
+  kairosEnabled: boolean
+
+  // === Remote ===
+  remoteSessionUrl: string | undefined
+  remoteConnectionStatus: &#39;connecting&#39; | &#39;connected&#39; | &#39;reconnecting&#39; | &#39;disconnected&#39;
+  remoteBackgroundTaskCount: number
+
+  // === Bridge ===
+  replBridgeEnabled: boolean
+  replBridgeExplicit: boolean
+  replBridgeOutboundOnly: boolean
+  replBridgeConnected: boolean
+  replBridgeSessionActive: boolean
+  replBridgeReconnecting: boolean
+  replBridgeConnectUrl: string | undefined
+  replBridgeSessionUrl: string | undefined
+  replBridgeEnvironmentId: string | undefined
+  replBridgeSessionId: string | undefined
+  replBridgeError: string | undefined
+  replBridgeInitialName: string | undefined
+  showRemoteCallout: boolean
+
+  // === Permission ===
+  toolPermissionContext: ToolPermissionContext
+}&gt; &amp; {
+  // === 以下字段从 DeepImmutable 中排除 ===
+  // (含函数类型/Map/Set, 不适合深度冻结)
+
+  // === 任务 ===
+  tasks: { [taskId: string]: TaskState }
+  agentNameRegistry: Map&lt;string, AgentId&gt;
+  foregroundedTaskId?: string
+  viewingAgentTaskId?: string
+
+  // === MCP ===
+  mcp: {
+    clients: MCPServerConnection[]
+    tools: Tool[]
+    commands: Command[]
+    resources: Record&lt;string, ServerResource[]&gt;
+    pluginReconnectKey: number
+  }
+
+  // === Plugins ===
+  plugins: {
+    enabled: LoadedPlugin[]
+    disabled: LoadedPlugin[]
+    commands: Command[]
+    errors: PluginError[]
+    installationStatus: { marketplaces: [...]; plugins: [...] }
+    needsRefresh: boolean
+  }
+
+  // === Agent ===
+  agentDefinitions: AgentDefinitionsResult
+  fileHistory: FileHistoryState
+  attribution: AttributionState
+  todos: { [agentId: string]: TodoList }
+
+  // === Notifications ===
+  notifications: { current: Notification | null; queue: Notification[] }
+  elicitation: { queue: ElicitationRequestEvent[] }
+
+  // === Thinking/Suggestion/Speculation ===
+  thinkingEnabled: boolean | undefined
+  promptSuggestionEnabled: boolean
+  promptSuggestion: { text; promptId; shownAt; acceptedAt; generationRequestId }
+  speculation: SpeculationState
+  speculationSessionTimeSavedMs: number
+
+  // === Session Hooks ===
+  sessionHooks: SessionHooksState
+
+  // === Teams/Tmux ===
+  teamContext?: { ... }
+  standaloneAgentContext?: { name; color }
+  inbox: { messages: [...] }
+
+  // === Computer Use (Chicago MCP) ===
+  computerUseMcpState?: { allowedApps; grantFlags; lastScreenshotDims; ... }
+
+  // === Permission Callbacks ===
+  replBridgePermissionCallbacks?: BridgePermissionCallbacks
+  channelPermissionCallbacks?: ChannelPermissionCallbacks
+
+  // === Auth ===
+  authVersion: number
+
+  // === Initial Message ===
+  initialMessage: { message: UserMessage; clearContext?; mode?; allowedPrompts? } | null
+
+  // === Fast/Effort/Advisor ===
+  fastMode?: boolean
+  advisorModel?: string
+  effortValue?: EffortValue
+
+  // === Ultraplan ===
+  ultraplanLaunching?: boolean
+  ultraplanSessionUrl?: string
+  ultraplanPendingChoice?: { plan; sessionId; taskId }
+  ultraplanLaunchPending?: { blurb }
+  isUltraplanMode?: boolean
+
+  // === Denial Tracking ===
+  denialTracking?: DenialTrackingState
+
+  // === Skill Improvement ===
+  skillImprovement: { suggestion: { skillName; updates } | null }
+}
+
+export type AppStateStore = Store&lt;AppState&gt;
+</code></pre>
+<h3>4.2 DeepImmutable 与可变豁免</h3>
+<p>AppState 使用 <code>DeepImmutable&lt;{...}&gt;</code> 包装大部分字段，确保 TypeScript 类型层面的深度只读。但有几类字段被排除:</p>
+<ul>
+<li><strong>含函数的类型</strong>: <code>TaskState</code>, <code>BridgePermissionCallbacks</code>, <code>ChannelPermissionCallbacks</code></li>
+<li><strong>Map/Set</strong>: <code>agentNameRegistry</code>, <code>sessionHooks</code></li>
+<li><strong>MCP 状态</strong>: <code>MCPServerConnection</code> 内含 <code>Client</code> 对象 (有方法)</li>
+</ul>
+<h3>4.3 MCP 子状态</h3>
+<pre><code class="language-typescript">mcp: {
+  clients: MCPServerConnection[]     // 所有连接 (含 pending/failed)
+  tools: Tool[]                       // 从已连接服务器收集的工具
+  commands: Command[]                 // MCP 提供的命令
+  resources: Record&lt;string, ServerResource[]&gt;  // 服务器名 -&gt; 资源列表
+  pluginReconnectKey: number          // /reload-plugins 递增触发重连
+}
+</code></pre>
+<h3>4.4 Plugin 子状态</h3>
+<pre><code class="language-typescript">plugins: {
+  enabled: LoadedPlugin[]       // 已启用的插件
+  disabled: LoadedPlugin[]      // 已禁用的插件
+  commands: Command[]           // 插件提供的命令
+  errors: PluginError[]         // 加载/初始化错误
+  installationStatus: {
+    marketplaces: Array&lt;{ name; status; error? }&gt;
+    plugins: Array&lt;{ id; name; status; error? }&gt;
+  }
+  needsRefresh: boolean         // 磁盘状态变更, 需要 /reload-plugins
+}
+</code></pre>
+<h3>4.5 Bridge 子状态</h3>
+<p>共 14 个 <code>replBridge*</code> 字段管理 Always-on Bridge 状态:</p>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>replBridgeEnabled</code></td>
+<td>期望状态 (配置/切换控制)</td>
+</tr>
+<tr>
+<td><code>replBridgeExplicit</code></td>
+<td>通过 /remote-control 命令激活</td>
+</tr>
+<tr>
+<td><code>replBridgeOutboundOnly</code></td>
+<td>仅出站模式 (不接受入站控制)</td>
+</tr>
+<tr>
+<td><code>replBridgeConnected</code></td>
+<td>环境注册 + 会话创建 = Ready</td>
+</tr>
+<tr>
+<td><code>replBridgeSessionActive</code></td>
+<td>WS 连接打开 = 用户在 claude.ai 上</td>
+</tr>
+<tr>
+<td><code>replBridgeReconnecting</code></td>
+<td>轮询循环在错误退避中</td>
+</tr>
+<tr>
+<td><code>replBridgeConnectUrl</code></td>
+<td>Ready 状态的连接 URL</td>
+</tr>
+<tr>
+<td><code>replBridgeSessionUrl</code></td>
+<td>claude.ai 上的会话 URL</td>
+</tr>
+<tr>
+<td><code>replBridgeEnvironmentId</code></td>
+<td>环境 ID (调试用)</td>
+</tr>
+<tr>
+<td><code>replBridgeSessionId</code></td>
+<td>会话 ID (调试用)</td>
+</tr>
+<tr>
+<td><code>replBridgeError</code></td>
+<td>连接失败错误消息</td>
+</tr>
+<tr>
+<td><code>replBridgeInitialName</code></td>
+<td>通过 /remote-control 设置的名称</td>
+</tr>
+<tr>
+<td><code>showRemoteCallout</code></td>
+<td>首次远程对话框待显示</td>
+</tr>
+</tbody></table>
+<h3>4.6 Permission 子状态</h3>
+<pre><code class="language-typescript">toolPermissionContext: ToolPermissionContext
+// 包含:
+//   mode: PermissionMode  // &#39;default&#39; | &#39;plan&#39; | &#39;auto&#39; | ...
+//   acceptEdits: boolean
+//   ...
+</code></pre>
+<p>Mode 变更通过 <code>onChangeAppState</code> 自动同步到 CCR (<code>notifySessionMetadataChanged</code>) 和 SDK (<code>notifyPermissionModeChanged</code>)。</p>
+<h3>4.7 UI 子状态</h3>
+<pre><code class="language-typescript">expandedView: &#39;none&#39; | &#39;tasks&#39; | &#39;teammates&#39;
+footerSelection: FooterItem | null  // &#39;tasks&#39; | &#39;tmux&#39; | &#39;bagel&#39; | &#39;teams&#39; | &#39;bridge&#39; | &#39;companion&#39;
+viewSelectionMode: &#39;none&#39; | &#39;selecting-agent&#39; | &#39;viewing-agent&#39;
+coordinatorTaskIndex: number  // -1=pill, 0=main, 1..N=agent rows
+</code></pre>
+<h3>4.8 Speculation 子状态</h3>
+<pre><code class="language-typescript">export type SpeculationState =
+  | { status: &#39;idle&#39; }
+  | {
+      status: &#39;active&#39;
+      id: string
+      abort: () =&gt; void
+      startTime: number
+      messagesRef: { current: Message[] }     // 可变引用, 避免每消息 spread
+      writtenPathsRef: { current: Set&lt;string&gt; }
+      boundary: CompletionBoundary | null
+      suggestionLength: number
+      toolUseCount: number
+      isPipelined: boolean
+      contextRef: { current: REPLHookContext }
+      pipelinedSuggestion?: { text; promptId; generationRequestId } | null
+    }
+</code></pre>
+<h3>4.9 getDefaultAppState() 初始化</h3>
+<pre><code class="language-typescript">export function getDefaultAppState(): AppState {
+  // 确定初始权限模式:
+  // teammate + plan_mode_required -&gt; &#39;plan&#39;
+  // 否则 -&gt; &#39;default&#39;
+  const initialMode: PermissionMode =
+    isTeammate() &amp;&amp; isPlanModeRequired() ? &#39;plan&#39; : &#39;default&#39;
+
+  return {
+    settings: getInitialSettings(),
+    tasks: {},
+    agentNameRegistry: new Map(),
+    verbose: false,
+    mainLoopModel: null,            // null = 使用默认模型
+    mainLoopModelForSession: null,
+    toolPermissionContext: {
+      ...getEmptyToolPermissionContext(),
+      mode: initialMode,
+    },
+    mcp: { clients: [], tools: [], commands: [], resources: {}, pluginReconnectKey: 0 },
+    plugins: { enabled: [], disabled: [], commands: [], errors: [],
+               installationStatus: { marketplaces: [], plugins: [] }, needsRefresh: false },
+    thinkingEnabled: shouldEnableThinkingByDefault(),
+    promptSuggestionEnabled: shouldEnablePromptSuggestion(),
+    speculation: { status: &#39;idle&#39; },
+    // ... 其余为空/默认值
+  }
+}
+</code></pre>
+<hr>
+<h2>5. Feature Gate 机制</h2>
+<h3>5.1 GrowthBook Feature Flags</h3>
+<pre><code class="language-typescript">// 运行时 feature flag 检查 (缓存, 可能过时)
+getFeatureValue_CACHED_MAY_BE_STALE&lt;T&gt;(key: string, fallback: T): T
+
+// 例: Channel 总开关
+isChannelsEnabled(): boolean {
+  return getFeatureValue_CACHED_MAY_BE_STALE(&#39;tengu_harbor&#39;, false)
+}
+
+// Statsig 门控 (缓存)
+checkStatsigFeatureGate_CACHED_MAY_BE_STALE(gate: string): boolean
+</code></pre>
+<h3>5.2 Compile-time Feature Gates</h3>
+<pre><code class="language-typescript">import { feature } from &#39;bun:bundle&#39;
+
+// 编译期消除死代码路径
+const fetchMcpSkillsForClient = feature(&#39;MCP_SKILLS&#39;)
+  ? require(&#39;../../skills/mcpSkills.js&#39;).fetchMcpSkillsForClient
+  : null
+
+const computerUseWrapper = feature(&#39;CHICAGO_MCP&#39;)
+  ? () =&gt; require(&#39;../../utils/computerUse/wrapper.js&#39;)
+  : undefined
+</code></pre>
+<h3>5.3 环境变量控制</h3>
+<table>
+<thead>
+<tr>
+<th>环境变量</th>
+<th>功能</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>CLAUDE_CODE_ENABLE_XAA</code></td>
+<td>启用 XAA 认证</td>
+</tr>
+<tr>
+<td><code>CLAUDE_CODE_USE_CCR_V2</code></td>
+<td>使用 SSETransport (CCR v2)</td>
+</tr>
+<tr>
+<td><code>CLAUDE_CODE_POST_FOR_SESSION_INGRESS_V2</code></td>
+<td>使用 HybridTransport</td>
+</tr>
+<tr>
+<td><code>CLAUDE_CODE_REMOTE</code></td>
+<td>远程模式标志</td>
+</tr>
+<tr>
+<td><code>CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC</code></td>
+<td>禁用非必要网络请求</td>
+</tr>
+<tr>
+<td><code>MCP_TIMEOUT</code></td>
+<td>MCP 连接超时 (ms)</td>
+</tr>
+<tr>
+<td><code>MCP_TOOL_TIMEOUT</code></td>
+<td>MCP 工具调用超时 (ms)</td>
+</tr>
+<tr>
+<td><code>MCP_SERVER_CONNECTION_BATCH_SIZE</code></td>
+<td>本地 MCP 连接并发度</td>
+</tr>
+<tr>
+<td><code>ENABLE_CLAUDEAI_MCP_SERVERS</code></td>
+<td>Claude.ai MCP connector 开关</td>
+</tr>
+</tbody></table>
+<h3>5.4 Settings 控制</h3>
+<p>Settings 中的 feature 控制:</p>
+<ul>
+<li><code>allowedMcpServers</code> / <code>deniedMcpServers</code>: MCP 白名单/黑名单</li>
+<li><code>channelsEnabled</code>: Channel 功能组织级开关</li>
+<li><code>allowedChannelPlugins</code>: 组织级 channel 白名单</li>
+<li><code>allowManagedMcpServersOnly</code>: 仅允许企业管理的 MCP</li>
+</ul>
+<hr>
+<h2>6. 设置 (Settings) 加载与覆盖</h2>
+<h3>6.1 Settings 来源与优先级</h3>
+<pre><code class="language-typescript">type SettingSource =
+  | &#39;userSettings&#39;      // ~/.claude/settings.json
+  | &#39;projectSettings&#39;   // .claude/settings.json
+  | &#39;localSettings&#39;     // .claude/settings.local.json
+  | &#39;flagSettings&#39;      // --settings-path CLI 参数
+  | &#39;policySettings&#39;    // 企业策略 (managed settings)
+</code></pre>
+<p>合并逻辑 (由 <code>getInitialSettings()</code> 和 <code>getSettingsForSource()</code> 管理):</p>
+<ul>
+<li>后者覆盖前者 (深度合并)</li>
+<li><code>allowedSettingSources</code> 过滤可用来源 (default: all 5)</li>
+<li><code>policySettings</code> 具有特殊语义 (企业策略优先级最高)</li>
+</ul>
+<h3>6.2 SettingsJson 类型 (部分)</h3>
+<pre><code class="language-typescript">type SettingsJson = {
+  // MCP 相关
+  mcpServers?: Record&lt;string, McpServerConfig&gt;
+  allowedMcpServers?: Array&lt;McpServerAllowEntry&gt;
+  deniedMcpServers?: Array&lt;McpServerDenyEntry&gt;
+  allowManagedMcpServersOnly?: boolean
+
+  // Channel 相关
+  channelsEnabled?: boolean
+  allowedChannelPlugins?: ChannelAllowlistEntry[]
+
+  // 模型
+  model?: string
+
+  // 环境变量
+  env?: Record&lt;string, string&gt;
+
+  // XAA
+  xaaIdp?: XaaIdpSettings
+
+  // ... 更多设置
+}
+</code></pre>
+<h3>6.3 设置变更的副作用</h3>
+<p>当 <code>AppState.settings</code> 变更时 (<code>onChangeAppState</code> 中):</p>
+<pre><code class="language-typescript">if (newState.settings !== oldState.settings) {
+  clearApiKeyHelperCache()      // 清除 API key helper 缓存
+  clearAwsCredentialsCache()    // 清除 AWS 凭证缓存
+  clearGcpCredentialsCache()    // 清除 GCP 凭证缓存
+
+  if (newState.settings.env !== oldState.settings.env) {
+    applyConfigEnvironmentVariables()  // 重新应用环境变量 (仅添加/覆盖)
+  }
+}
+</code></pre>
+<hr>
+<h2>7. onChangeAppState 状态变更响应</h2>
+<blockquote>
+<p>源文件: <code>src/state/onChangeAppState.ts</code></p>
+</blockquote>
+<p><code>onChangeAppState</code> 是 <code>createStore</code> 的 <code>onChange</code> 回调，在每次 <code>setState</code> 后、listener 通知前调用。</p>
+<h3>7.1 权限模式同步 (CCR/SDK)</h3>
+<pre><code class="language-typescript">// 所有 mode 变更的统一出口
+const prevMode = oldState.toolPermissionContext.mode
+const newMode = newState.toolPermissionContext.mode
+
+if (prevMode !== newMode) {
+  const prevExternal = toExternalPermissionMode(prevMode)
+  const newExternal = toExternalPermissionMode(newMode)
+
+  // CCR: 仅当 external mode 变化时同步
+  // (default -&gt; bubble -&gt; default 不触发, 因为两者 externalize 为 &#39;default&#39;)
+  if (prevExternal !== newExternal) {
+    notifySessionMetadataChanged({
+      permission_mode: newExternal,
+      is_ultraplan_mode: isUltraplan ? true : null,  // null = RFC 7396 删除
+    })
+  }
+
+  // SDK: 传递原始 mode (print.ts 中的 listener 自己过滤)
+  notifyPermissionModeChanged(newMode)
+}
+</code></pre>
+<p>这替代了之前分散在 8+ 个位置的手动同步，确保 Shift+Tab 切换、ExitPlanMode、/plan 命令等所有路径都正确同步。</p>
+<h3>7.2 模型设置持久化</h3>
+<pre><code class="language-typescript">// mainLoopModel 变为 null -&gt; 从设置中移除
+if (newState.mainLoopModel !== oldState.mainLoopModel &amp;&amp; newState.mainLoopModel === null) {
+  updateSettingsForSource(&#39;userSettings&#39;, { model: undefined })
+  setMainLoopModelOverride(null)
+}
+
+// mainLoopModel 变为非 null -&gt; 保存到设置
+if (newState.mainLoopModel !== oldState.mainLoopModel &amp;&amp; newState.mainLoopModel !== null) {
+  updateSettingsForSource(&#39;userSettings&#39;, { model: newState.mainLoopModel })
+  setMainLoopModelOverride(newState.mainLoopModel)
+}
+</code></pre>
+<h3>7.3 UI 偏好持久化</h3>
+<pre><code class="language-typescript">// expandedView -&gt; 持久化为 showExpandedTodos + showSpinnerTree
+if (newState.expandedView !== oldState.expandedView) {
+  saveGlobalConfig(current =&gt; ({
+    ...current,
+    showExpandedTodos: newState.expandedView === &#39;tasks&#39;,
+    showSpinnerTree: newState.expandedView === &#39;teammates&#39;,
+  }))
+}
+
+// verbose
+if (newState.verbose !== oldState.verbose) {
+  saveGlobalConfig(current =&gt; ({ ...current, verbose: newState.verbose }))
+}
+</code></pre>
+<h3>7.4 认证缓存清理</h3>
+<pre><code class="language-typescript">if (newState.settings !== oldState.settings) {
+  clearApiKeyHelperCache()
+  clearAwsCredentialsCache()
+  clearGcpCredentialsCache()
+}
+</code></pre>
+<h3>7.5 环境变量同步</h3>
+<pre><code class="language-typescript">if (newState.settings.env !== oldState.settings.env) {
+  applyConfigEnvironmentVariables()  // 仅添加/覆盖, 不删除
+}
+</code></pre>
+<h3>7.6 externalMetadataToAppState (反向同步)</h3>
+<p>当 CCR 发送外部元数据更新时 (例如远程端设置权限模式):</p>
+<pre><code class="language-typescript">export function externalMetadataToAppState(
+  metadata: SessionExternalMetadata,
+): (prev: AppState) =&gt; AppState {
+  return prev =&gt; ({
+    ...prev,
+    ...(typeof metadata.permission_mode === &#39;string&#39;
+      ? { toolPermissionContext: {
+          ...prev.toolPermissionContext,
+          mode: permissionModeFromString(metadata.permission_mode),
+        }}
+      : {}),
+    ...(typeof metadata.is_ultraplan_mode === &#39;boolean&#39;
+      ? { isUltraplanMode: metadata.is_ultraplan_mode }
+      : {}),
+  })
+}
+</code></pre>
+<hr>
+<h2>8. 状态在组件间的传递</h2>
+<h3>8.1 React Hooks (useAppState)</h3>
+<pre><code class="language-typescript">// 推断自 imports
+import { useAppState, useAppStateStore, useSetAppState } from &#39;../state/AppState.js&#39;
+
+// 读取: 触发组件在状态变更时重渲染
+const appState = useAppState()
+
+// 写入: 返回 setState 函数
+const setAppState = useSetAppState()
+setAppState(prev =&gt; ({ ...prev, verbose: true }))
+
+// 获取 store 引用 (不触发渲染)
+const store = useAppStateStore()
+store.getState()  // 命令式读取
+store.subscribe(listener)  // 手动订阅
+</code></pre>
+<h3>8.2 Selectors</h3>
+<blockquote>
+<p>源文件: <code>src/state/selectors.ts</code></p>
+</blockquote>
+<pre><code class="language-typescript">// 获取当前查看的 teammate 任务
+export function getViewedTeammateTask(
+  appState: Pick&lt;AppState, &#39;viewingAgentTaskId&#39; | &#39;tasks&#39;&gt;,
+): InProcessTeammateTaskState | undefined {
+  const { viewingAgentTaskId, tasks } = appState
+  if (!viewingAgentTaskId) return undefined
+  const task = tasks[viewingAgentTaskId]
+  if (!task || !isInProcessTeammateTask(task)) return undefined
+  return task
+}
+
+// 确定用户输入的路由目标
+export type ActiveAgentForInput =
+  | { type: &#39;leader&#39; }
+  | { type: &#39;viewed&#39;; task: InProcessTeammateTaskState }
+  | { type: &#39;named_agent&#39;; task: LocalAgentTaskState }
+
+export function getActiveAgentForInput(appState: AppState): ActiveAgentForInput {
+  const viewedTask = getViewedTeammateTask(appState)
+  if (viewedTask) return { type: &#39;viewed&#39;, task: viewedTask }
+  // ... named_agent 检查
+  return { type: &#39;leader&#39; }
+}
+</code></pre>
+<p>Selectors 使用 <code>Pick&lt;AppState, ...&gt;</code> 参数类型，明确声明依赖的最小状态切片。</p>
+<h3>8.3 bootstrap state 与 AppState 的边界</h3>
+<table>
+<thead>
+<tr>
+<th>需求</th>
+<th>使用 bootstrap state</th>
+<th>使用 AppState</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>启动阶段 (React 未初始化)</td>
+<td>Y</td>
+<td>N</td>
+</tr>
+<tr>
+<td>底层工具 (log, auth, analytics)</td>
+<td>Y</td>
+<td>N</td>
+</tr>
+<tr>
+<td>UI 组件响应式更新</td>
+<td>N</td>
+<td>Y</td>
+</tr>
+<tr>
+<td>跨 CCR/SDK 同步</td>
+<td>N</td>
+<td>Y (通过 onChangeAppState)</td>
+</tr>
+<tr>
+<td>持久化到磁盘</td>
+<td>N</td>
+<td>Y (通过 onChangeAppState)</td>
+</tr>
+<tr>
+<td>遥测 provider</td>
+<td>Y</td>
+<td>N</td>
+</tr>
+<tr>
+<td>会话累计统计</td>
+<td>Y</td>
+<td>N</td>
+</tr>
+<tr>
+<td>权限模式</td>
+<td>N</td>
+<td>Y (toolPermissionContext.mode)</td>
+</tr>
+<tr>
+<td>当前工作目录</td>
+<td>Y (getCwd)</td>
+<td>N</td>
+</tr>
+<tr>
+<td>MCP 连接</td>
+<td>N</td>
+<td>Y (mcp.clients)</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>9. 关键设计模式总结</h2>
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>应用位置</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>模块级单例</strong></td>
+<td><code>bootstrap/state.ts</code></td>
+<td>模块加载时创建状态, getter/setter 函数暴露。避免 React/store 依赖</td>
+</tr>
+<tr>
+<td><strong>不可变 Store</strong></td>
+<td><code>store.ts</code> <code>createStore</code></td>
+<td>函数式 <code>setState(updater)</code>, <code>Object.is</code> 引用检查跳过无变更</td>
+</tr>
+<tr>
+<td><strong>onChange 副作用</strong></td>
+<td><code>onChangeAppState.ts</code></td>
+<td>Store 的 <code>onChange</code> 回调集中处理持久化和外部同步, 替代分散的手动同步</td>
+</tr>
+<tr>
+<td><strong>DeepImmutable 豁免</strong></td>
+<td><code>AppStateStore.ts</code></td>
+<td>核心字段深度冻结, 含函数/Map 的字段排除</td>
+</tr>
+<tr>
+<td><strong>Sticky-on Latch</strong></td>
+<td><code>bootstrap/state.ts</code> 多个 <code>*Latched</code> 字段</td>
+<td>一旦激活不可关闭, 保护 prompt cache 不被 header 变化 bust</td>
+</tr>
+<tr>
+<td><strong>最小 Pick</strong></td>
+<td><code>selectors.ts</code></td>
+<td>Selector 参数用 <code>Pick&lt;AppState, ...&gt;</code> 声明最小依赖切片</td>
+</tr>
+<tr>
+<td><strong>外部模式标准化</strong></td>
+<td><code>onChangeAppState.ts</code></td>
+<td>内部 mode (bubble, ungated_auto) 标准化为外部 mode (default, auto) 再同步</td>
+</tr>
+<tr>
+<td><strong>RFC 7396 Merge</strong></td>
+<td><code>WorkerStateUploader</code></td>
+<td>metadata 合并使用 JSON Merge Patch: overlay 键覆盖, null 保留 (服务器删除)</td>
+</tr>
+<tr>
+<td><strong>懒加载防循环</strong></td>
+<td><code>getDefaultAppState()</code></td>
+<td><code>require()</code> 替代 <code>import</code> 打破 bootstrap/state -&gt; teammate.ts 循环依赖</td>
+</tr>
+<tr>
+<td><strong>NFC 标准化</strong></td>
+<td><code>getInitialState()</code></td>
+<td><code>realpathSync(cwd()).normalize(&#39;NFC&#39;)</code> 确保路径在不同系统上一致</td>
+</tr>
+<tr>
+<td><strong>Per-entry dev flag</strong></td>
+<td><code>ChannelEntry.dev</code></td>
+<td>dev 模式标志挂在条目级, 非 session 级。防止 dev 接受泄漏到普通条目</td>
+</tr>
+<tr>
+<td><strong>Turn 级统计重置</strong></td>
+<td><code>bootstrap/state.ts</code> turn* 字段</td>
+<td>每轮 API 调用前重置, 用于 per-turn 性能分析</td>
+</tr>
+<tr>
+<td><strong>双向状态同步</strong></td>
+<td><code>onChangeAppState</code> + <code>externalMetadataToAppState</code></td>
+<td>AppState -&gt; CCR (权限模式) 和 CCR -&gt; AppState (外部元数据) 双向</td>
+</tr>
+</tbody></table>
+</body>
+</html>

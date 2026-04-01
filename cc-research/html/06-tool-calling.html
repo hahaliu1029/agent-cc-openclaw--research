@@ -1,0 +1,1466 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>06-tool-calling</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1>Claude Code 工具调用系统详细分析</h1>
+<blockquote>
+<p>基于源码深度研究，覆盖 <code>src/Tool.ts</code>、<code>src/tools.ts</code>、<code>src/services/tools/</code> 全部模块。</p>
+</blockquote>
+<hr>
+<h2>目录</h2>
+<ol>
+<li><a href="#1-%E6%9E%B6%E6%9E%84%E6%80%BB%E8%A7%88---%E5%B7%A5%E5%85%B7%E6%89%A7%E8%A1%8C%E7%AE%A1%E7%BA%BF">架构总览 - 工具执行管线</a></li>
+<li><a href="#2-tool-%E5%9F%BA%E7%B1%BB%E6%8E%A5%E5%8F%A3%E5%AE%8C%E6%95%B4%E7%B1%BB%E5%9E%8B%E5%AE%9A%E4%B9%89">Tool 基类/接口完整类型定义</a></li>
+<li><a href="#3-%E6%89%80%E6%9C%89-40-%E5%B7%A5%E5%85%B7%E7%9A%84%E5%88%86%E7%B1%BB%E6%B8%85%E5%8D%95">所有 40+ 工具的分类清单</a></li>
+<li><a href="#4-%E5%8D%95%E5%B7%A5%E5%85%B7%E6%89%A7%E8%A1%8C%E9%93%BE-runtooluse---checkpermissionsandcalltool">单工具执行链: runToolUse -&gt; checkPermissionsAndCallTool</a></li>
+<li><a href="#5-%E6%89%B9%E9%87%8F%E7%BC%96%E6%8E%92-partitiontoolcalls-%E5%B9%B6%E5%8F%91%E5%88%86%E5%8C%BA%E7%AE%97%E6%B3%95">批量编排: partitionToolCalls 并发分区算法</a></li>
+<li><a href="#6-%E6%B5%81%E5%BC%8F%E6%89%A7%E8%A1%8C-streamingtoolexecutor-%E7%8A%B6%E6%80%81%E6%9C%BA">流式执行: StreamingToolExecutor 状态机</a></li>
+<li><a href="#7-tool-schema-%E6%A0%A1%E9%AA%8C%E5%92%8C-input-%E8%A7%84%E8%8C%83%E5%8C%96">Tool Schema 校验和 Input 规范化</a></li>
+<li><a href="#8-hooks-%E9%9B%86%E6%88%90-pre-tool-post-tool">Hooks 集成 (pre-tool, post-tool)</a></li>
+<li><a href="#9-%E9%81%A5%E6%B5%8B%E8%AE%B0%E5%BD%95%E4%B8%8E%E9%94%99%E8%AF%AF%E5%A4%84%E7%90%86">遥测记录与错误处理</a></li>
+<li><a href="#10-%E5%85%B3%E9%94%AE%E8%AE%BE%E8%AE%A1%E6%A8%A1%E5%BC%8F%E6%80%BB%E7%BB%93">关键设计模式总结</a></li>
+</ol>
+<hr>
+<h2>1. 架构总览 - 工具执行管线</h2>
+<blockquote>
+<p>源文件: <code>src/services/tools/toolExecution.ts</code>, <code>src/services/tools/toolOrchestration.ts</code>, <code>src/services/tools/StreamingToolExecutor.ts</code></p>
+</blockquote>
+<h3>1.1 端到端执行管线</h3>
+<pre><code>+------------------------------------------------------------------+
+|                        query.ts 主循环                            |
+|  Claude API response: content_block (tool_use)                   |
++------------------------------------------------------------------+
+        |                                      |
+        | 非流式路径                            | 流式路径
+        v                                      v
++-------------------+              +--------------------------+
+| toolOrchestration |              | StreamingToolExecutor    |
+|   runTools()      |              |   addTool() 逐个入队     |
++-------------------+              +--------------------------+
+        |                                      |
+        v                                      v
++------------------------------------------------------------------+
+|        partitionToolCalls() -- 并发分区算法                       |
+|  连续 concurrencySafe=true  -&gt; 并发 batch                        |
+|  concurrencySafe=false      -&gt; 串行 batch (单个)                 |
++------------------------------------------------------------------+
+        |
+        v
++------------------------------------------------------------------+
+|                    runToolUse() [per tool]                        |
+|  1. findToolByName() -- 查找工具定义                              |
+|  2. 检查 abort 状态                                               |
+|  3. streamedCheckPermissionsAndCallTool()                        |
++------------------------------------------------------------------+
+        |
+        v
++------------------------------------------------------------------+
+|              checkPermissionsAndCallTool()                        |
+|  Phase 1: inputSchema.safeParse(input)       -- Zod 校验         |
+|  Phase 2: tool.validateInput()               -- 业务校验         |
+|  Phase 3: runPreToolUseHooks()               -- pre-tool hooks   |
+|  Phase 4: resolveHookPermissionDecision()    -- 权限决策         |
+|  Phase 5: tool.call()                        -- 实际执行         |
+|  Phase 6: runPostToolUseHooks()              -- post-tool hooks  |
+|  Phase 7: 遥测记录 + 结果序列化                                   |
++------------------------------------------------------------------+
+        |
+        v
++------------------------------------------------------------------+
+|    processToolResultBlock() -- 大结果持久化到磁盘                 |
+|    mapToolResultToToolResultBlockParam() -- 序列化为 API 格式     |
++------------------------------------------------------------------+
+</code></pre>
+<h3>1.2 关键设计原则</h3>
+<table>
+<thead>
+<tr>
+<th>原则</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Fail-closed</td>
+<td><code>isConcurrencySafe</code> 默认 <code>false</code>，<code>isReadOnly</code> 默认 <code>false</code></td>
+</tr>
+<tr>
+<td>Tool/Result 配对</td>
+<td>每个 <code>tool_use</code> block 必须有且仅有一个 <code>tool_result</code> 回复</td>
+</tr>
+<tr>
+<td>渐进式校验</td>
+<td>Zod schema -&gt; validateInput -&gt; permissions -&gt; call 四层</td>
+</tr>
+<tr>
+<td>异步安全</td>
+<td>每个工具通过 <code>createChildAbortController</code> 获取独立的中止信号</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>2. Tool 基类/接口完整类型定义</h2>
+<blockquote>
+<p>源文件: <code>src/Tool.ts</code></p>
+</blockquote>
+<h3>2.1 核心 Tool 泛型接口</h3>
+<pre><code class="language-typescript">// src/Tool.ts -- 完整 Tool 接口 (简化注释)
+export type Tool&lt;
+  Input extends AnyObject = AnyObject,
+  Output = unknown,
+  P extends ToolProgressData = ToolProgressData,
+&gt; = {
+  // ---- 标识 ----
+  readonly name: string
+  aliases?: string[]               // 向后兼容的别名
+  searchHint?: string              // ToolSearch 关键词匹配提示
+
+  // ---- Schema ----
+  readonly inputSchema: Input      // Zod schema
+  readonly inputJSONSchema?: ToolInputJSONSchema  // MCP 工具的 JSON Schema
+  outputSchema?: z.ZodType&lt;unknown&gt;
+  readonly strict?: boolean        // 严格模式 (API 更严格遵守参数)
+  maxResultSizeChars: number       // 超过此值则持久化到磁盘
+
+  // ---- 生命周期方法 ----
+  call(
+    args: z.infer&lt;Input&gt;,
+    context: ToolUseContext,
+    canUseTool: CanUseToolFn,
+    parentMessage: AssistantMessage,
+    onProgress?: ToolCallProgress&lt;P&gt;,
+  ): Promise&lt;ToolResult&lt;Output&gt;&gt;
+
+  validateInput?(input: z.infer&lt;Input&gt;, context: ToolUseContext): Promise&lt;ValidationResult&gt;
+  checkPermissions(input: z.infer&lt;Input&gt;, context: ToolUseContext): Promise&lt;PermissionResult&gt;
+  backfillObservableInput?(input: Record&lt;string, unknown&gt;): void
+
+  // ---- 行为标记 ----
+  isEnabled(): boolean
+  isConcurrencySafe(input: z.infer&lt;Input&gt;): boolean
+  isReadOnly(input: z.infer&lt;Input&gt;): boolean
+  isDestructive?(input: z.infer&lt;Input&gt;): boolean
+  interruptBehavior?(): &#39;cancel&#39; | &#39;block&#39;
+  isSearchOrReadCommand?(input: z.infer&lt;Input&gt;): { isSearch: boolean; isRead: boolean; isList?: boolean }
+  isOpenWorld?(input: z.infer&lt;Input&gt;): boolean
+  requiresUserInteraction?(): boolean
+
+  // ---- MCP/LSP 标记 ----
+  isMcp?: boolean
+  isLsp?: boolean
+  readonly shouldDefer?: boolean   // 延迟加载 (需 ToolSearch 先发现)
+  readonly alwaysLoad?: boolean    // 始终加载 (不受 ToolSearch 延迟)
+  mcpInfo?: { serverName: string; toolName: string }
+
+  // ---- 权限匹配 ----
+  getPath?(input: z.infer&lt;Input&gt;): string
+  preparePermissionMatcher?(input: z.infer&lt;Input&gt;): Promise&lt;(pattern: string) =&gt; boolean&gt;
+
+  // ---- 渲染方法 ----
+  description(input, options): Promise&lt;string&gt;
+  prompt(options): Promise&lt;string&gt;
+  userFacingName(input): string
+  renderToolUseMessage(input, options): React.ReactNode
+  renderToolResultMessage?(content, progressMessages, options): React.ReactNode
+  renderToolUseProgressMessage?(progressMessages, options): React.ReactNode
+  renderGroupedToolUse?(toolUses, options): React.ReactNode | null
+  // ... 以及 renderToolUseErrorMessage, renderToolUseRejectedMessage 等
+
+  // ---- 遥测/分类器 ----
+  toAutoClassifierInput(input: z.infer&lt;Input&gt;): unknown
+  mapToolResultToToolResultBlockParam(content: Output, toolUseID: string): ToolResultBlockParam
+  extractSearchText?(out: Output): string
+}
+</code></pre>
+<h3>2.2 ToolDef 与 buildTool 工厂函数</h3>
+<pre><code class="language-typescript">// src/Tool.ts
+
+// 可省略的方法 -- buildTool 会填入安全默认值
+type DefaultableToolKeys =
+  | &#39;isEnabled&#39;         // 默认 () =&gt; true
+  | &#39;isConcurrencySafe&#39; // 默认 () =&gt; false (保守)
+  | &#39;isReadOnly&#39;        // 默认 () =&gt; false (假设写操作)
+  | &#39;isDestructive&#39;     // 默认 () =&gt; false
+  | &#39;checkPermissions&#39;  // 默认 allow
+  | &#39;toAutoClassifierInput&#39; // 默认 &#39;&#39; (跳过分类器)
+  | &#39;userFacingName&#39;    // 默认 name
+
+// ToolDef = 省略了 DefaultableToolKeys 的 Tool
+export type ToolDef&lt;I, O, P&gt; = Omit&lt;Tool&lt;I, O, P&gt;, DefaultableToolKeys&gt;
+  &amp; Partial&lt;Pick&lt;Tool&lt;I, O, P&gt;, DefaultableToolKeys&gt;&gt;
+
+// buildTool -- 60+ 工具都通过此函数构建
+export function buildTool&lt;D extends AnyToolDef&gt;(def: D): BuiltTool&lt;D&gt; {
+  return {
+    ...TOOL_DEFAULTS,
+    userFacingName: () =&gt; def.name,
+    ...def,
+  } as BuiltTool&lt;D&gt;
+}
+
+const TOOL_DEFAULTS = {
+  isEnabled: () =&gt; true,
+  isConcurrencySafe: () =&gt; false,
+  isReadOnly: () =&gt; false,
+  isDestructive: () =&gt; false,
+  checkPermissions: (input) =&gt; Promise.resolve({ behavior: &#39;allow&#39;, updatedInput: input }),
+  toAutoClassifierInput: () =&gt; &#39;&#39;,
+  userFacingName: () =&gt; &#39;&#39;,
+}
+</code></pre>
+<h3>2.3 ToolUseContext -- 工具执行上下文</h3>
+<pre><code class="language-typescript">// src/Tool.ts (精简)
+export type ToolUseContext = {
+  options: {
+    commands: Command[]
+    debug: boolean
+    mainLoopModel: string
+    tools: Tools
+    verbose: boolean
+    thinkingConfig: ThinkingConfig
+    mcpClients: MCPServerConnection[]
+    mcpResources: Record&lt;string, ServerResource[]&gt;
+    isNonInteractiveSession: boolean
+    agentDefinitions: AgentDefinitionsResult
+    maxBudgetUsd?: number
+    customSystemPrompt?: string
+    appendSystemPrompt?: string
+    refreshTools?: () =&gt; Tools
+  }
+  abortController: AbortController
+  readFileState: FileStateCache
+  getAppState(): AppState
+  setAppState(f: (prev: AppState) =&gt; AppState): void
+  setAppStateForTasks?: (f: (prev: AppState) =&gt; AppState) =&gt; void
+  messages: Message[]
+  agentId?: AgentId              // 仅子 agent 设置
+  agentType?: string             // 子 agent 类型名
+  toolDecisions?: Map&lt;string, { source: string; decision: &#39;accept&#39;|&#39;reject&#39;; timestamp: number }&gt;
+  queryTracking?: QueryChainTracking
+  contentReplacementState?: ContentReplacementState
+  renderedSystemPrompt?: SystemPrompt  // fork 子 agent 共享父级的系统提示缓存
+  // ... 以及 20+ 其他字段 (文件历史、归因、通知等)
+}
+</code></pre>
+<h3>2.4 ToolResult 与 Progress</h3>
+<pre><code class="language-typescript">export type ToolResult&lt;T&gt; = {
+  data: T
+  newMessages?: (UserMessage | AssistantMessage | AttachmentMessage | SystemMessage)[]
+  contextModifier?: (context: ToolUseContext) =&gt; ToolUseContext
+  mcpMeta?: { _meta?: Record&lt;string, unknown&gt;; structuredContent?: Record&lt;string, unknown&gt; }
+}
+
+export type ToolProgress&lt;P extends ToolProgressData&gt; = {
+  toolUseID: string
+  data: P
+}
+
+// ToolProgressData 是联合类型，包含 BashProgress, AgentToolProgress, MCPProgress 等
+</code></pre>
+<h3>2.5 ToolPermissionContext</h3>
+<pre><code class="language-typescript">export type ToolPermissionContext = DeepImmutable&lt;{
+  mode: PermissionMode                 // &#39;default&#39; | &#39;auto&#39; | &#39;bypassPermissions&#39; | &#39;plan&#39; | &#39;acceptEdits&#39;
+  additionalWorkingDirectories: Map&lt;string, AdditionalWorkingDirectory&gt;
+  alwaysAllowRules: ToolPermissionRulesBySource
+  alwaysDenyRules: ToolPermissionRulesBySource
+  alwaysAskRules: ToolPermissionRulesBySource
+  isBypassPermissionsModeAvailable: boolean
+  shouldAvoidPermissionPrompts?: boolean
+  awaitAutomatedChecksBeforeDialog?: boolean
+  prePlanMode?: PermissionMode
+}&gt;
+</code></pre>
+<hr>
+<h2>3. 所有 40+ 工具的分类清单</h2>
+<blockquote>
+<p>源文件: <code>src/tools.ts</code> (getAllBaseTools), <code>src/tools/*/</code></p>
+</blockquote>
+<h3>3.1 核心工具 (始终可用)</h3>
+<table>
+<thead>
+<tr>
+<th>工具名</th>
+<th>源文件</th>
+<th>并发安全</th>
+<th>只读</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Agent</code></td>
+<td><code>AgentTool/AgentTool.tsx</code></td>
+<td>No</td>
+<td>No</td>
+<td>子 agent 创建与运行</td>
+</tr>
+<tr>
+<td><code>TaskOutput</code></td>
+<td><code>TaskOutputTool/</code></td>
+<td>No</td>
+<td>No</td>
+<td>子 agent 返回输出</td>
+</tr>
+<tr>
+<td><code>Bash</code></td>
+<td><code>BashTool/BashTool.ts</code></td>
+<td>视命令</td>
+<td>视命令</td>
+<td>Shell 命令执行</td>
+</tr>
+<tr>
+<td><code>FileRead</code></td>
+<td><code>FileReadTool/</code></td>
+<td>Yes</td>
+<td>Yes</td>
+<td>文件读取</td>
+</tr>
+<tr>
+<td><code>FileEdit</code></td>
+<td><code>FileEditTool/</code></td>
+<td>No</td>
+<td>No</td>
+<td>精确字符串替换编辑</td>
+</tr>
+<tr>
+<td><code>FileWrite</code></td>
+<td><code>FileWriteTool/</code></td>
+<td>No</td>
+<td>No</td>
+<td>文件写入/创建</td>
+</tr>
+<tr>
+<td><code>NotebookEdit</code></td>
+<td><code>NotebookEditTool/</code></td>
+<td>No</td>
+<td>No</td>
+<td>Jupyter notebook 编辑</td>
+</tr>
+<tr>
+<td><code>WebFetch</code></td>
+<td><code>WebFetchTool/</code></td>
+<td>Yes</td>
+<td>Yes</td>
+<td>HTTP 请求</td>
+</tr>
+<tr>
+<td><code>WebSearch</code></td>
+<td><code>WebSearchTool/</code></td>
+<td>Yes</td>
+<td>Yes</td>
+<td>网络搜索</td>
+</tr>
+<tr>
+<td><code>TodoWrite</code></td>
+<td><code>TodoWriteTool/</code></td>
+<td>No</td>
+<td>No</td>
+<td>TODO 面板管理</td>
+</tr>
+<tr>
+<td><code>AskUserQuestion</code></td>
+<td><code>AskUserQuestionTool/</code></td>
+<td>No</td>
+<td>No</td>
+<td>向用户提问</td>
+</tr>
+<tr>
+<td><code>Skill</code></td>
+<td><code>SkillTool/</code></td>
+<td>No</td>
+<td>No</td>
+<td>技能执行</td>
+</tr>
+<tr>
+<td><code>TaskStop</code></td>
+<td><code>TaskStopTool/</code></td>
+<td>No</td>
+<td>No</td>
+<td>停止子 agent</td>
+</tr>
+<tr>
+<td><code>Brief</code></td>
+<td><code>BriefTool/</code></td>
+<td>No</td>
+<td>No</td>
+<td>切换简洁模式</td>
+</tr>
+<tr>
+<td><code>ExitPlanModeV2</code></td>
+<td><code>ExitPlanModeTool/</code></td>
+<td>No</td>
+<td>No</td>
+<td>退出计划模式</td>
+</tr>
+<tr>
+<td><code>EnterPlanMode</code></td>
+<td><code>EnterPlanModeTool/</code></td>
+<td>No</td>
+<td>No</td>
+<td>进入计划模式</td>
+</tr>
+</tbody></table>
+<h3>3.2 搜索工具 (嵌入式搜索不可用时启用)</h3>
+<table>
+<thead>
+<tr>
+<th>工具名</th>
+<th>源文件</th>
+<th>并发安全</th>
+<th>只读</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>Glob</code></td>
+<td><code>GlobTool/GlobTool.ts</code></td>
+<td>Yes</td>
+<td>Yes</td>
+<td>文件名模式匹配</td>
+</tr>
+<tr>
+<td><code>Grep</code></td>
+<td><code>GrepTool/GrepTool.ts</code></td>
+<td>Yes</td>
+<td>Yes</td>
+<td>文件内容搜索 (ripgrep)</td>
+</tr>
+</tbody></table>
+<h3>3.3 多 Agent / Swarm 工具</h3>
+<table>
+<thead>
+<tr>
+<th>工具名</th>
+<th>源文件</th>
+<th>条件</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>SendMessage</code></td>
+<td><code>SendMessageTool/</code></td>
+<td><code>isAgentSwarmsEnabled()</code></td>
+<td>Agent 间消息发送</td>
+</tr>
+<tr>
+<td><code>TeamCreate</code></td>
+<td><code>TeamCreateTool/</code></td>
+<td><code>isAgentSwarmsEnabled()</code></td>
+<td>创建 agent 团队</td>
+</tr>
+<tr>
+<td><code>TeamDelete</code></td>
+<td><code>TeamDeleteTool/</code></td>
+<td><code>isAgentSwarmsEnabled()</code></td>
+<td>删除 agent 团队</td>
+</tr>
+</tbody></table>
+<h3>3.4 Task V2 工具 (任务管理)</h3>
+<table>
+<thead>
+<tr>
+<th>工具名</th>
+<th>源文件</th>
+<th>条件</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>TaskCreate</code></td>
+<td><code>TaskCreateTool/</code></td>
+<td><code>isTodoV2Enabled()</code></td>
+<td>创建任务</td>
+</tr>
+<tr>
+<td><code>TaskGet</code></td>
+<td><code>TaskGetTool/</code></td>
+<td><code>isTodoV2Enabled()</code></td>
+<td>获取任务详情</td>
+</tr>
+<tr>
+<td><code>TaskUpdate</code></td>
+<td><code>TaskUpdateTool/</code></td>
+<td><code>isTodoV2Enabled()</code></td>
+<td>更新任务状态</td>
+</tr>
+<tr>
+<td><code>TaskList</code></td>
+<td><code>TaskListTool/</code></td>
+<td><code>isTodoV2Enabled()</code></td>
+<td>列出所有任务</td>
+</tr>
+</tbody></table>
+<h3>3.5 Worktree 隔离工具</h3>
+<table>
+<thead>
+<tr>
+<th>工具名</th>
+<th>条件</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>EnterWorktree</code></td>
+<td><code>isWorktreeModeEnabled()</code></td>
+<td>创建并进入 git worktree</td>
+</tr>
+<tr>
+<td><code>ExitWorktree</code></td>
+<td><code>isWorktreeModeEnabled()</code></td>
+<td>退出并清理 worktree</td>
+</tr>
+</tbody></table>
+<h3>3.6 MCP / LSP 工具</h3>
+<table>
+<thead>
+<tr>
+<th>工具名</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>ListMcpResources</code></td>
+<td>列出 MCP 服务器资源</td>
+</tr>
+<tr>
+<td><code>ReadMcpResource</code></td>
+<td>读取 MCP 资源</td>
+</tr>
+<tr>
+<td><code>ToolSearch</code></td>
+<td>延迟工具的搜索与发现</td>
+</tr>
+</tbody></table>
+<h3>3.7 Feature-Gated 工具</h3>
+<table>
+<thead>
+<tr>
+<th>工具名</th>
+<th>Feature Flag</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>REPL</code></td>
+<td><code>USER_TYPE=ant</code></td>
+<td>虚拟机内执行 (内部)</td>
+</tr>
+<tr>
+<td><code>SuggestBackgroundPR</code></td>
+<td><code>USER_TYPE=ant</code></td>
+<td>建议后台 PR</td>
+</tr>
+<tr>
+<td><code>Config</code></td>
+<td><code>USER_TYPE=ant</code></td>
+<td>配置管理</td>
+</tr>
+<tr>
+<td><code>Tungsten</code></td>
+<td><code>USER_TYPE=ant</code></td>
+<td>虚拟终端工具</td>
+</tr>
+<tr>
+<td><code>Sleep</code></td>
+<td><code>PROACTIVE</code> / <code>KAIROS</code></td>
+<td>主动等待</td>
+</tr>
+<tr>
+<td><code>CronCreate/Delete/List</code></td>
+<td><code>AGENT_TRIGGERS</code></td>
+<td>定时任务管理</td>
+</tr>
+<tr>
+<td><code>RemoteTrigger</code></td>
+<td><code>AGENT_TRIGGERS_REMOTE</code></td>
+<td>远程触发</td>
+</tr>
+<tr>
+<td><code>Monitor</code></td>
+<td><code>MONITOR_TOOL</code></td>
+<td>监控工具</td>
+</tr>
+<tr>
+<td><code>PowerShell</code></td>
+<td><code>isPowerShellToolEnabled()</code></td>
+<td>Windows PowerShell</td>
+</tr>
+<tr>
+<td><code>WebBrowser</code></td>
+<td><code>WEB_BROWSER_TOOL</code></td>
+<td>浏览器交互</td>
+</tr>
+<tr>
+<td><code>Snip</code></td>
+<td><code>HISTORY_SNIP</code></td>
+<td>历史裁剪</td>
+</tr>
+<tr>
+<td><code>ListPeers</code></td>
+<td><code>UDS_INBOX</code></td>
+<td>UDS 对等发现</td>
+</tr>
+<tr>
+<td><code>Workflow</code></td>
+<td><code>WORKFLOW_SCRIPTS</code></td>
+<td>工作流脚本</td>
+</tr>
+<tr>
+<td><code>OverflowTest</code></td>
+<td><code>OVERFLOW_TEST_TOOL</code></td>
+<td>溢出测试</td>
+</tr>
+<tr>
+<td><code>CtxInspect</code></td>
+<td><code>CONTEXT_COLLAPSE</code></td>
+<td>上下文检查</td>
+</tr>
+<tr>
+<td><code>TerminalCapture</code></td>
+<td><code>TERMINAL_PANEL</code></td>
+<td>终端面板</td>
+</tr>
+<tr>
+<td><code>SendUserFile</code></td>
+<td><code>KAIROS</code></td>
+<td>发送文件给用户</td>
+</tr>
+<tr>
+<td><code>PushNotification</code></td>
+<td><code>KAIROS</code> / <code>KAIROS_PUSH_NOTIFICATION</code></td>
+<td>推送通知</td>
+</tr>
+<tr>
+<td><code>SubscribePR</code></td>
+<td><code>KAIROS_GITHUB_WEBHOOKS</code></td>
+<td>PR webhook 订阅</td>
+</tr>
+<tr>
+<td><code>LSP</code></td>
+<td><code>ENABLE_LSP_TOOL</code></td>
+<td>LSP 集成</td>
+</tr>
+<tr>
+<td><code>VerifyPlanExecution</code></td>
+<td><code>CLAUDE_CODE_VERIFY_PLAN</code></td>
+<td>计划验证</td>
+</tr>
+<tr>
+<td><code>TestingPermission</code></td>
+<td><code>NODE_ENV=test</code></td>
+<td>测试用权限工具</td>
+</tr>
+</tbody></table>
+<h3>3.8 工具池组装流程</h3>
+<pre><code>getAllBaseTools()                      -- 所有静态/条件工具列表
+      |
+      v
+getTools(permissionContext)           -- 过滤 deny rules + isEnabled
+      |
+      v
+assembleToolPool(permCtx, mcpTools)   -- 合并 MCP 工具，去重，排序
+      |                                  (内置工具前缀 + MCP 后缀 =&gt; 缓存稳定)
+      v
+filterToolsByDenyRules()              -- 再次 deny rule 过滤
+      |
+      v
+最终 Tools 数组 (传入 API 请求)
+</code></pre>
+<hr>
+<h2>4. 单工具执行链: runToolUse -&gt; checkPermissionsAndCallTool</h2>
+<blockquote>
+<p>源文件: <code>src/services/tools/toolExecution.ts</code></p>
+</blockquote>
+<h3>4.1 runToolUse() 入口</h3>
+<pre><code class="language-typescript">// src/services/tools/toolExecution.ts
+export async function* runToolUse(
+  toolUse: ToolUseBlock,
+  assistantMessage: AssistantMessage,
+  canUseTool: CanUseToolFn,
+  toolUseContext: ToolUseContext,
+): AsyncGenerator&lt;MessageUpdateLazy, void&gt; {
+  // Step 1: 查找工具定义
+  let tool = findToolByName(toolUseContext.options.tools, toolUse.name)
+
+  // Step 2: 回退到别名查找 (向后兼容)
+  if (!tool) {
+    const fallbackTool = findToolByName(getAllBaseTools(), toolUse.name)
+    if (fallbackTool?.aliases?.includes(toolUse.name)) {
+      tool = fallbackTool
+    }
+  }
+
+  // Step 3: 工具不存在 -&gt; 返回 tool_result is_error
+  if (!tool) {
+    yield { message: createUserMessage({ content: [{ type: &#39;tool_result&#39;, is_error: true, ... }] }) }
+    return
+  }
+
+  // Step 4: 已中止 -&gt; 返回取消消息
+  if (toolUseContext.abortController.signal.aborted) {
+    yield { message: createUserMessage({ content: [createToolResultStopMessage(toolUse.id)] }) }
+    return
+  }
+
+  // Step 5: 进入 streamedCheckPermissionsAndCallTool
+  for await (const update of streamedCheckPermissionsAndCallTool(...)) {
+    yield update
+  }
+}
+</code></pre>
+<h3>4.2 checkPermissionsAndCallTool() 完整流程</h3>
+<pre><code>checkPermissionsAndCallTool(tool, toolUseID, input, ...)
+  |
+  |-- Phase 1: Zod 校验
+  |   inputSchema.safeParse(input)
+  |   失败 -&gt; InputValidationError + buildSchemaNotSentHint (延迟工具提示)
+  |
+  |-- Phase 2: 业务校验
+  |   tool.validateInput?.(parsedInput, context)
+  |   返回 { result: false, message, errorCode } -&gt; 终止
+  |
+  |-- Phase 3: 预投机分类器
+  |   仅 Bash 工具: startSpeculativeClassifierCheck()
+  |   在 hooks/权限决策期间并行运行分类器
+  |
+  |-- Phase 4: Input 预处理
+  |   strip _simulatedSedEdit (防御性剥离)
+  |   backfillObservableInput() (浅克隆上填充衍生字段)
+  |
+  |-- Phase 5: Pre-tool hooks
+  |   runPreToolUseHooks() -&gt; AsyncGenerator 产出:
+  |     hookPermissionResult (allow/deny/ask)
+  |     hookUpdatedInput (修改输入)
+  |     preventContinuation (阻止后续)
+  |     additionalContext (附加上下文)
+  |     stop (立即终止)
+  |
+  |-- Phase 6: 权限决策
+  |   resolveHookPermissionDecision()
+  |   - hook allow + 无 deny rule -&gt; 直接通过
+  |   - hook allow + deny rule 存在 -&gt; deny 覆盖
+  |   - hook allow + ask rule 存在 -&gt; 仍需交互确认
+  |   - hook deny -&gt; 直接拒绝
+  |   - 无 hook / ask -&gt; canUseTool() 正常权限流程
+  |
+  |-- Phase 7: OTel 遥测
+  |   logOTelEvent(&#39;tool_decision&#39;, { decision, source, tool_name })
+  |   code-edit 工具额外计数
+  |
+  |-- Phase 8: 权限拒绝处理
+  |   behavior != &#39;allow&#39; -&gt; tool_result is_error
+  |   auto-mode 分类器拒绝 -&gt; 运行 PermissionDenied hooks (可能 retry)
+  |
+  |-- Phase 9: 工具实际执行
+  |   startSessionActivity() / startToolExecutionSpan()
+  |   result = await tool.call(processedInput, context, canUseTool, ...)
+  |   endToolExecutionSpan() / stopSessionActivity()
+  |
+  |-- Phase 10: 结果处理
+  |   contextModifier 应用 (仅非并发安全工具)
+  |   newMessages 合并 (含附件)
+  |   mapToolResultToToolResultBlockParam() 序列化
+  |   processToolResultBlock() (大结果 -&gt; 磁盘持久化)
+  |
+  |-- Phase 11: Post-tool hooks
+  |   runPostToolUseHooks() -&gt; 可修改 MCP 工具输出
+  |   runPostToolUseFailureHooks() (执行出错时)
+  |
+  |-- Phase 12: 遥测最终记录
+  |   logEvent(&#39;tengu_tool_use&#39;, { tool_name, duration, ... })
+  |   addToToolDuration(tool.name, durationMs)
+  |   endToolSpan()
+</code></pre>
+<h3>4.3 关键配置常量</h3>
+<table>
+<thead>
+<tr>
+<th>常量</th>
+<th>值</th>
+<th>源文件</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>HOOK_TIMING_DISPLAY_THRESHOLD_MS</code></td>
+<td>500</td>
+<td><code>toolExecution.ts</code></td>
+<td>超过此值显示 hook 耗时摘要</td>
+</tr>
+<tr>
+<td><code>SLOW_PHASE_LOG_THRESHOLD_MS</code></td>
+<td>2000</td>
+<td><code>toolExecution.ts</code></td>
+<td>超过此值记录慢阶段警告</td>
+</tr>
+<tr>
+<td><code>CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY</code></td>
+<td>10 (默认)</td>
+<td><code>toolOrchestration.ts</code></td>
+<td>并发工具执行最大数</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>5. 批量编排: partitionToolCalls 并发分区算法</h2>
+<blockquote>
+<p>源文件: <code>src/services/tools/toolOrchestration.ts</code></p>
+</blockquote>
+<h3>5.1 partitionToolCalls 算法</h3>
+<pre><code class="language-typescript">// src/services/tools/toolOrchestration.ts
+type Batch = { isConcurrencySafe: boolean; blocks: ToolUseBlock[] }
+
+function partitionToolCalls(
+  toolUseMessages: ToolUseBlock[],
+  toolUseContext: ToolUseContext,
+): Batch[] {
+  return toolUseMessages.reduce((acc: Batch[], toolUse) =&gt; {
+    const tool = findToolByName(toolUseContext.options.tools, toolUse.name)
+    const parsedInput = tool?.inputSchema.safeParse(toolUse.input)
+    const isConcurrencySafe = parsedInput?.success
+      ? (() =&gt; {
+          try { return Boolean(tool?.isConcurrencySafe(parsedInput.data)) }
+          catch { return false }  // 保守: 解析失败视为不安全
+        })()
+      : false
+
+    // 连续的并发安全工具合并入同一批次
+    if (isConcurrencySafe &amp;&amp; acc[acc.length - 1]?.isConcurrencySafe) {
+      acc[acc.length - 1]!.blocks.push(toolUse)
+    } else {
+      acc.push({ isConcurrencySafe, blocks: [toolUse] })
+    }
+    return acc
+  }, [])
+}
+</code></pre>
+<h3>5.2 分区示例</h3>
+<pre><code>输入: [Grep, Glob, FileEdit, FileRead, FileRead, Bash]
+
+分区结果:
+  Batch 1: { safe: true,  blocks: [Grep, Glob] }        -- 并发
+  Batch 2: { safe: false, blocks: [FileEdit] }           -- 串行
+  Batch 3: { safe: true,  blocks: [FileRead, FileRead] } -- 并发
+  Batch 4: { safe: false, blocks: [Bash] }               -- 串行
+</code></pre>
+<h3>5.3 runTools 编排器</h3>
+<pre><code class="language-typescript">// src/services/tools/toolOrchestration.ts
+export async function* runTools(
+  toolUseMessages, assistantMessages, canUseTool, toolUseContext,
+): AsyncGenerator&lt;MessageUpdate, void&gt; {
+  let currentContext = toolUseContext
+
+  for (const { isConcurrencySafe, blocks } of partitionToolCalls(toolUseMessages, currentContext)) {
+    if (isConcurrencySafe) {
+      // 并发执行: runToolsConcurrently()
+      // 使用 all() 工具函数，最大并发 = getMaxToolUseConcurrency() (默认 10)
+      // contextModifier 在并发完成后按顺序应用
+      for await (const update of runToolsConcurrently(blocks, ...)) {
+        yield { message: update.message, newContext: currentContext }
+      }
+      // 按原始顺序应用所有 contextModifiers
+      for (const block of blocks) {
+        for (const modifier of queuedContextModifiers[block.id] ?? []) {
+          currentContext = modifier(currentContext)
+        }
+      }
+    } else {
+      // 串行执行: runToolsSerially()
+      for await (const update of runToolsSerially(blocks, ...)) {
+        if (update.newContext) currentContext = update.newContext
+        yield { message: update.message, newContext: currentContext }
+      }
+    }
+  }
+}
+</code></pre>
+<h3>5.4 并发控制</h3>
+<pre><code>runToolsConcurrently()
+  |
+  v
+all(generators, maxConcurrency=10)   -- 工具函数 from utils/generators.ts
+  |
+  |-- 每个 generator: runToolUse() 包装
+  |   - setInProgressToolUseIDs(add)
+  |   - yield* runToolUse(...)
+  |   - markToolUseAsComplete()
+  |
+  v
+结果按完成顺序 yield (不保序，但外层消息会关联到正确的 tool_use_id)
+</code></pre>
+<hr>
+<h2>6. 流式执行: StreamingToolExecutor 状态机</h2>
+<blockquote>
+<p>源文件: <code>src/services/tools/StreamingToolExecutor.ts</code></p>
+</blockquote>
+<h3>6.1 状态机定义</h3>
+<pre><code class="language-typescript">type ToolStatus = &#39;queued&#39; | &#39;executing&#39; | &#39;completed&#39; | &#39;yielded&#39;
+
+type TrackedTool = {
+  id: string
+  block: ToolUseBlock
+  assistantMessage: AssistantMessage
+  status: ToolStatus
+  isConcurrencySafe: boolean
+  promise?: Promise&lt;void&gt;
+  results?: Message[]
+  pendingProgress: Message[]       // 进度消息立即发出
+  contextModifiers?: Array&lt;(context: ToolUseContext) =&gt; ToolUseContext&gt;
+}
+</code></pre>
+<h3>6.2 状态转换图</h3>
+<pre><code>             addTool()
+  [新工具] ---------&gt; queued
+                        |
+                        | canExecuteTool() 检查:
+                        |   - 无正在执行的工具, 或
+                        |   - 本工具 safe 且所有执行中工具也 safe
+                        v
+                     executing
+                        |
+                        | collectResults():
+                        |   - 检查 abort/discard
+                        |   - 创建 childAbortController
+                        |   - runToolUse() 消费全部输出
+                        |   - 进度消息 -&gt; pendingProgress (立即 yield)
+                        |   - 结果消息 -&gt; results (缓冲)
+                        v
+                     completed
+                        |
+                        | getCompletedResults():
+                        |   - 按入队顺序 yield
+                        |   - 非并发工具阻塞后续
+                        v
+                      yielded
+</code></pre>
+<h3>6.3 核心方法</h3>
+<pre><code class="language-typescript">class StreamingToolExecutor {
+  // 字段
+  private tools: TrackedTool[] = []
+  private hasErrored = false
+  private siblingAbortController: AbortController  // 子进程级中止
+  private discarded = false
+
+  // 入队 -- 流式响应逐个 tool_use block 到达时调用
+  addTool(block: ToolUseBlock, assistantMessage: AssistantMessage): void {
+    // 1. 查找工具定义，判断 isConcurrencySafe
+    // 2. push 到 tools 数组
+    // 3. void this.processQueue()  -- 立即尝试执行
+  }
+
+  // 执行条件检查
+  private canExecuteTool(isConcurrencySafe: boolean): boolean {
+    const executing = this.tools.filter(t =&gt; t.status === &#39;executing&#39;)
+    return executing.length === 0 ||
+      (isConcurrencySafe &amp;&amp; executing.every(t =&gt; t.isConcurrencySafe))
+  }
+
+  // 非阻塞获取已完成结果
+  *getCompletedResults(): Generator&lt;MessageUpdate, void&gt; {
+    for (const tool of this.tools) {
+      // 1. 始终先 yield pendingProgress
+      // 2. completed -&gt; yield results -&gt; yielded
+      // 3. executing + !safe -&gt; break (保序)
+    }
+  }
+
+  // 阻塞等待剩余结果
+  async *getRemainingResults(): AsyncGenerator&lt;MessageUpdate, void&gt; {
+    while (this.hasUnfinishedTools()) {
+      await this.processQueue()
+      yield* this.getCompletedResults()
+      // 等待 executing promise 或 progressAvailable
+      if (this.hasExecutingTools() &amp;&amp; !this.hasCompletedResults()) {
+        await Promise.race([...executingPromises, progressPromise])
+      }
+    }
+    yield* this.getCompletedResults()
+  }
+
+  // 丢弃 (流式回退时调用)
+  discard(): void { this.discarded = true }
+}
+</code></pre>
+<h3>6.4 Bash 错误级联</h3>
+<pre><code>Bash 工具错误时:
+  1. thisToolErrored = true
+  2. this.hasErrored = true
+  3. this.siblingAbortController.abort(&#39;sibling_error&#39;)
+  4. 所有同级工具收到 synthetic error: &quot;Cancelled: parallel tool call X errored&quot;
+
+仅 Bash 工具触发级联:
+  - Bash 命令常有隐式依赖链 (mkdir 失败 -&gt; 后续命令无意义)
+  - FileRead/WebFetch 等独立工具的失败不影响其他
+</code></pre>
+<h3>6.5 中断行为</h3>
+<pre><code class="language-typescript">private getToolInterruptBehavior(tool: TrackedTool): &#39;cancel&#39; | &#39;block&#39; {
+  // 用户提交新消息时:
+  // &#39;cancel&#39; -&gt; 停止工具，丢弃结果
+  // &#39;block&#39;  -&gt; 继续运行，新消息等待
+  // 默认 &#39;block&#39; (安全选择)
+}
+
+private updateInterruptibleState(): void {
+  // 仅当所有执行中工具都是 &#39;cancel&#39; 时，
+  // setHasInterruptibleToolInProgress(true)
+  // UI 才显示 ESC 取消提示
+}
+</code></pre>
+<hr>
+<h2>7. Tool Schema 校验和 Input 规范化</h2>
+<blockquote>
+<p>源文件: <code>src/services/tools/toolExecution.ts</code>, <code>src/Tool.ts</code></p>
+</blockquote>
+<h3>7.1 三层校验</h3>
+<pre><code>Layer 1: Zod Schema 解析
+  tool.inputSchema.safeParse(input)
+  |
+  | 失败 -&gt; formatZodValidationError() + buildSchemaNotSentHint()
+  |         (延迟工具未 ToolSearch 发现时，提示先调用 ToolSearch)
+  |
+  v
+Layer 2: 业务校验
+  tool.validateInput?.(parsedInput, context)
+  |
+  | 返回 { result: false, message, errorCode }
+  | errorCode: 9 = 参数格式错误
+  |
+  v
+Layer 3: 权限校验
+  tool.checkPermissions(parsedInput, context)
+  + resolveHookPermissionDecision()
+  + checkRuleBasedPermissions()
+</code></pre>
+<h3>7.2 Input 规范化流程</h3>
+<pre><code>原始 input (from API response)
+      |
+      v
+inputSchema.safeParse() -- 类型转换/默认值
+      |
+      v
+strip _simulatedSedEdit -- 防御性剥离内部字段
+      |
+      v
+backfillObservableInput() -- 浅克隆上填充衍生字段
+      |                       (hooks/canUseTool 看到, call() 看不到)
+      |
+      v
+hook updatedInput -- hook 可能修改输入
+      |
+      v
+processedInput -&gt; tool.call()
+</code></pre>
+<h3>7.3 延迟工具 Schema 管理</h3>
+<pre><code class="language-typescript">// 延迟工具 (shouldDefer: true) 的 schema 不随初始请求发送
+// 需要先通过 ToolSearch 发现
+
+function buildSchemaNotSentHint(tool, messages, tools): string | null {
+  if (!isToolSearchEnabledOptimistic()) return null   // ToolSearch 未启用
+  if (!isToolSearchToolAvailable(tools)) return null  // ToolSearch 不在工具池
+  if (!isDeferredTool(tool)) return null              // 工具不是延迟的
+  const discovered = extractDiscoveredToolNames(messages)
+  if (discovered.has(tool.name)) return null          // 已被发现过
+  return `Load the tool first: call ToolSearch with query &quot;select:${tool.name}&quot;, then retry.`
+}
+</code></pre>
+<hr>
+<h2>8. Hooks 集成 (pre-tool, post-tool)</h2>
+<blockquote>
+<p>源文件: <code>src/services/tools/toolHooks.ts</code></p>
+</blockquote>
+<h3>8.1 Pre-Tool Hooks</h3>
+<pre><code class="language-typescript">// src/services/tools/toolHooks.ts
+export async function* runPreToolUseHooks(
+  toolUseContext, tool, processedInput, toolUseID, ...
+): AsyncGenerator&lt;
+  | { type: &#39;message&#39;; message: MessageUpdateLazy }
+  | { type: &#39;hookPermissionResult&#39;; hookPermissionResult: PermissionResult }
+  | { type: &#39;hookUpdatedInput&#39;; updatedInput: Record&lt;string, unknown&gt; }
+  | { type: &#39;preventContinuation&#39;; shouldPreventContinuation: boolean }
+  | { type: &#39;stopReason&#39;; stopReason: string }
+  | { type: &#39;additionalContext&#39;; message: MessageUpdateLazy }
+  | { type: &#39;stop&#39; }
+&gt;
+</code></pre>
+<p><strong>Pre-Tool Hook 能力:</strong></p>
+<table>
+<thead>
+<tr>
+<th>能力</th>
+<th>字段</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>权限决策</td>
+<td><code>permissionBehavior: &#39;allow&#39;/&#39;deny&#39;/&#39;ask&#39;</code></td>
+<td>覆盖正常权限流</td>
+</tr>
+<tr>
+<td>修改输入</td>
+<td><code>updatedInput</code></td>
+<td>传递给 call() 的最终输入</td>
+</tr>
+<tr>
+<td>阻止执行</td>
+<td><code>blockingError</code></td>
+<td>转为 deny + 错误消息</td>
+</tr>
+<tr>
+<td>阻止后续</td>
+<td><code>preventContinuation</code></td>
+<td>阻止后续的 query 循环</td>
+</tr>
+<tr>
+<td>附加上下文</td>
+<td><code>additionalContexts</code></td>
+<td>额外的上下文信息</td>
+</tr>
+</tbody></table>
+<h3>8.2 Hook 权限决策解析</h3>
+<pre><code class="language-typescript">// src/services/tools/toolHooks.ts
+export async function resolveHookPermissionDecision(
+  hookPermissionResult, tool, input, toolUseContext, canUseTool, ...
+): Promise&lt;{ decision: PermissionDecision; input: Record&lt;string, unknown&gt; }&gt;
+
+// 核心不变量: hook &#39;allow&#39; 不绕过 settings.json 的 deny/ask 规则
+// 流程:
+//   hook allow + 无 deny/ask rule -&gt; 直接通过
+//   hook allow + deny rule -&gt; deny 覆盖 (inc-4788 安全修复)
+//   hook allow + ask rule -&gt; 仍需交互确认
+//   hook allow + requiresUserInteraction -&gt; 还需 canUseTool
+//   hook deny -&gt; 直接拒绝
+//   无 hook / ask -&gt; 正常权限流
+</code></pre>
+<h3>8.3 Post-Tool Hooks</h3>
+<pre><code class="language-typescript">export async function* runPostToolUseHooks&lt;Input, Output&gt;(
+  toolUseContext, tool, toolUseID, messageId, toolInput, toolResponse, ...
+): AsyncGenerator&lt;PostToolUseHooksResult&lt;Output&gt;&gt;
+
+// PostToolUseHooksResult:
+//   MessageUpdateLazy -- 附件消息
+//   { updatedMCPToolOutput: Output } -- 修改 MCP 工具输出
+</code></pre>
+<p><strong>Post-Tool Hook 能力:</strong></p>
+<table>
+<thead>
+<tr>
+<th>能力</th>
+<th>字段</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>阻塞</td>
+<td><code>blockingError</code></td>
+<td>显示错误消息</td>
+</tr>
+<tr>
+<td>阻止后续</td>
+<td><code>preventContinuation</code></td>
+<td>停止 query 循环</td>
+</tr>
+<tr>
+<td>附加上下文</td>
+<td><code>additionalContexts</code></td>
+<td>额外信息</td>
+</tr>
+<tr>
+<td>修改输出</td>
+<td><code>updatedMCPToolOutput</code></td>
+<td>仅 MCP 工具</td>
+</tr>
+</tbody></table>
+<h3>8.4 Post-Tool Failure Hooks</h3>
+<pre><code class="language-typescript">export async function* runPostToolUseFailureHooks(
+  toolUseContext, tool, toolUseID, messageId, processedInput, error, isInterrupt, ...
+): AsyncGenerator&lt;MessageUpdateLazy&gt;
+// 工具执行失败时调用，可提供附加上下文或显示阻塞错误
+</code></pre>
+<h3>8.5 Hook 生命周期时间线</h3>
+<pre><code>        Pre-Tool Hooks          Permission         Execution          Post-Tool Hooks
+  |&lt;-- HOOK_TIMING_DISPLAY --&gt;|&lt;-- permissionStart --&gt;|&lt;-- toolStart --&gt;|&lt;-- postToolStart --&gt;|
+  |     THRESHOLD_MS=500      |                       |                 |                     |
+  |     (&gt; 500ms 显示耗时)      |                       |                 |                     |
+  |                           |                       |                 |                     |
+  t0                          t1                      t2                t3                    t4
+</code></pre>
+<hr>
+<h2>9. 遥测记录与错误处理</h2>
+<blockquote>
+<p>源文件: <code>src/services/tools/toolExecution.ts</code></p>
+</blockquote>
+<h3>9.1 遥测事件清单</h3>
+<table>
+<thead>
+<tr>
+<th>事件名</th>
+<th>触发时机</th>
+<th>关键字段</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>tengu_tool_use</code></td>
+<td>工具执行完成</td>
+<td>toolName, duration, isMcp, fileExtension, mcpServerType</td>
+</tr>
+<tr>
+<td><code>tengu_tool_use_error</code></td>
+<td>工具执行出错</td>
+<td>error, errorDetails, toolName</td>
+</tr>
+<tr>
+<td><code>tengu_tool_use_cancelled</code></td>
+<td>工具被中止</td>
+<td>toolName</td>
+</tr>
+<tr>
+<td><code>tengu_tool_use_progress</code></td>
+<td>工具发出进度</td>
+<td>toolName</td>
+</tr>
+<tr>
+<td><code>tengu_tool_use_can_use_tool_rejected</code></td>
+<td>权限被拒绝</td>
+<td>toolName</td>
+</tr>
+<tr>
+<td><code>tengu_pre_tool_hooks_cancelled</code></td>
+<td>Pre hooks 被中止</td>
+<td>toolName</td>
+</tr>
+<tr>
+<td><code>tengu_post_tool_hooks_cancelled</code></td>
+<td>Post hooks 被中止</td>
+<td>toolName</td>
+</tr>
+<tr>
+<td><code>tengu_pre_tool_hook_error</code></td>
+<td>Pre hook 出错</td>
+<td>toolName, duration</td>
+</tr>
+<tr>
+<td><code>tengu_post_tool_hook_error</code></td>
+<td>Post hook 出错</td>
+<td>toolName, duration</td>
+</tr>
+<tr>
+<td><code>tengu_deferred_tool_schema_not_sent</code></td>
+<td>延迟工具 schema 未发送</td>
+<td>toolName</td>
+</tr>
+<tr>
+<td><code>tool_decision</code> (OTel)</td>
+<td>每次权限决策</td>
+<td>decision, source, tool_name</td>
+</tr>
+</tbody></table>
+<h3>9.2 OTel 遥测 Span</h3>
+<pre><code>toolSpan (startToolSpan / endToolSpan)
+  |
+  +-- toolBlockedOnUserSpan (startToolBlockedOnUserSpan / endToolBlockedOnUserSpan)
+  |     source: &#39;accept&#39;/&#39;reject&#39; + decision source
+  |
+  +-- toolExecutionSpan (startToolExecutionSpan / endToolExecutionSpan)
+  |     input/output 内容 (beta tracing)
+  |
+  +-- toolContentEvent (addToolContentEvent)
+        工具结果内容
+</code></pre>
+<h3>9.3 错误分类</h3>
+<pre><code class="language-typescript">// src/services/tools/toolExecution.ts
+export function classifyToolError(error: unknown): string {
+  // TelemetrySafeError -&gt; 使用 telemetryMessage
+  // Node.js fs 错误 -&gt; &quot;Error:ENOENT&quot; / &quot;Error:EACCES&quot;
+  // 带稳定 .name 的错误 -&gt; error.name (如 &quot;ShellError&quot;)
+  // 其他 -&gt; &quot;Error&quot;
+  // 非 Error -&gt; &quot;UnknownError&quot;
+}
+</code></pre>
+<h3>9.4 错误处理模式</h3>
+<pre><code>try {
+  tool.call(...)
+} catch (error) {
+  if (error instanceof McpAuthError) {
+    // MCP 认证错误 -&gt; 触发 elicitation 流程
+    // handleElicitation() -&gt; 用户授权 -&gt; 重试
+  } else if (error instanceof McpToolCallError) {
+    // MCP 工具调用错误 -&gt; 安全错误消息
+  } else if (error instanceof AbortError) {
+    // 中止 -&gt; tool_result &quot;cancelled&quot;
+  } else {
+    // 通用错误 -&gt; formatError() -&gt; tool_result is_error
+    // Post-tool failure hooks
+  }
+}
+</code></pre>
+<h3>9.5 结果大小控制</h3>
+<pre><code class="language-typescript">// tool.maxResultSizeChars 控制结果持久化
+// 超过阈值 -&gt; processToolResultBlock() -&gt; 写入磁盘
+// 返回预览 + 文件路径
+
+// 特殊: FileRead 设置 maxResultSizeChars = Infinity
+// (避免 Read -&gt; file -&gt; Read 的循环引用)
+</code></pre>
+<hr>
+<h2>10. 关键设计模式总结</h2>
+<h3>10.1 模式清单</h3>
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>位置</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Builder 模式</strong></td>
+<td><code>buildTool()</code></td>
+<td>安全默认值 + 类型安全的工具构建工厂</td>
+</tr>
+<tr>
+<td><strong>策略模式</strong></td>
+<td><code>isConcurrencySafe</code>/<code>isReadOnly</code></td>
+<td>每个工具自声明行为特征，编排器据此决策</td>
+</tr>
+<tr>
+<td><strong>责任链</strong></td>
+<td>Zod -&gt; validateInput -&gt; hooks -&gt; permissions -&gt; call</td>
+<td>四层渐进式校验，任一层可终止</td>
+</tr>
+<tr>
+<td><strong>AsyncGenerator</strong></td>
+<td><code>runToolUse()</code>, hooks</td>
+<td>流式产出进度+结果，避免回调地狱</td>
+</tr>
+<tr>
+<td><strong>观察者模式</strong></td>
+<td><code>onProgress</code> 回调</td>
+<td>工具执行期间实时报告进度</td>
+</tr>
+<tr>
+<td><strong>状态机</strong></td>
+<td><code>StreamingToolExecutor</code></td>
+<td>queued-&gt;executing-&gt;completed-&gt;yielded 四态管理</td>
+</tr>
+<tr>
+<td><strong>扇出/扇入</strong></td>
+<td><code>partitionToolCalls</code> + <code>all()</code></td>
+<td>并发安全工具扇出执行，结果扇入合并</td>
+</tr>
+<tr>
+<td><strong>级联中止</strong></td>
+<td><code>siblingAbortController</code></td>
+<td>Bash 错误级联取消同级工具</td>
+</tr>
+<tr>
+<td><strong>Fail-closed</strong></td>
+<td><code>TOOL_DEFAULTS</code></td>
+<td>所有安全关键属性默认为最保守值</td>
+</tr>
+<tr>
+<td><strong>延迟加载</strong></td>
+<td><code>shouldDefer</code> + <code>ToolSearch</code></td>
+<td>工具 schema 按需加载减少 prompt token</td>
+</tr>
+<tr>
+<td><strong>命令模式</strong></td>
+<td><code>Tool.call()</code> 统一接口</td>
+<td>40+ 工具共享相同的调用签名</td>
+</tr>
+<tr>
+<td><strong>装饰器模式</strong></td>
+<td><code>backfillObservableInput</code></td>
+<td>分离 API 输入与可观察输入</td>
+</tr>
+<tr>
+<td><strong>中介者模式</strong></td>
+<td><code>toolOrchestration.ts</code></td>
+<td>集中管理工具间执行顺序和并发</td>
+</tr>
+<tr>
+<td><strong>池化</strong></td>
+<td><code>assembleToolPool()</code></td>
+<td>MCP + 内置工具统一池化，缓存稳定排序</td>
+</tr>
+<tr>
+<td><strong>Hook 管道</strong></td>
+<td>Pre/PostToolUse</td>
+<td>可插拔的前置/后置处理管道</td>
+</tr>
+</tbody></table>
+<h3>10.2 架构决策权衡</h3>
+<table>
+<thead>
+<tr>
+<th>决策</th>
+<th>选择</th>
+<th>权衡</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Zod vs JSON Schema</td>
+<td>内置用 Zod，MCP 用 JSON Schema</td>
+<td>类型安全 vs 协议兼容</td>
+</tr>
+<tr>
+<td>流式 vs 批量执行</td>
+<td>两种模式并存</td>
+<td>流式路径更适合长运行工具</td>
+</tr>
+<tr>
+<td>并发默认值</td>
+<td><code>false</code> (保守)</td>
+<td>安全性 &gt; 性能</td>
+</tr>
+<tr>
+<td>错误级联范围</td>
+<td>仅 Bash 触发</td>
+<td>Bash 常有依赖链，其他工具独立</td>
+</tr>
+<tr>
+<td>hook allow vs deny 优先级</td>
+<td>deny rule 覆盖 hook allow</td>
+<td>安全不变量 &gt; 灵活性</td>
+</tr>
+<tr>
+<td>结果持久化</td>
+<td>磁盘文件 + 预览</td>
+<td>避免上下文窗口溢出</td>
+</tr>
+<tr>
+<td>工具池排序</td>
+<td>内置前缀 + MCP 后缀</td>
+<td>prompt cache 稳定性</td>
+</tr>
+</tbody></table>
+<h3>10.3 扩展点</h3>
+<ol>
+<li><strong>新增工具</strong>: 实现 <code>ToolDef</code> + <code>buildTool()</code> + 加入 <code>getAllBaseTools()</code></li>
+<li><strong>自定义权限</strong>: 实现 <code>checkPermissions()</code> + <code>preparePermissionMatcher()</code></li>
+<li><strong>Hook 扩展</strong>: 在 settings.json 的 <code>hooks.PreToolUse</code> / <code>hooks.PostToolUse</code> 添加</li>
+<li><strong>MCP 工具</strong>: 通过 MCP 协议动态加入，自动序列化为 <code>mcp__server__tool</code> 格式</li>
+<li><strong>延迟加载</strong>: 设置 <code>shouldDefer: true</code>，通过 <code>ToolSearch</code> 发现后按需加载 schema</li>
+</ol>
+</body>
+</html>

@@ -1,0 +1,1264 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>07-subagent</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1>Claude Code 子 Agent 与多 Agent 详细分析</h1>
+<blockquote>
+<p>基于源码深度研究，覆盖 <code>src/tools/AgentTool/</code>、<code>src/tools/TeamCreateTool/</code>、<code>src/tools/SendMessageTool/</code>、<code>src/tools/shared/spawnMultiAgent.ts</code>、<code>src/bootstrap/state.ts</code> 及相关模块。</p>
+</blockquote>
+<hr>
+<h2>目录</h2>
+<ol>
+<li><a href="#1-%E6%9E%B6%E6%9E%84%E6%80%BB%E8%A7%88---%E5%A4%9A-agent-%E6%A8%A1%E5%9E%8B">架构总览 - 多 Agent 模型</a></li>
+<li><a href="#2-agent-%E7%B1%BB%E5%9E%8B-task--teammate--standalone">Agent 类型: Task / Teammate / Standalone</a></li>
+<li><a href="#3-agenttool-task-%E5%88%9B%E5%BB%BA%E6%B5%81%E7%A8%8B">AgentTool (Task) 创建流程</a></li>
+<li><a href="#4-teamcreatetool-%E5%9B%A2%E9%98%9F%E5%8D%8F%E4%BD%9C">TeamCreateTool 团队协作</a></li>
+<li><a href="#5-sendmessagetool-%E9%80%9A%E4%BF%A1%E6%9C%BA%E5%88%B6">SendMessageTool 通信机制</a></li>
+<li><a href="#6-%E7%88%B6%E5%AD%90-session-%E5%85%B3%E7%B3%BB%E4%B8%8E%E4%B8%8A%E4%B8%8B%E6%96%87%E9%9A%94%E7%A6%BB">父子 Session 关系与上下文隔离</a></li>
+<li><a href="#7-agent-%E7%BA%A7%E5%88%AB%E7%9A%84%E7%8A%B6%E6%80%81%E7%AE%A1%E7%90%86">Agent 级别的状态管理</a></li>
+<li><a href="#8-%E9%81%A5%E6%B5%8B%E7%B3%BB%E7%BB%9F%E4%B8%AD%E7%9A%84-agent-%E5%8C%BA%E5%88%86">遥测系统中的 Agent 区分</a></li>
+<li><a href="#9-%E8%BF%9C%E7%A8%8B-agent-%E4%B8%8E%E6%9C%AC%E5%9C%B0-agent">远程 Agent 与本地 Agent</a></li>
+<li><a href="#10-%E5%85%B3%E9%94%AE%E8%AE%BE%E8%AE%A1%E6%A8%A1%E5%BC%8F%E6%80%BB%E7%BB%93">关键设计模式总结</a></li>
+</ol>
+<hr>
+<h2>1. 架构总览 - 多 Agent 模型</h2>
+<blockquote>
+<p>源文件: <code>src/tools/AgentTool/AgentTool.tsx</code>, <code>src/tools/shared/spawnMultiAgent.ts</code>, <code>src/tools/TeamCreateTool/TeamCreateTool.ts</code></p>
+</blockquote>
+<h3>1.1 多 Agent 架构全景</h3>
+<pre><code>+===================================================================+
+|                     Claude Code 多 Agent 架构                      |
++===================================================================+
+|                                                                    |
+|  +------------------+     +------------------+                     |
+|  | Main Session     |     | Coordinator Mode |                     |
+|  | (REPL / SDK)     |     | (--coordinator)  |                     |
+|  +--------+---------+     +--------+---------+                     |
+|           |                        |                               |
+|    +------+--------+       +-------+-------+                       |
+|    |               |       |               |                       |
+|    v               v       v               v                       |
+| +-----------+ +---------+ +-----------+ +-----------+              |
+| | AgentTool | | AgentTool| | Worker 1  | | Worker 2  |             |
+| | (sync)    | | (async) | | (Agent)   | | (Agent)   |             |
+| +-----------+ +---------+ +-----------+ +-----------+              |
+|    子 agent       |                                                |
+|    同步等待       |  后台运行                                       |
+|                   |  task-notification                             |
+|                   v                                                |
+|           +---------------+                                        |
+|           | LocalAgentTask|                                        |
+|           | (后台任务管理) |                                        |
+|           +---------------+                                        |
+|                                                                    |
+|  +-----------+     +-----------+     +-----------+                 |
+|  | TeamCreate|----&gt;| Teammate 1|----&gt;| Teammate 2|                 |
+|  | (Team Lead|     | (tmux/    |     | (in-proc/ |                 |
+|  |  创建团队) |     |  iTerm2)  |     |  tmux)    |                 |
+|  +-----------+     +-----------+     +-----------+                 |
+|       |                  ^                  ^                       |
+|       |       SendMessage|        SendMessage|                     |
+|       +------ mailbox ---+------  mailbox ---+                     |
+|                                                                    |
+|  +-----------+                                                     |
+|  | Fork Agent|  (实验特性)                                          |
+|  | 继承完整  |  父级上下文                                           |
+|  | + prompt  |  cache 共享                                          |
+|  +-----------+                                                     |
++===================================================================+
+</code></pre>
+<h3>1.2 Agent 层次关系</h3>
+<pre><code>Session (root)
+  |
+  +-- AgentTool (sync subagent)
+  |     |-- 在父线程内运行 query() 循环
+  |     |-- 共享 readFileState (clone)
+  |     |-- 独立 abortController
+  |     +-- 使用 createSubagentContext() 隔离状态
+  |
+  +-- AgentTool (async background)
+  |     |-- 注册为 LocalAgentTask
+  |     |-- 独立 query() 循环
+  |     |-- task-notification 报告完成
+  |     +-- 可 resume (从磁盘 transcript 恢复)
+  |
+  +-- TeamCreate -&gt; Teammates
+  |     |-- 通过 tmux/iTerm2/in-process 生成
+  |     |-- 使用文件系统 mailbox 通信
+  |     |-- 共享 TaskList (团队 = 项目 = 任务列表)
+  |     +-- 独立进程或线程
+  |
+  +-- Fork Agent (实验)
+        |-- 继承父级完整对话历史
+        |-- 共享 prompt cache (byte-exact 系统提示)
+        +-- 始终异步后台运行
+</code></pre>
+<hr>
+<h2>2. Agent 类型: Task / Teammate / Standalone</h2>
+<blockquote>
+<p>源文件: <code>src/tools/AgentTool/loadAgentsDir.ts</code>, <code>src/tools/AgentTool/builtInAgents.ts</code>, <code>src/tools/AgentTool/constants.ts</code></p>
+</blockquote>
+<h3>2.1 Agent 定义类型体系</h3>
+<pre><code class="language-typescript">// src/tools/AgentTool/loadAgentsDir.ts
+
+// 所有 agent 的共同基础
+// 注: 部分可选字段（如 `callback`, `filename`, `baseDir`, `requiredMcpServers`）已省略，完整定义请参见源码
+export type BaseAgentDefinition = {
+  agentType: string              // 类型标识 (如 &quot;Explore&quot;, &quot;Plan&quot;, 自定义名)
+  whenToUse: string              // 何时使用的描述 (显示给模型)
+  tools?: string[]               // 允许使用的工具列表 (&#39;*&#39; = 全部)
+  disallowedTools?: string[]     // 禁止使用的工具
+  skills?: string[]              // 预加载的 Skill 名称列表
+  mcpServers?: AgentMcpServerSpec[] // Agent 专属 MCP 服务器
+  hooks?: HooksSettings          // Agent 专属 hooks
+  color?: AgentColorName         // 显示颜色
+  model?: string                 // 模型覆盖 (&#39;inherit&#39; = 继承父级)
+  effort?: EffortValue           // 推理努力级别
+  permissionMode?: PermissionMode // 权限模式
+  maxTurns?: number              // 最大 turn 数
+  background?: boolean           // 始终后台运行
+  initialPrompt?: string         // 首轮预置 prompt
+  memory?: AgentMemoryScope      // 持久化记忆范围 (&#39;user&#39;|&#39;project&#39;|&#39;local&#39;)
+  isolation?: &#39;worktree&#39; | &#39;remote&#39;  // 隔离模式
+  omitClaudeMd?: boolean         // 省略 CLAUDE.md (节省 token)
+  criticalSystemReminder_EXPERIMENTAL?: string
+}
+
+// 内置 agent (代码中定义)
+export type BuiltInAgentDefinition = BaseAgentDefinition &amp; {
+  source: &#39;built-in&#39;
+  baseDir: &#39;built-in&#39;
+  getSystemPrompt: (params: { toolUseContext: Pick&lt;ToolUseContext, &#39;options&#39;&gt; }) =&gt; string
+}
+
+// 自定义 agent (用户/项目/策略设置定义)
+export type CustomAgentDefinition = BaseAgentDefinition &amp; {
+  getSystemPrompt: () =&gt; string
+  source: SettingSource           // &#39;localSettings&#39;|&#39;userSettings&#39;|&#39;projectSettings&#39;|&#39;policySettings&#39;
+}
+
+// 插件 agent
+export type PluginAgentDefinition = BaseAgentDefinition &amp; {
+  getSystemPrompt: () =&gt; string
+  source: &#39;plugin&#39;
+  plugin: string
+}
+
+// 联合类型
+export type AgentDefinition = BuiltInAgentDefinition | CustomAgentDefinition | PluginAgentDefinition
+</code></pre>
+<h3>2.2 内置 Agent 清单</h3>
+<blockquote>
+<p>源文件: <code>src/tools/AgentTool/builtInAgents.ts</code>, <code>src/tools/AgentTool/built-in/</code></p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>Agent 类型</th>
+<th>源文件</th>
+<th>启用条件</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>General Purpose</td>
+<td><code>generalPurposeAgent.ts</code></td>
+<td>始终</td>
+<td>默认通用 agent (无 subagent_type 时使用)</td>
+</tr>
+<tr>
+<td>Explore</td>
+<td><code>exploreAgent.ts</code></td>
+<td><code>tengu_amber_stoat</code> gate</td>
+<td>代码探索/搜索 (只读)</td>
+</tr>
+<tr>
+<td>Plan</td>
+<td><code>planAgent.ts</code></td>
+<td><code>tengu_amber_stoat</code> gate</td>
+<td>生成实现计划 (只读)</td>
+</tr>
+<tr>
+<td>Verification</td>
+<td><code>verificationAgent.ts</code></td>
+<td><code>tengu_hive_evidence</code> gate</td>
+<td>验证执行结果</td>
+</tr>
+<tr>
+<td>Claude Code Guide</td>
+<td><code>claudeCodeGuideAgent.ts</code></td>
+<td>非 SDK 入口</td>
+<td>引导用户使用 Claude Code</td>
+</tr>
+<tr>
+<td>Statusline Setup</td>
+<td><code>statuslineSetup.ts</code></td>
+<td>始终</td>
+<td>状态栏配置</td>
+</tr>
+</tbody></table>
+<h3>2.3 ONE_SHOT vs 多轮 Agent</h3>
+<pre><code class="language-typescript">// src/tools/AgentTool/constants.ts
+export const ONE_SHOT_BUILTIN_AGENT_TYPES: ReadonlySet&lt;string&gt; = new Set([
+  &#39;Explore&#39;,
+  &#39;Plan&#39;,
+])
+// One-shot agent: 运行一次返回报告，父级不再通过 SendMessage 继续
+// 优化: 跳过 agentId/SendMessage/usage trailer (~135 字节/次)
+</code></pre>
+<h3>2.4 Agent 工具访问控制</h3>
+<pre><code class="language-typescript">// src/constants/tools.ts
+
+// 所有 agent 禁止使用的工具
+export const ALL_AGENT_DISALLOWED_TOOLS = new Set([
+  &#39;TaskOutput&#39;,        // 防递归
+  &#39;ExitPlanModeV2&#39;,    // 计划模式是主线程抽象
+  &#39;EnterPlanMode&#39;,
+  &#39;Agent&#39;,             // 防递归 (ant 用户除外，允许嵌套)
+  &#39;AskUserQuestion&#39;,   // 子 agent 不能直接问用户
+  &#39;TaskStop&#39;,          // 需要主线程任务状态
+  &#39;Workflow&#39;,          // 防递归执行
+])
+
+// 异步 agent 允许的工具 (白名单)
+export const ASYNC_AGENT_ALLOWED_TOOLS = new Set([
+  &#39;FileRead&#39;, &#39;WebSearch&#39;, &#39;TodoWrite&#39;, &#39;Grep&#39;, &#39;WebFetch&#39;, &#39;Glob&#39;,
+  &#39;Bash&#39;, &#39;PowerShell&#39;,  // SHELL_TOOL_NAMES
+  &#39;FileEdit&#39;, &#39;FileWrite&#39;, &#39;NotebookEdit&#39;,
+  &#39;Skill&#39;, &#39;SyntheticOutput&#39;, &#39;ToolSearch&#39;,
+  &#39;EnterWorktree&#39;, &#39;ExitWorktree&#39;,
+])
+
+// In-process teammate 额外允许的工具
+export const IN_PROCESS_TEAMMATE_ALLOWED_TOOLS = new Set([
+  &#39;TaskCreate&#39;, &#39;TaskGet&#39;, &#39;TaskList&#39;, &#39;TaskUpdate&#39;,
+  &#39;SendMessage&#39;,
+  &#39;CronCreate&#39;, &#39;CronDelete&#39;, &#39;CronList&#39;,  // (条件)
+])
+
+// Coordinator 模式允许的工具 (仅编排)
+export const COORDINATOR_MODE_ALLOWED_TOOLS = new Set([
+  &#39;Agent&#39;, &#39;TaskStop&#39;, &#39;SendMessage&#39;, &#39;SyntheticOutput&#39;,
+])
+</code></pre>
+<hr>
+<h2>3. AgentTool (Task) 创建流程</h2>
+<blockquote>
+<p>源文件: <code>src/tools/AgentTool/AgentTool.tsx</code>, <code>src/tools/AgentTool/runAgent.ts</code></p>
+</blockquote>
+<h3>3.1 AgentTool 输入 Schema</h3>
+<pre><code class="language-typescript">// src/tools/AgentTool/AgentTool.tsx (简化)
+const baseInputSchema = z.object({
+  description: z.string(),     // 3-5 词任务描述
+  prompt: z.string(),          // 完整任务指令
+  subagent_type: z.string().optional(),  // 专用 agent 类型
+  model: z.enum([&#39;sonnet&#39;, &#39;opus&#39;, &#39;haiku&#39;]).optional(),
+  run_in_background: z.boolean().optional(),
+})
+
+const fullInputSchema = baseInputSchema.merge(z.object({
+  name: z.string().optional(),          // 可寻址名称 (SendMessage 用)
+  team_name: z.string().optional(),     // 团队名
+  mode: permissionModeSchema().optional(), // 权限模式
+})).extend({
+  isolation: z.enum([&#39;worktree&#39;, &#39;remote&#39;]).optional(),
+  cwd: z.string().optional(),          // 工作目录覆盖
+})
+</code></pre>
+<h3>3.2 同步 Agent 创建流程</h3>
+<pre><code>AgentTool.call(input, context)
+  |
+  |-- Step 1: 解析 Agent 定义
+  |   subagent_type -&gt; 查找 agentDefinitions.agents
+  |   未指定 -&gt; GENERAL_PURPOSE_AGENT (或 FORK_AGENT if enabled)
+  |
+  |-- Step 2: 生成 agentId
+  |   createAgentId() -&gt; crypto.randomUUID() 前 8 字符
+  |
+  |-- Step 3: 构建系统提示
+  |   agent.getSystemPrompt() + enhanceSystemPromptWithEnvDetails()
+  |   + buildEffectiveSystemPrompt() (合并基础 + agent 自定义)
+  |
+  |-- Step 4: 解析工具池
+  |   resolveAgentTools(agentDefinition, context.options.tools)
+  |   -&gt; 过滤 ALL_AGENT_DISALLOWED_TOOLS
+  |   -&gt; 按 agent.tools 白名单过滤 (或 &#39;*&#39; 全部)
+  |   -&gt; 移除 agent.disallowedTools
+  |
+  |-- Step 5: 初始化 Agent MCP
+  |   initializeAgentMcpServers(agentDefinition, parentClients)
+  |   -&gt; 按名称引用已有 MCP / 内联定义新 MCP
+  |   -&gt; 连接并获取工具
+  |
+  |-- Step 6: 创建子 agent 上下文
+  |   createSubagentContext(parentContext, { agentId, ... })
+  |   -&gt; 克隆 readFileState
+  |   -&gt; 新 abortController (子级)
+  |   -&gt; setAppState 隔离 (异步 agent 为 no-op)
+  |
+  |-- Step 7: 运行 query 循环
+  |   runAgent(agentId, messages, systemPrompt, context, ...)
+  |   -&gt; 多轮 query() 调用
+  |   -&gt; 每轮产出 StreamEvent
+  |   -&gt; 记录 sidechain transcript
+  |
+  |-- Step 8: 收集结果
+  |   提取最后 assistant 消息
+  |   计算总 usage
+  |   返回 ToolResult&lt;AgentToolResult&gt;
+</code></pre>
+<h3>3.3 异步 (后台) Agent 创建流程</h3>
+<pre><code>AgentTool.call({ run_in_background: true, ... }, context)
+  |
+  |-- Step 1: 注册异步 agent
+  |   registerAsyncAgent(agentId, description, ...)
+  |   -&gt; 在 AppState.tasks 中创建 LocalAgentTask
+  |   -&gt; 状态: &#39;running&#39;
+  |
+  |-- Step 2: 立即返回
+  |   return { data: { status: &#39;async_launched&#39;, agentId, ... } }
+  |   父级继续执行，不等待
+  |
+  |-- Step 3: 后台运行 (async lifecycle)
+  |   runAsyncAgentLifecycle(agentId, ...)
+  |   -&gt; 独立 query() 循环
+  |   -&gt; 通过 updateAsyncAgentProgress() 报告进度
+  |   -&gt; 通过 task-notification 向父级报告完成/失败
+  |
+  |-- Step 4: 完成/失败
+  |   completeAsyncAgent(agentId, result) -- 成功
+  |   failAsyncAgent(agentId, error) -- 失败
+  |   -&gt; enqueueAgentNotification() -- UI 通知
+  |
+  |-- Step 5: 恢复 (可选)
+  |   resumeAgentBackground({ agentId, prompt })
+  |   -&gt; 从磁盘 transcript 重建上下文
+  |   -&gt; 继续 query() 循环
+</code></pre>
+<h3>3.4 runAgent 核心实现</h3>
+<pre><code class="language-typescript">// src/tools/AgentTool/runAgent.ts (伪代码)
+export async function runAgent(
+  agentId: AgentId,
+  messages: Message[],
+  systemPrompt: SystemPrompt,
+  toolUseContext: ToolUseContext,
+  canUseTool: CanUseToolFn,
+  agentDefinition: AgentDefinition,
+  options: { maxTurns, model, effort, querySource, onMessage, ... }
+): Promise&lt;{ messages: Message[]; usage: NonNullableUsage }&gt; {
+
+  // 1. 设置 agent 特定的 transcript 子目录
+  setAgentTranscriptSubdir(agentId)
+
+  // 2. 注册 perfetto tracing (如果启用)
+  if (isPerfettoTracingEnabled()) registerPerfettoAgent(agentId)
+
+  // 3. 初始化 agent MCP 服务器
+  const { clients, tools: agentMcpTools, cleanup } =
+    await initializeAgentMcpServers(agentDefinition, parentClients)
+
+  // 4. 注册 frontmatter hooks
+  registerFrontmatterHooks(agentDefinition.hooks)
+
+  // 5. 执行 SubagentStart hooks
+  await executeSubagentStartHooks(agentId, agentDefinition.agentType)
+
+  // 6. 多轮 query 循环
+  let totalUsage = EMPTY_USAGE
+  let turnCount = 0
+  while (turnCount &lt; maxTurns) {
+    const events = query(messages, { systemPrompt, tools, model, ... })
+    for await (const event of events) {
+      // 处理 stream events
+      // 更新 messages
+      // 累加 usage
+    }
+    turnCount++
+    if (shouldStop) break
+  }
+
+  // 7. 清理
+  cleanup()  // agent MCP
+  clearSessionHooks()
+  clearAgentTracking(agentId)
+  if (isPerfettoTracingEnabled()) unregisterPerfettoAgent(agentId)
+
+  // 8. 记录 sidechain transcript
+  recordSidechainTranscript(agentId, messages)
+
+  return { messages, usage: totalUsage }
+}
+</code></pre>
+<h3>3.5 Agent 自动后台化</h3>
+<pre><code class="language-typescript">// src/tools/AgentTool/AgentTool.tsx
+function getAutoBackgroundMs(): number {
+  // 条件: CLAUDE_AUTO_BACKGROUND_TASKS 或 tengu_auto_background_agents GrowthBook gate
+  // 返回 120_000 (120秒) 或 0 (禁用)
+  // 超时后自动将 foreground agent 转为 background
+}
+
+const PROGRESS_THRESHOLD_MS = 2000  // 2秒后显示 &quot;background hint&quot;
+</code></pre>
+<hr>
+<h2>4. TeamCreateTool 团队协作</h2>
+<blockquote>
+<p>源文件: <code>src/tools/TeamCreateTool/TeamCreateTool.ts</code>, <code>src/tools/shared/spawnMultiAgent.ts</code></p>
+</blockquote>
+<h3>4.1 TeamFile 数据结构</h3>
+<pre><code class="language-typescript">// src/utils/swarm/teamHelpers.ts (推断)
+type TeamFile = {
+  name: string
+  description?: string
+  createdAt: number
+  leadAgentId: string
+  leadSessionId: string           // 团队发现用
+  members: TeamMember[]
+}
+
+type TeamMember = {
+  agentId: string
+  name: string
+  agentType: string
+  model: string
+  joinedAt: number
+  tmuxPaneId: string
+  cwd: string
+  subscriptions: string[]
+  backendType?: BackendType       // &#39;tmux&#39; | &#39;iterm2&#39; | &#39;in-process&#39;
+}
+</code></pre>
+<h3>4.2 TeamCreate 流程</h3>
+<pre><code>TeamCreateTool.call({ team_name, description, agent_type }, context)
+  |
+  |-- Step 1: 检查是否已在团队中
+  |   appState.teamContext?.teamName -&gt; 每个 leader 只能管理一个团队
+  |
+  |-- Step 2: 生成唯一团队名
+  |   generateUniqueTeamName(team_name)
+  |   -&gt; 已存在则 generateWordSlug() 随机新名
+  |
+  |-- Step 3: 生成 Team Lead Agent ID
+  |   formatAgentId(&quot;team-lead&quot;, teamName) -&gt; &quot;team-lead@teamName&quot;
+  |
+  |-- Step 4: 写入 TeamFile
+  |   writeTeamFileAsync(teamName, teamFile)
+  |   -&gt; 文件路径: getTeamFilePath(teamName)
+  |
+  |-- Step 5: 注册会话清理
+  |   registerTeamForSessionCleanup(teamName)
+  |   -&gt; 会话结束时自动清理团队文件
+  |
+  |-- Step 6: 初始化任务列表
+  |   resetTaskList(taskListId)
+  |   ensureTasksDir(taskListId)
+  |   setLeaderTeamName(sanitizeName(teamName))
+  |
+  |-- Step 7: 更新 AppState
+  |   setAppState({ teamContext: {
+  |     teamName, teamFilePath, leadAgentId,
+  |     teammates: { [leadAgentId]: { name, agentType, color, ... } }
+  |   }})
+  |
+  |-- Step 8: 遥测
+  |   logEvent(&#39;tengu_team_created&#39;, { team_name, teammate_count, lead_agent_type, teammate_mode })
+</code></pre>
+<h3>4.3 Teammate 生成 (spawnTeammate)</h3>
+<blockquote>
+<p>源文件: <code>src/tools/shared/spawnMultiAgent.ts</code></p>
+</blockquote>
+<pre><code class="language-typescript">// 核心类型
+export type SpawnTeammateConfig = {
+  name: string
+  prompt: string
+  team_name?: string
+  cwd?: string
+  use_splitpane?: boolean
+  plan_mode_required?: boolean
+  model?: string
+  agent_type?: string
+  description?: string
+  invokingRequestId?: string
+}
+
+export type SpawnOutput = {
+  teammate_id: string
+  agent_id: string             // formatAgentId(name, teamName)
+  agent_type?: string
+  model?: string
+  name: string
+  color?: string
+  tmux_session_name: string
+  tmux_window_name: string
+  tmux_pane_id: string
+  team_name?: string
+  is_splitpane?: boolean
+  plan_mode_required?: boolean
+}
+</code></pre>
+<h3>4.4 Teammate 后端类型</h3>
+<pre><code>Backend 检测流程:
+  detectAndGetBackend()
+    |
+    +-- iTerm2 (macOS 原生) --&gt; it2 命令检测 / 提示安装
+    +-- tmux (跨平台) --&gt; tmux session 管理
+    +-- in-process (嵌入式) --&gt; 线程内运行
+    +-- 回退 --&gt; in-process (markInProcessFallback)
+
+BackendType = &#39;tmux&#39; | &#39;iterm2&#39; | &#39;in-process&#39;
+</code></pre>
+<h3>4.5 Teammate 命令构建</h3>
+<pre><code class="language-typescript">function buildInheritedCliFlags(options): string {
+  // 继承父级的:
+  // --dangerously-skip-permissions (如果非 plan mode)
+  // --permission-mode (auto/acceptEdits)
+  // --model (如果 CLI 指定了)
+  // --settings (如果 CLI 指定了)
+  // --plugin-dir (逐个)
+  // --chrome / --no-chrome
+}
+
+function getTeammateCommand(): string {
+  // TEAMMATE_COMMAND_ENV_VAR 覆盖
+  // 原生构建: process.execPath
+  // 脚本: process.argv[1]
+}
+
+// 最终命令: getTeammateCommand() + &quot; -p &#39;&quot; + prompt + &quot;&#39;&quot; + buildInheritedCliFlags() + buildInheritedEnvVars()
+</code></pre>
+<h3>4.6 In-Process Teammate</h3>
+<pre><code>spawnInProcessTeammate(config)
+  |
+  |-- 创建 InProcessTeammateTaskState
+  |-- startInProcessTeammate(config)
+  |     |-- 共享进程空间
+  |     |-- 独立 AbortController
+  |     |-- 独立 query() 循环
+  |     +-- 通过 AppState.tasks 注册
+  |
+  |-- 注册到团队文件
+  |     member.backendType = &#39;in-process&#39;
+  |
+  |-- 返回 SpawnOutput
+</code></pre>
+<hr>
+<h2>5. SendMessageTool 通信机制</h2>
+<blockquote>
+<p>源文件: <code>src/tools/SendMessageTool/SendMessageTool.ts</code></p>
+</blockquote>
+<h3>5.1 消息类型</h3>
+<pre><code class="language-typescript">// src/tools/SendMessageTool/SendMessageTool.ts
+const StructuredMessage = z.discriminatedUnion(&#39;type&#39;, [
+  z.object({
+    type: z.literal(&#39;shutdown_request&#39;),
+    reason: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal(&#39;shutdown_response&#39;),
+    request_id: z.string(),
+    approve: semanticBoolean(),
+    reason: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal(&#39;plan_approval_response&#39;),
+    request_id: z.string(),
+    approve: semanticBoolean(),
+    feedback: z.string().optional(),
+  }),
+])
+
+const inputSchema = z.object({
+  to: z.string(),              // 收件人: teammate 名 | &quot;*&quot; (广播) | &quot;uds:path&quot; | &quot;bridge:session-id&quot;
+  summary: z.string().optional(), // 5-10 词预览摘要
+  message: z.union([
+    z.string(),                // 纯文本
+    StructuredMessage,         // 结构化消息
+  ]),
+})
+</code></pre>
+<h3>5.2 消息路由架构</h3>
+<pre><code>SendMessageTool.call(input, context)
+  |
+  |-- Route 1: Bridge (Remote Control)
+  |   parseAddress(input.to).scheme === &#39;bridge&#39;
+  |   -&gt; postInterClaudeMessage(target, message)
+  |   -&gt; 通过 Anthropic 服务器中继
+  |   -&gt; 需要用户明确同意 (safetyCheck)
+  |
+  |-- Route 2: UDS (Unix Domain Socket)
+  |   parseAddress(input.to).scheme === &#39;uds&#39;
+  |   -&gt; sendToUdsSocket(target, message)
+  |   -&gt; 本地进程间通信
+  |
+  |-- Route 3: In-Process Agent (agentNameRegistry)
+  |   appState.agentNameRegistry.get(input.to) / toAgentId(input.to)
+  |   |
+  |   +-- task running -&gt; queuePendingMessage()
+  |   |   消息在下一个 tool round 投递
+  |   |
+  |   +-- task stopped -&gt; resumeAgentBackground()
+  |       从磁盘 transcript 恢复并继续
+  |
+  |-- Route 4: Broadcast (&quot;*&quot;)
+  |   遍历 teamFile.members (跳过自己)
+  |   -&gt; 逐个 writeToMailbox()
+  |
+  |-- Route 5: Direct Message (teammate name)
+  |   writeToMailbox(recipientName, message, teamName)
+  |
+  |-- Route 6: Structured Messages
+  |   |
+  |   +-- shutdown_request -&gt; writeToMailbox(target, shutdownRequestMessage)
+  |   +-- shutdown_response (approve) -&gt; handleShutdownApproval()
+  |   |     -&gt; writeToMailbox(team-lead, approvedMessage)
+  |   |     -&gt; in-process: abort controller
+  |   |     -&gt; tmux/iTerm2: gracefulShutdown()
+  |   +-- shutdown_response (reject) -&gt; handleShutdownRejection()
+  |   +-- plan_approval_response (approve) -&gt; handlePlanApproval()
+  |   |     -&gt; 继承 leader 的 permissionMode
+  |   +-- plan_approval_response (reject) -&gt; handlePlanRejection()
+</code></pre>
+<h3>5.3 Mailbox 系统</h3>
+<pre><code>Mailbox 文件系统结构:
+  ~/.claude/teams/&lt;team-name&gt;/mailbox/&lt;agent-name&gt;/
+    message-&lt;timestamp&gt;.json
+
+消息格式:
+  {
+    from: string,          // 发送者名称
+    text: string,          // 消息内容 (或 JSON 序列化的结构化消息)
+    summary?: string,      // 预览摘要
+    timestamp: string,     // ISO 时间戳
+    color?: string,        // 发送者颜色
+  }
+
+读取: 各 agent 轮询自己的 mailbox 目录
+写入: writeToMailbox(recipientName, message, teamName)
+</code></pre>
+<h3>5.4 In-Process 消息投递</h3>
+<pre><code class="language-typescript">// 针对 in-process agents 的优化路径
+
+// 发送: 直接写入 AppState
+queuePendingMessage(agentId, message, setAppState)
+  -&gt; AppState.tasks[agentId].pendingUserMessages.push(message)
+
+// 接收: 在 tool round 间检查
+// LocalAgentTask 在每轮 query 前检查 pendingUserMessages
+// 作为新的 user message 注入对话
+
+// 恢复: 停止的 agent 自动恢复
+resumeAgentBackground({ agentId, prompt })
+  -&gt; 从磁盘 sidechain transcript 重建
+  -&gt; 以 prompt 作为新 user message 继续
+</code></pre>
+<hr>
+<h2>6. 父子 Session 关系与上下文隔离</h2>
+<blockquote>
+<p>源文件: <code>src/utils/forkedAgent.ts</code>, <code>src/tools/AgentTool/runAgent.ts</code></p>
+</blockquote>
+<h3>6.1 createSubagentContext</h3>
+<pre><code class="language-typescript">// src/utils/forkedAgent.ts (伪代码)
+export function createSubagentContext(
+  parentContext: ToolUseContext,
+  overrides: SubagentContextOverrides,
+): ToolUseContext {
+  return {
+    ...parentContext,
+
+    // 隔离的 abortController (子级)
+    abortController: createChildAbortController(parentContext.abortController),
+
+    // 克隆的文件状态缓存
+    readFileState: overrides.readFileState ?? cloneFileStateCache(parentContext.readFileState),
+
+    // 异步 agent: setAppState 变为 no-op
+    // (防止子 agent 干扰父级状态)
+    setAppState: overrides.isAsync
+      ? () =&gt; {}  // no-op
+      : parentContext.setAppState,
+
+    // setAppStateForTasks 始终指向根 store
+    // (子 agent 需要注册/清理跨 turn 基础设施)
+    setAppStateForTasks: parentContext.setAppStateForTasks ?? parentContext.setAppState,
+
+    // Agent 标识
+    agentId: overrides.agentId,
+    agentType: overrides.agentType,
+
+    // 独立的 denial tracking (异步 agent)
+    localDenialTracking: overrides.isAsync
+      ? createDenialTrackingState()
+      : undefined,
+
+    // 内容替换状态
+    contentReplacementState: overrides.contentReplacementState
+      ?? cloneContentReplacementState(parentContext.contentReplacementState),
+
+    // 独立的消息列表
+    messages: [],
+
+    // 其他继承/隔离字段...
+  }
+}
+</code></pre>
+<h3>6.2 上下文隔离矩阵</h3>
+<table>
+<thead>
+<tr>
+<th>资源</th>
+<th>同步 Agent</th>
+<th>异步 Agent</th>
+<th>Teammate (in-proc)</th>
+<th>Teammate (tmux)</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>abortController</td>
+<td>子级 (linked)</td>
+<td>子级 (linked)</td>
+<td>独立</td>
+<td>独立进程</td>
+</tr>
+<tr>
+<td>readFileState</td>
+<td>克隆</td>
+<td>克隆</td>
+<td>独立</td>
+<td>独立进程</td>
+</tr>
+<tr>
+<td>setAppState</td>
+<td>共享</td>
+<td>no-op</td>
+<td>独立</td>
+<td>独立进程</td>
+</tr>
+<tr>
+<td>setAppStateForTasks</td>
+<td>根 store</td>
+<td>根 store</td>
+<td>根 store</td>
+<td>独立进程</td>
+</tr>
+<tr>
+<td>messages</td>
+<td>独立</td>
+<td>独立</td>
+<td>独立</td>
+<td>独立进程</td>
+</tr>
+<tr>
+<td>toolPermissionContext</td>
+<td>继承</td>
+<td>继承</td>
+<td>继承/覆盖</td>
+<td>CLI 传递</td>
+</tr>
+<tr>
+<td>MCP clients</td>
+<td>继承+扩展</td>
+<td>继承+扩展</td>
+<td>独立</td>
+<td>独立进程</td>
+</tr>
+<tr>
+<td>denial tracking</td>
+<td>共享</td>
+<td>独立</td>
+<td>独立</td>
+<td>独立进程</td>
+</tr>
+<tr>
+<td>系统提示</td>
+<td>agent 专用</td>
+<td>agent 专用</td>
+<td>独立</td>
+<td>独立</td>
+</tr>
+<tr>
+<td>工具池</td>
+<td>过滤后</td>
+<td>过滤后</td>
+<td>过滤后</td>
+<td>CLI 默认</td>
+</tr>
+</tbody></table>
+<h3>6.3 Prompt Cache 共享</h3>
+<pre><code class="language-typescript">// src/utils/forkedAgent.ts
+export type CacheSafeParams = {
+  systemPrompt: SystemPrompt       // 必须与父级相同
+  userContext: { [k: string]: string }
+  systemContext: { [k: string]: string }
+  toolUseContext: ToolUseContext    // 包含 tools, model 等
+  forkContextMessages: Message[]   // 父级消息前缀 (共享缓存)
+}
+
+// Fork agent 特有: 继承父级完整对话历史 + 渲染后的系统提示
+// renderedSystemPrompt 在 fork 创建时冻结，避免 GrowthBook cold-&gt;warm 差异
+</code></pre>
+<h3>6.4 Sidechain Transcript</h3>
+<pre><code>每个 agent 都有独立的 sidechain transcript:
+  ~/.claude/sessions/&lt;session-id&gt;/agents/&lt;agent-id&gt;/
+    transcript.json      -- 完整消息历史
+    metadata.json        -- agent 元数据
+
+用途:
+  1. 恢复停止的后台 agent
+  2. UI 中查看 agent 历史
+  3. 调试/审计
+</code></pre>
+<hr>
+<h2>7. Agent 级别的状态管理</h2>
+<blockquote>
+<p>源文件: <code>src/bootstrap/state.ts</code>, <code>src/state/AppState.ts</code>, <code>src/tasks/LocalAgentTask/</code></p>
+</blockquote>
+<h3>7.1 AppState 中的 Agent 相关字段</h3>
+<pre><code class="language-typescript">// src/state/AppState.ts (推断)
+interface AppState {
+  // 任务注册表 (所有类型的后台任务)
+  tasks: Record&lt;string, TaskState&gt;
+
+  // Agent 名称注册表 (name -&gt; agentId 映射)
+  agentNameRegistry: Map&lt;string, AgentId&gt;
+
+  // 团队上下文
+  teamContext?: {
+    teamName: string
+    teamFilePath: string
+    leadAgentId: string
+    teammates: Record&lt;string, TeammateInfo&gt;
+  }
+
+  // 工具权限上下文 (agent 可继承/覆盖)
+  toolPermissionContext: ToolPermissionContext
+
+  // 主循环模型 (agent 可覆盖)
+  mainLoopModel: string | null
+  mainLoopModelForSession: string | null
+
+  // 展开视图 (agent 创建时自动展开 tasks)
+  expandedView?: &#39;tasks&#39; | &#39;tools&#39; | ...
+}
+</code></pre>
+<h3>7.2 LocalAgentTask 状态机</h3>
+<pre><code class="language-typescript">// src/tasks/LocalAgentTask/LocalAgentTask.ts (推断)
+interface LocalAgentTaskState {
+  type: &#39;local_agent&#39;
+  status: &#39;running&#39; | &#39;completed&#39; | &#39;failed&#39; | &#39;stopped&#39;
+  agentId: AgentId
+  description: string
+  prompt: string
+  subagentType?: string
+  createdAt: number
+  completedAt?: number
+  outputFile?: string
+  error?: string
+  abortController?: AbortController
+  pendingUserMessages: string[]    // in-process 消息队列
+  progress?: {                     // 进度追踪
+    currentActivity?: string
+    tokenCount?: number
+    turnCount?: number
+  }
+}
+
+// 状态转换:
+//   registered -&gt; running -&gt; completed/failed/stopped
+//   stopped -&gt; running (via resume)
+</code></pre>
+<h3>7.3 InProcessTeammateTask 状态</h3>
+<pre><code class="language-typescript">// src/tasks/InProcessTeammateTask/types.ts (推断)
+interface InProcessTeammateTaskState {
+  type: &#39;in_process_teammate&#39;
+  agentId: AgentId
+  name: string
+  teamName: string
+  status: &#39;running&#39; | &#39;completed&#39; | &#39;failed&#39;
+  abortController?: AbortController
+  spawnedAt: number
+}
+</code></pre>
+<h3>7.4 Skill 调用与 Agent 隔离</h3>
+<pre><code class="language-typescript">// src/bootstrap/state.ts
+// Skill 按 agentId 隔离，防止跨 agent 覆盖
+// 键格式: `${agentId ?? &#39;&#39;}:${skillName}`
+
+function invokeSkill(skillName, agentId, context) {
+  const key = `${agentId ?? &#39;&#39;}:${skillName}`
+  // 记录到 invokedSkills Map
+}
+
+function clearInvokedSkillsForAgent(agentId: string) {
+  // agent 完成时清理其 skill 调用记录
+}
+
+function getInvokedSkillsForAgent(agentId: string | null) {
+  // 获取特定 agent 的 skill 调用记录
+}
+</code></pre>
+<hr>
+<h2>8. 遥测系统中的 Agent 区分</h2>
+<blockquote>
+<p>源文件: <code>src/services/tools/toolExecution.ts</code>, <code>src/tools/AgentTool/AgentTool.tsx</code></p>
+</blockquote>
+<h3>8.1 Agent 遥测事件</h3>
+<table>
+<thead>
+<tr>
+<th>事件名</th>
+<th>触发时机</th>
+<th>关键字段</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>tengu_agent_created</code></td>
+<td>AgentTool.call 开始</td>
+<td>agentId, subagent_type, model, isolation</td>
+</tr>
+<tr>
+<td><code>tengu_agent_completed</code></td>
+<td>Agent 正常完成</td>
+<td>agentId, duration, turns, usage</td>
+</tr>
+<tr>
+<td><code>tengu_agent_failed</code></td>
+<td>Agent 执行失败</td>
+<td>agentId, error</td>
+</tr>
+<tr>
+<td><code>tengu_agent_backgrounded</code></td>
+<td>Agent 转入后台</td>
+<td>agentId</td>
+</tr>
+<tr>
+<td><code>tengu_agent_resumed</code></td>
+<td>Agent 恢复执行</td>
+<td>agentId</td>
+</tr>
+<tr>
+<td><code>tengu_team_created</code></td>
+<td>TeamCreate 成功</td>
+<td>team_name, teammate_count, teammate_mode</td>
+</tr>
+<tr>
+<td><code>tengu_teammate_spawned</code></td>
+<td>Teammate 生成</td>
+<td>name, agent_type, backend_type</td>
+</tr>
+<tr>
+<td><code>tengu_fork_agent_query</code></td>
+<td>Fork agent 完成</td>
+<td>forkLabel, usage, turns</td>
+</tr>
+</tbody></table>
+<h3>8.2 Agent ID 在遥测中的传播</h3>
+<pre><code>所有 API 调用 (query.ts) 中:
+  requestId 由 generateRequestId() 生成
+  agentId 通过 toolUseContext.agentId 传递
+
+遥测字段:
+  queryChainId: toolUseContext.queryTracking?.chainId
+  queryDepth: toolUseContext.queryTracking?.depth
+  agentId: toolUseContext.agentId
+  invokingRequestId: 父级的 requestId (lineage tracing)
+</code></pre>
+<h3>8.3 Agent 类型在 Hook 中的使用</h3>
+<pre><code class="language-typescript">// ToolUseContext 中的 agent 字段
+agentId?: AgentId    // 仅子 agent 设置
+agentType?: string   // 子 agent 类型名
+
+// Hooks 使用 agentId 区分:
+// - 主线程: agentId = undefined
+// - 子 agent: agentId = createAgentId() 结果
+// - getMainThreadAgentType() 获取主线程的 --agent 类型
+</code></pre>
+<h3>8.4 Perfetto Tracing</h3>
+<pre><code class="language-typescript">// src/utils/telemetry/perfettoTracing.ts
+// Agent 注册为独立的 trace track
+
+registerPerfettoAgent(agentId)    // agent 开始时
+unregisterPerfettoAgent(agentId)  // agent 结束时
+
+// 在 Perfetto UI 中，每个 agent 显示为独立的 track
+// 可视化并发执行和时序关系
+</code></pre>
+<hr>
+<h2>9. 远程 Agent 与本地 Agent</h2>
+<blockquote>
+<p>源文件: <code>src/tools/AgentTool/AgentTool.tsx</code>, <code>src/tasks/RemoteAgentTask/</code></p>
+</blockquote>
+<h3>9.1 隔离模式对比</h3>
+<pre><code>+---------------------------------------------------------------+
+|              Agent 隔离模式对比                                  |
++---------------------------------------------------------------+
+|                                                                |
+|  无隔离 (默认)     Worktree 隔离        Remote 隔离 (ant-only) |
+|  +-----------+     +-------------+      +---------------+     |
+|  | 共享 CWD  |     | 独立 git    |      | 独立 CCR      |     |
+|  | 共享文件  |      | worktree    |      | 环境          |     |
+|  | 本地进程  |      | 本地进程    |      | 远程进程      |     |
+|  +-----------+     +-------------+      +---------------+     |
+|                                                                |
+|  优点:             优点:                优点:                   |
+|  - 最快            - 文件隔离            - 完全隔离            |
+|  - 最简            - 可合并变更          - 安全沙箱            |
+|                                                                |
+|  缺点:             缺点:                缺点:                   |
+|  - 文件冲突        - 需要 git repo       - 延迟较高            |
+|  - 竞态风险        - 磁盘空间            - 仅限内部            |
++---------------------------------------------------------------+
+</code></pre>
+<h3>9.2 Worktree 隔离流程</h3>
+<pre><code>Agent({ isolation: &#39;worktree&#39;, ... })
+  |
+  |-- createAgentWorktree(agentId)
+  |   -&gt; git worktree add &lt;path&gt; HEAD
+  |   -&gt; 返回 worktree 路径
+  |
+  |-- runWithCwdOverride(worktreePath, () =&gt; {
+  |     runAgent(...)
+  |   })
+  |
+  |-- 完成后:
+  |   hasWorktreeChanges(worktreePath)
+  |   -&gt; 有变更: 通知用户合并
+  |   -&gt; 无变更: removeAgentWorktree(worktreePath)
+</code></pre>
+<h3>9.3 Remote 隔离流程 (ant-only)</h3>
+<pre><code>Agent({ isolation: &#39;remote&#39;, ... })
+  |
+  |-- checkRemoteAgentEligibility()
+  |   -&gt; 检查远程 CCR 环境可用性
+  |   -&gt; 检查先决条件
+  |
+  |-- teleportToRemote(agentId, prompt, ...)
+  |   -&gt; 在远程 CCR 实例中启动 agent
+  |   -&gt; 始终后台运行
+  |
+  |-- registerRemoteAgentTask(agentId, ...)
+  |   -&gt; 在 AppState.tasks 中注册远程任务
+  |   -&gt; 轮询远程状态
+  |
+  |-- getRemoteTaskSessionUrl(agentId)
+  |   -&gt; 获取远程会话 URL (可在浏览器中查看)
+</code></pre>
+<h3>9.4 本地 Agent 类型</h3>
+<table>
+<thead>
+<tr>
+<th>类型</th>
+<th>进程模型</th>
+<th>通信方式</th>
+<th>隔离级别</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>同步子 Agent</td>
+<td>同进程同线程</td>
+<td>函数调用</td>
+<td>最低</td>
+</tr>
+<tr>
+<td>异步子 Agent</td>
+<td>同进程异步</td>
+<td>task-notification</td>
+<td>中等</td>
+</tr>
+<tr>
+<td>In-Process Teammate</td>
+<td>同进程异步</td>
+<td>AppState + mailbox</td>
+<td>中等</td>
+</tr>
+<tr>
+<td>Tmux Teammate</td>
+<td>独立进程</td>
+<td>文件 mailbox</td>
+<td>高</td>
+</tr>
+<tr>
+<td>iTerm2 Teammate</td>
+<td>独立进程</td>
+<td>文件 mailbox</td>
+<td>高</td>
+</tr>
+<tr>
+<td>Fork Agent</td>
+<td>同进程异步</td>
+<td>task-notification</td>
+<td>中等 (共享 cache)</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>10. 关键设计模式总结</h2>
+<h3>10.1 模式清单</h3>
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>位置</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>工厂模式</strong></td>
+<td><code>buildTool()</code> + Agent 定义类型</td>
+<td>统一的 Agent/Tool 构建入口</td>
+</tr>
+<tr>
+<td><strong>策略模式</strong></td>
+<td><code>AgentDefinition.permissionMode</code> / <code>tools</code> / <code>model</code></td>
+<td>每个 agent 自定义行为策略</td>
+</tr>
+<tr>
+<td><strong>模板方法</strong></td>
+<td><code>runAgent()</code></td>
+<td>固定的 agent 生命周期框架，子类通过定义填充细节</td>
+</tr>
+<tr>
+<td><strong>观察者模式</strong></td>
+<td><code>task-notification</code> / <code>onProgress</code></td>
+<td>Agent 完成/进度通知</td>
+</tr>
+<tr>
+<td><strong>状态模式</strong></td>
+<td><code>LocalAgentTask.status</code></td>
+<td>running -&gt; completed/failed/stopped 状态转换</td>
+</tr>
+<tr>
+<td><strong>中介者模式</strong></td>
+<td><code>SendMessageTool</code> / <code>writeToMailbox</code></td>
+<td>集中管理 agent 间通信路由</td>
+</tr>
+<tr>
+<td><strong>命令模式</strong></td>
+<td>结构化消息 (<code>shutdown_request</code> 等)</td>
+<td>消息即命令的通信协议</td>
+</tr>
+<tr>
+<td><strong>代理模式</strong></td>
+<td><code>createSubagentContext()</code></td>
+<td>隔离的上下文代理，控制对父级状态的访问</td>
+</tr>
+<tr>
+<td><strong>注册表模式</strong></td>
+<td><code>AppState.agentNameRegistry</code> / <code>tasks</code></td>
+<td>全局 agent 注册和发现</td>
+</tr>
+<tr>
+<td><strong>Sidechain 模式</strong></td>
+<td><code>recordSidechainTranscript()</code></td>
+<td>agent 对话历史持久化到侧链，支持恢复</td>
+</tr>
+<tr>
+<td><strong>扇出/扇入</strong></td>
+<td>Team lead -&gt; teammates -&gt; task-notification</td>
+<td>任务分发与结果收集</td>
+</tr>
+<tr>
+<td><strong>背压控制</strong></td>
+<td><code>maxTurns</code> / <code>maxBudgetUsd</code></td>
+<td>限制 agent 资源消耗</td>
+</tr>
+<tr>
+<td><strong>优雅降级</strong></td>
+<td><code>markInProcessFallback()</code></td>
+<td>后端不可用时降级到 in-process</td>
+</tr>
+<tr>
+<td><strong>Copy-on-Write</strong></td>
+<td><code>cloneFileStateCache()</code></td>
+<td>文件状态缓存的写时复制隔离</td>
+</tr>
+</tbody></table>
+<h3>10.2 架构决策权衡</h3>
+<table>
+<thead>
+<tr>
+<th>决策</th>
+<th>选择</th>
+<th>权衡</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Agent 为 Tool vs 独立原语</td>
+<td>Tool (AgentTool)</td>
+<td>复用工具管线的校验/权限/遥测，但增加 Tool 接口复杂度</td>
+</tr>
+<tr>
+<td>同步 vs 异步默认</td>
+<td>同步 (除非 <code>run_in_background</code>)</td>
+<td>简单任务即时返回 vs 长任务需手动后台化</td>
+</tr>
+<tr>
+<td>Mailbox vs 直接通信</td>
+<td>文件 mailbox (teammate) / AppState (in-process)</td>
+<td>跨进程兼容 vs 额外 I/O 开销</td>
+</tr>
+<tr>
+<td>工具白名单 vs 黑名单</td>
+<td>两者并存</td>
+<td>异步 agent 用白名单 (安全), 同步用黑名单 (灵活)</td>
+</tr>
+<tr>
+<td>Prompt cache 共享</td>
+<td>Fork agent 共享父级 cache</td>
+<td>减少 API 成本 vs 增加实现复杂度</td>
+</tr>
+<tr>
+<td>Agent 状态隔离</td>
+<td>setAppState no-op (异步)</td>
+<td>防止竞态 vs 需要 setAppStateForTasks 旁路</td>
+</tr>
+<tr>
+<td>Team lead 单一</td>
+<td>每 session 限一个团队</td>
+<td>简化管理 vs 限制灵活性</td>
+</tr>
+</tbody></table>
+<h3>10.3 关键不变量</h3>
+<ol>
+<li><strong>每个 tool_use 必须有 tool_result</strong>: Agent 内部的 query 循环也遵守此约束</li>
+<li><strong>agentId 全局唯一</strong>: <code>createAgentId()</code> 使用 UUID 前 8 字符</li>
+<li><strong>异步 agent 的 setAppState 是 no-op</strong>: 防止并发写入父级状态</li>
+<li><strong>deny rule 覆盖 hook allow</strong>: 即使 agent 的 hook approve 了，deny 规则仍生效</li>
+<li><strong>One-shot agent 不产生 SendMessage trailer</strong>: 节省 token</li>
+<li><strong>Team lead 不是 teammate</strong>: <code>isTeammate()</code> 对 lead 返回 false</li>
+<li><strong>结构化消息不能广播</strong>: <code>shutdown_request</code> 等只能定向发送</li>
+<li><strong>Bridge 消息需要用户同意</strong>: 跨机器通信的安全约束</li>
+</ol>
+<h3>10.4 扩展点</h3>
+<ol>
+<li><strong>自定义 Agent 类型</strong>: 在 <code>.claude/agents/</code> 或 <code>settings.json</code> 的 <code>agents</code> 中定义 markdown 文件</li>
+<li><strong>Agent MCP 服务器</strong>: 在 agent frontmatter 的 <code>mcpServers</code> 中配置</li>
+<li><strong>Agent Hooks</strong>: 在 agent frontmatter 的 <code>hooks</code> 中配置 (PreToolUse/PostToolUse)</li>
+<li><strong>Agent Skills</strong>: 在 agent frontmatter 的 <code>skills</code> 中预加载</li>
+<li><strong>Agent Memory</strong>: 设置 <code>memory: &#39;user&#39;|&#39;project&#39;|&#39;local&#39;</code> 启用持久化记忆</li>
+<li><strong>Plugin Agents</strong>: 通过插件系统加载 agent 定义</li>
+<li><strong>Coordinator Mode</strong>: <code>--coordinator</code> 启用纯编排模式，主线程仅使用 Agent/TaskStop/SendMessage</li>
+</ol>
+</body>
+</html>

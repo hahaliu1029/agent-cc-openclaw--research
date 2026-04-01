@@ -1,0 +1,1224 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>08-permissions</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1>Claude Code 权限系统详细分析</h1>
+<blockquote>
+<p>基于源码深度研究, 所有路径相对于 <code>src/</code> 目录</p>
+</blockquote>
+<h2>目录</h2>
+<ul>
+<li><a href="#1-%E6%9E%B6%E6%9E%84%E6%80%BB%E8%A7%88">1. 架构总览</a></li>
+<li><a href="#2-%E6%9D%83%E9%99%90%E6%A8%A1%E5%BC%8F-permission-mode">2. 权限模式 (Permission Mode)</a></li>
+<li><a href="#3-%E6%9D%83%E9%99%90%E8%A7%84%E5%88%99%E7%9A%84%E5%AE%9A%E4%B9%89%E5%92%8C%E6%95%B0%E6%8D%AE%E7%BB%93%E6%9E%84">3. 权限规则的定义和数据结构</a></li>
+<li><a href="#4-%E6%9D%83%E9%99%90%E8%A7%84%E5%88%99%E8%A7%A3%E6%9E%90%E5%99%A8">4. 权限规则解析器</a></li>
+<li><a href="#5-%E6%9D%83%E9%99%90%E8%A7%84%E5%88%99%E8%AF%84%E4%BC%B0%E9%80%BB%E8%BE%91">5. 权限规则评估逻辑</a></li>
+<li><a href="#6-%E7%94%A8%E6%88%B7%E5%AE%A1%E6%89%B9%E6%B5%81%E7%A8%8B">6. 用户审批流程</a></li>
+<li><a href="#7-%E6%9D%83%E9%99%90%E6%9D%A5%E6%BA%90%E4%B8%8E%E4%BC%98%E5%85%88%E7%BA%A7">7. 权限来源与优先级</a></li>
+<li><a href="#8-%E6%9D%83%E9%99%90%E4%B8%8E%E5%B7%A5%E5%85%B7%E6%89%A7%E8%A1%8C%E7%9A%84%E8%80%A6%E5%90%88">8. 权限与工具执行的耦合</a></li>
+<li><a href="#9-%E5%AE%89%E5%85%A8%E7%9B%B8%E5%85%B3%E7%9A%84%E6%9D%83%E9%99%90%E7%BA%A6%E6%9D%9F">9. 安全相关的权限约束</a></li>
+<li><a href="#10-%E6%9D%83%E9%99%90%E7%BC%93%E5%AD%98%E5%92%8C%E6%8C%81%E4%B9%85%E5%8C%96">10. 权限缓存和持久化</a></li>
+<li><a href="#11-%E5%85%B3%E9%94%AE%E8%AE%BE%E8%AE%A1%E6%A8%A1%E5%BC%8F%E6%80%BB%E7%BB%93">11. 关键设计模式总结</a></li>
+</ul>
+<hr>
+<h2>1. 架构总览</h2>
+<pre><code>+------------------------------------------------------------------+
+|                      Tool Execution Layer                         |
+|                 services/tools/toolExecution.ts                   |
++------------------+-----------------------------------------------+
+                   |
+                   v
++------------------+-----------------------------------------------+
+|                  hasPermissionsToUseTool()                        |
+|              utils/permissions/permissions.ts                     |
+|                                                                   |
+|  +-------------------+   +------------------+   +---------------+ |
+|  | Rule Evaluation   |   | Mode Evaluation  |   | Classifier    | |
+|  | (allow/deny/ask)  |   | (auto/plan/etc)  |   | (yolo/bash)   | |
+|  +--------+----------+   +--------+---------+   +-------+-------+ |
+|           |                       |                      |         |
++-----------|------------------------------------------------------ +
+            |                       |                      |
+            v                       v                      v
++------------------------------------------------------------------+
+|                   Permission Context                              |
+|              ToolPermissionContext (types/permissions.ts)          |
+|                                                                   |
+|  mode | alwaysAllowRules | alwaysDenyRules | alwaysAskRules       |
+|  additionalWorkingDirectories | isBypassPermissionsModeAvailable  |
++------------------+-----------------------------------------------+
+                   |
+                   v
++------------------------------------------------------------------+
+|              Permission Rules Loading                             |
+|         utils/permissions/permissionsLoader.ts                    |
+|                                                                   |
+|  +----------------+  +-----------------+  +-------------------+   |
+|  | userSettings   |  | projectSettings |  | policySettings    |   |
+|  | (~/.claude/    |  | (.claude/       |  | (managed-         |   |
+|  |  settings.json)|  |  settings.json) |  |  settings.json)   |   |
+|  +----------------+  +-----------------+  +-------------------+   |
+|  +----------------+  +-----------------+                          |
+|  | localSettings  |  | flagSettings    |                          |
+|  | (.claude/      |  | (--settings)    |                          |
+|  |  local.json)   |  |                 |                          |
+|  +----------------+  +-----------------+                          |
++------------------------------------------------------------------+
+</code></pre>
+<p><strong>核心源文件</strong>:</p>
+<ul>
+<li><code>src/types/permissions.ts</code> -- 纯类型定义, 无运行时依赖, 打破循环导入</li>
+<li><code>src/utils/permissions/</code> 目录 -- 全部运行时逻辑</li>
+<li><code>src/services/tools/toolExecution.ts</code> -- 工具执行层与权限的耦合点</li>
+</ul>
+<p>权限系统是一个多层架构, 核心职责是在 AI 模型请求调用工具时, 根据预定义规则和用户实时决策来决定是否允许执行。</p>
+<hr>
+<h2>2. 权限模式 (Permission Mode)</h2>
+<p><strong>源文件</strong>: <code>src/types/permissions.ts</code> (16-38行), <code>src/utils/permissions/PermissionMode.ts</code> (1-142行)</p>
+<h3>2.1 模式定义</h3>
+<pre><code class="language-typescript">// src/types/permissions.ts:16-23
+export const EXTERNAL_PERMISSION_MODES = [
+  &#39;acceptEdits&#39;,
+  &#39;bypassPermissions&#39;,
+  &#39;default&#39;,
+  &#39;dontAsk&#39;,
+  &#39;plan&#39;,
+] as const
+
+export type ExternalPermissionMode = (typeof EXTERNAL_PERMISSION_MODES)[number]
+
+// 内部模式 (包含 auto 和 bubble)
+// src/types/permissions.ts:28-29
+export type InternalPermissionMode = ExternalPermissionMode | &#39;auto&#39; | &#39;bubble&#39;
+export type PermissionMode = InternalPermissionMode
+
+// 运行时验证集: 用户可设置的模式
+// src/types/permissions.ts:33-36
+export const INTERNAL_PERMISSION_MODES = [
+  ...EXTERNAL_PERMISSION_MODES,
+  ...(feature(&#39;TRANSCRIPT_CLASSIFIER&#39;) ? ([&#39;auto&#39;] as const) : ([] as const)),
+] as const satisfies readonly PermissionMode[]
+</code></pre>
+<h3>2.2 各模式行为差异</h3>
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>shortTitle</th>
+<th>symbol</th>
+<th>color</th>
+<th>行为描述</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>default</code></td>
+<td>Default</td>
+<td>(空)</td>
+<td><code>text</code></td>
+<td>标准模式, 按规则决策, 需要时提示用户</td>
+</tr>
+<tr>
+<td><code>plan</code></td>
+<td>Plan</td>
+<td><code>⏸</code></td>
+<td><code>planMode</code></td>
+<td>计划模式, 仅观察不执行工具</td>
+</tr>
+<tr>
+<td><code>acceptEdits</code></td>
+<td>Accept</td>
+<td><code>⏵⏵</code></td>
+<td><code>autoAccept</code></td>
+<td>自动接受编辑操作 (Read/Write/Edit)</td>
+</tr>
+<tr>
+<td><code>bypassPermissions</code></td>
+<td>Bypass</td>
+<td><code>⏵⏵</code></td>
+<td><code>error</code></td>
+<td>绕过所有权限检查 (危险, 可被企业禁用)</td>
+</tr>
+<tr>
+<td><code>dontAsk</code></td>
+<td>DontAsk</td>
+<td><code>⏵⏵</code></td>
+<td><code>error</code></td>
+<td>不提示用户, 所有 ask 变为 deny</td>
+</tr>
+<tr>
+<td><code>auto</code></td>
+<td>Auto</td>
+<td><code>⏵⏵</code></td>
+<td><code>warning</code></td>
+<td>(仅 Anthropic 内部) 使用 AI 分类器自动决策</td>
+</tr>
+<tr>
+<td><code>bubble</code></td>
+<td>-</td>
+<td>-</td>
+<td>-</td>
+<td>内部模式, 向上冒泡权限请求到父 agent</td>
+</tr>
+</tbody></table>
+<p><strong>源文件</strong>: <code>src/utils/permissions/PermissionMode.ts</code> (42-91行)</p>
+<pre><code class="language-typescript">// PermissionMode.ts:42-91 模式配置映射
+const PERMISSION_MODE_CONFIG: Partial&lt;Record&lt;PermissionMode, PermissionModeConfig&gt;&gt; = {
+  default: {
+    title: &#39;Default&#39;, shortTitle: &#39;Default&#39;,
+    symbol: &#39;&#39;, color: &#39;text&#39;, external: &#39;default&#39;,
+  },
+  plan: {
+    title: &#39;Plan Mode&#39;, shortTitle: &#39;Plan&#39;,
+    symbol: PAUSE_ICON, color: &#39;planMode&#39;, external: &#39;plan&#39;,
+  },
+  acceptEdits: {
+    title: &#39;Accept edits&#39;, shortTitle: &#39;Accept&#39;,
+    symbol: &#39;⏵⏵&#39;, color: &#39;autoAccept&#39;, external: &#39;acceptEdits&#39;,
+  },
+  bypassPermissions: {
+    title: &#39;Bypass Permissions&#39;, shortTitle: &#39;Bypass&#39;,
+    symbol: &#39;⏵⏵&#39;, color: &#39;error&#39;, external: &#39;bypassPermissions&#39;,
+  },
+  dontAsk: {
+    title: &quot;Don&#39;t Ask&quot;, shortTitle: &#39;DontAsk&#39;,
+    symbol: &#39;⏵⏵&#39;, color: &#39;error&#39;, external: &#39;dontAsk&#39;,
+  },
+  // auto 模式仅在 TRANSCRIPT_CLASSIFIER feature flag 开启时可用
+  auto: {
+    title: &#39;Auto mode&#39;, shortTitle: &#39;Auto&#39;,
+    symbol: &#39;⏵⏵&#39;, color: &#39;warning&#39;, external: &#39;default&#39;,
+  },
+}
+</code></pre>
+<h3>2.3 模式判断辅助函数</h3>
+<pre><code class="language-typescript">// PermissionMode.ts:97-105
+export function isExternalPermissionMode(mode: PermissionMode): mode is ExternalPermissionMode {
+  if (process.env.USER_TYPE !== &#39;ant&#39;) return true  // 外部用户不会有 auto
+  return mode !== &#39;auto&#39; &amp;&amp; mode !== &#39;bubble&#39;
+}
+
+// PermissionMode.ts:117-121
+export function permissionModeFromString(str: string): PermissionMode {
+  return (PERMISSION_MODES as readonly string[]).includes(str)
+    ? (str as PermissionMode)
+    : &#39;default&#39;
+}
+
+// PermissionMode.ts:127-129
+export function isDefaultMode(mode: PermissionMode | undefined): boolean {
+  return mode === &#39;default&#39; || mode === undefined
+}
+</code></pre>
+<hr>
+<h2>3. 权限规则的定义和数据结构</h2>
+<p><strong>源文件</strong>: <code>src/types/permissions.ts</code> (44-441行)</p>
+<h3>3.1 核心类型层次</h3>
+<pre><code class="language-typescript">// types/permissions.ts:44
+export type PermissionBehavior = &#39;allow&#39; | &#39;deny&#39; | &#39;ask&#39;
+
+// types/permissions.ts:54-63 -- 规则来源 (8 种)
+export type PermissionRuleSource =
+  | &#39;userSettings&#39;      // ~/.claude/settings.json
+  | &#39;projectSettings&#39;   // .claude/settings.json (项目级, 共享)
+  | &#39;localSettings&#39;     // .claude/local.json (项目级, gitignore)
+  | &#39;flagSettings&#39;      // --settings CLI flag
+  | &#39;policySettings&#39;    // managed-settings.json (企业管理)
+  | &#39;cliArg&#39;            // CLI 参数直接传入
+  | &#39;command&#39;           // 命令配置
+  | &#39;session&#39;           // 当前会话 (内存中, 不持久化)
+
+// types/permissions.ts:67-70 -- 规则值
+export type PermissionRuleValue = {
+  toolName: string        // 工具名, 如 &#39;Bash&#39;, &#39;Read&#39;, &#39;mcp__server__tool&#39;
+  ruleContent?: string    // 可选的规则内容, 如 &#39;npm install&#39; 或 &#39;*.ts&#39;
+}
+
+// types/permissions.ts:75-79 -- 完整的规则结构
+export type PermissionRule = {
+  source: PermissionRuleSource
+  ruleBehavior: PermissionBehavior  // &#39;allow&#39; | &#39;deny&#39; | &#39;ask&#39;
+  ruleValue: PermissionRuleValue
+}
+</code></pre>
+<h3>3.2 权限上下文 (运行时状态)</h3>
+<pre><code class="language-typescript">// types/permissions.ts:419-441
+export type ToolPermissionRulesBySource = {
+  [T in PermissionRuleSource]?: string[]   // 按来源索引的规则字符串数组
+}
+
+export type ToolPermissionContext = {
+  readonly mode: PermissionMode
+  readonly additionalWorkingDirectories: ReadonlyMap&lt;string, AdditionalWorkingDirectory&gt;
+  readonly alwaysAllowRules: ToolPermissionRulesBySource   // allow 规则集
+  readonly alwaysDenyRules: ToolPermissionRulesBySource    // deny 规则集
+  readonly alwaysAskRules: ToolPermissionRulesBySource     // ask 规则集
+  readonly isBypassPermissionsModeAvailable: boolean
+  readonly strippedDangerousRules?: ToolPermissionRulesBySource  // 被剥离的危险规则
+  readonly shouldAvoidPermissionPrompts?: boolean   // SDK/管道模式下为 true
+  readonly awaitAutomatedChecksBeforeDialog?: boolean
+  readonly prePlanMode?: PermissionMode  // 进入 plan 前的模式, 用于恢复
+}
+</code></pre>
+<h3>3.3 权限决策类型</h3>
+<pre><code class="language-typescript">// types/permissions.ts:174-184 -- 允许决策
+export type PermissionAllowDecision&lt;Input&gt; = {
+  behavior: &#39;allow&#39;
+  updatedInput?: Input       // hook 可修改的输入
+  userModified?: boolean     // 用户是否修改了输入
+  decisionReason?: PermissionDecisionReason
+  toolUseID?: string
+  acceptFeedback?: string    // 用户批准时附加的反馈
+  contentBlocks?: ContentBlockParam[]
+}
+
+// types/permissions.ts:199-226 -- 询问决策
+export type PermissionAskDecision&lt;Input&gt; = {
+  behavior: &#39;ask&#39;
+  message: string
+  updatedInput?: Input
+  decisionReason?: PermissionDecisionReason
+  suggestions?: PermissionUpdate[]     // 建议用户添加的规则
+  blockedPath?: string
+  metadata?: PermissionMetadata
+  isBashSecurityCheckForMisparsing?: boolean  // Bash 安全检查标记
+  pendingClassifierCheck?: PendingClassifierCheck  // 异步分类器检查
+  contentBlocks?: ContentBlockParam[]   // 图片反馈
+}
+
+// types/permissions.ts:231-236 -- 拒绝决策
+export type PermissionDenyDecision = {
+  behavior: &#39;deny&#39;
+  message: string
+  decisionReason: PermissionDecisionReason
+  toolUseID?: string
+}
+
+// types/permissions.ts:251-266 -- PermissionResult 还包含 passthrough
+export type PermissionResult&lt;Input&gt; =
+  | PermissionDecision&lt;Input&gt;
+  | { behavior: &#39;passthrough&#39;; message: string;
+      decisionReason?: PermissionDecisionReason;
+      suggestions?: PermissionUpdate[];
+      pendingClassifierCheck?: PendingClassifierCheck }
+</code></pre>
+<h3>3.4 决策原因 (PermissionDecisionReason)</h3>
+<pre><code class="language-typescript">// types/permissions.ts:271-324 -- 11 种决策原因
+export type PermissionDecisionReason =
+  | { type: &#39;rule&#39;; rule: PermissionRule }               // 规则匹配
+  | { type: &#39;mode&#39;; mode: PermissionMode }               // 模式决策
+  | { type: &#39;subcommandResults&#39;; reasons: Map&lt;string, PermissionResult&gt; }  // 子命令合并
+  | { type: &#39;permissionPromptTool&#39;; permissionPromptToolName: string;
+      toolResult: unknown }                               // SDK 权限提示工具
+  | { type: &#39;hook&#39;; hookName: string; hookSource?: string; reason?: string }  // Hook 决策
+  | { type: &#39;asyncAgent&#39;; reason: string }                // 异步 Agent 上下文
+  | { type: &#39;sandboxOverride&#39;; reason: &#39;excludedCommand&#39; | &#39;dangerouslyDisableSandbox&#39; }
+  | { type: &#39;classifier&#39;; classifier: string; reason: string }  // AI 分类器
+  | { type: &#39;workingDir&#39;; reason: string }                // 工作目录限制
+  | { type: &#39;safetyCheck&#39;; reason: string; classifierApprovable: boolean }  // 安全检查
+  | { type: &#39;other&#39;; reason: string }                     // 其他
+</code></pre>
+<hr>
+<h2>4. 权限规则解析器</h2>
+<p><strong>源文件</strong>: <code>src/utils/permissions/permissionRuleParser.ts</code> (1-199行)</p>
+<h3>4.1 规则字符串格式</h3>
+<p>权限规则以字符串形式存储在 settings.json 中, 格式为 <code>ToolName</code> 或 <code>ToolName(content)</code>:</p>
+<pre><code>Bash                          =&gt; { toolName: &#39;Bash&#39; }
+Bash(npm install)             =&gt; { toolName: &#39;Bash&#39;, ruleContent: &#39;npm install&#39; }
+Bash(npm:*)                   =&gt; { toolName: &#39;Bash&#39;, ruleContent: &#39;npm:*&#39; }
+Bash(npm *)                   =&gt; { toolName: &#39;Bash&#39;, ruleContent: &#39;npm *&#39; }
+Read(*.ts)                    =&gt; { toolName: &#39;Read&#39;, ruleContent: &#39;*.ts&#39; }
+Read(src/**)                  =&gt; { toolName: &#39;Read&#39;, ruleContent: &#39;src/**&#39; }
+mcp__server1                  =&gt; { toolName: &#39;mcp__server1&#39; }
+mcp__server1__*               =&gt; { toolName: &#39;mcp__server1__*&#39; }
+mcp__server1__tool1           =&gt; { toolName: &#39;mcp__server1__tool1&#39; }
+Bash(python -c &quot;print\(1\)&quot;)  =&gt; { toolName: &#39;Bash&#39;, ruleContent: &#39;python -c &quot;print(1)&quot;&#39; }
+Bash(*)                       =&gt; { toolName: &#39;Bash&#39; }  (通配符等价于工具级)
+Bash()                        =&gt; { toolName: &#39;Bash&#39; }  (空括号等价于工具级)
+WebFetch(domain:example.com)  =&gt; { toolName: &#39;WebFetch&#39;, ruleContent: &#39;domain:example.com&#39; }
+</code></pre>
+<h3>4.2 解析算法</h3>
+<pre><code>permissionRuleValueFromString(ruleString):
+  步骤 1: 查找第一个未转义的 &#39;(&#39;
+          如果找不到, 返回 { toolName: normalizeLegacy(ruleString) }
+
+  步骤 2: 查找最后一个未转义的 &#39;)&#39;
+          如果找不到或 closeIndex &lt;= openIndex, 视为纯工具名
+
+  步骤 3: 确认 &#39;)&#39; 在字符串最末尾
+          否则视为纯工具名
+
+  步骤 4: 提取 toolName = ruleString[0..openIndex)
+          提取 rawContent = ruleString[openIndex+1..closeIndex)
+          toolName 为空 (如 &quot;(foo)&quot;) 则视为畸形, 返回纯工具名
+
+  步骤 5: rawContent === &#39;&#39; 或 rawContent === &#39;*&#39; 时
+          视为工具级规则, 返回 { toolName }
+
+  步骤 6: ruleContent = unescapeRuleContent(rawContent)
+          返回 { toolName, ruleContent }
+</code></pre>
+<h3>4.3 转义机制</h3>
+<pre><code class="language-typescript">// permissionRuleParser.ts:55-79
+// 转义顺序: \ -&gt; \\, ( -&gt; \(, ) -&gt; \)
+export function escapeRuleContent(content: string): string {
+  return content
+    .replace(/\\/g, &#39;\\\\&#39;)   // 1. 先转义反斜杠
+    .replace(/\(/g, &#39;\\(&#39;)    // 2. 再转义左括号
+    .replace(/\)/g, &#39;\\)&#39;)    // 3. 最后转义右括号
+}
+
+// 反转义顺序 (逆序): \( -&gt; (, \) -&gt; ), \\ -&gt; \
+export function unescapeRuleContent(content: string): string {
+  return content
+    .replace(/\\\(/g, &#39;(&#39;)    // 1. 先反转义左括号
+    .replace(/\\\)/g, &#39;)&#39;)    // 2. 再反转义右括号
+    .replace(/\\\\/g, &#39;\\&#39;)   // 3. 最后反转义反斜杠
+}
+</code></pre>
+<h3>4.4 未转义字符查找</h3>
+<pre><code class="language-typescript">// permissionRuleParser.ts:158-175
+function findFirstUnescapedChar(str: string, char: string): number {
+  for (let i = 0; i &lt; str.length; i++) {
+    if (str[i] === char) {
+      // 向前计数连续反斜杠
+      let backslashCount = 0
+      let j = i - 1
+      while (j &gt;= 0 &amp;&amp; str[j] === &#39;\\&#39;) { backslashCount++; j-- }
+      // 偶数个反斜杠 = 字符未转义
+      if (backslashCount % 2 === 0) return i
+    }
+  }
+  return -1
+}
+</code></pre>
+<h3>4.5 遗留工具名映射</h3>
+<pre><code class="language-typescript">// permissionRuleParser.ts:21-29
+const LEGACY_TOOL_NAME_ALIASES: Record&lt;string, string&gt; = {
+  Task: AGENT_TOOL_NAME,            // Task -&gt; Agent
+  KillShell: TASK_STOP_TOOL_NAME,   // KillShell -&gt; TaskStop
+  AgentOutputTool: TASK_OUTPUT_TOOL_NAME,
+  BashOutputTool: TASK_OUTPUT_TOOL_NAME,
+  // Brief -&gt; BRIEF_TOOL_NAME (仅在 KAIROS feature flag 开启时)
+}
+
+export function normalizeLegacyToolName(name: string): string {
+  return LEGACY_TOOL_NAME_ALIASES[name] ?? name
+}
+</code></pre>
+<hr>
+<h2>5. 权限规则评估逻辑</h2>
+<p><strong>源文件</strong>: <code>src/utils/permissions/permissions.ts</code> (1-600+ 行)</p>
+<h3>5.1 规则收集</h3>
+<pre><code class="language-typescript">// permissions.ts:109-114 - 规则来源的遍历顺序
+const PERMISSION_RULE_SOURCES = [
+  ...SETTING_SOURCES,  // userSettings, projectSettings, localSettings, flagSettings, policySettings
+  &#39;cliArg&#39;,
+  &#39;command&#39;,
+  &#39;session&#39;,
+] as const satisfies readonly PermissionRuleSource[]
+
+// permissions.ts:122-131 - 收集 allow 规则 (deny/ask 同理)
+export function getAllowRules(context: ToolPermissionContext): PermissionRule[] {
+  return PERMISSION_RULE_SOURCES.flatMap(source =&gt;
+    (context.alwaysAllowRules[source] || []).map(ruleString =&gt; ({
+      source,
+      ruleBehavior: &#39;allow&#39;,
+      ruleValue: permissionRuleValueFromString(ruleString),
+    })),
+  )
+}
+</code></pre>
+<h3>5.2 工具级匹配算法</h3>
+<pre><code class="language-typescript">// permissions.ts:238-269
+function toolMatchesRule(
+  tool: Pick&lt;Tool, &#39;name&#39; | &#39;mcpInfo&#39;&gt;,
+  rule: PermissionRule,
+): boolean {
+  // 条件 1: 规则必须没有 ruleContent 才能匹配整个工具
+  if (rule.ruleValue.ruleContent !== undefined) return false
+
+  // 条件 2: MCP 工具使用完整限定名 mcp__server__tool 匹配
+  const nameForRuleMatch = getToolNameForPermissionCheck(tool)
+
+  // 条件 3: 直接名称匹配
+  if (rule.ruleValue.toolName === nameForRuleMatch) return true
+
+  // 条件 4: MCP 服务器级权限匹配
+  // 规则 &quot;mcp__server1&quot; 匹配工具 &quot;mcp__server1__tool1&quot;
+  // 规则 &quot;mcp__server1__*&quot; 匹配 server1 所有工具
+  const ruleInfo = mcpInfoFromString(rule.ruleValue.toolName)
+  const toolInfo = mcpInfoFromString(nameForRuleMatch)
+  return (
+    ruleInfo !== null &amp;&amp; toolInfo !== null &amp;&amp;
+    (ruleInfo.toolName === undefined || ruleInfo.toolName === &#39;*&#39;) &amp;&amp;
+    ruleInfo.serverName === toolInfo.serverName
+  )
+}
+</code></pre>
+<h3>5.3 内容级匹配索引</h3>
+<pre><code class="language-typescript">// permissions.ts:349-390
+// 构建一个 Map&lt;ruleContent, PermissionRule&gt; 供工具自身的 checkPermissions 使用
+export function getRuleByContentsForToolName(
+  context: ToolPermissionContext,
+  toolName: string,
+  behavior: PermissionBehavior,
+): Map&lt;string, PermissionRule&gt; {
+  const ruleByContents = new Map&lt;string, PermissionRule&gt;()
+  const rules = behavior === &#39;allow&#39; ? getAllowRules(context)
+              : behavior === &#39;deny&#39;  ? getDenyRules(context)
+              :                        getAskRules(context)
+  for (const rule of rules) {
+    if (
+      rule.ruleValue.toolName === toolName &amp;&amp;
+      rule.ruleValue.ruleContent !== undefined &amp;&amp;
+      rule.ruleBehavior === behavior
+    ) {
+      ruleByContents.set(rule.ruleValue.ruleContent, rule)
+    }
+  }
+  return ruleByContents
+}
+</code></pre>
+<h3>5.4 Agent 过滤 (批量优化)</h3>
+<pre><code class="language-typescript">// permissions.ts:325-343
+export function filterDeniedAgents&lt;T extends { agentType: string }&gt;(
+  agents: T[], context: ToolPermissionContext, agentToolName: string
+): T[] {
+  // 优化: 先解析所有 deny 规则, 收集 Agent(x) 内容到 Set
+  // 避免 O(agents * rules) 的重复解析
+  const deniedAgentTypes = new Set&lt;string&gt;()
+  for (const rule of getDenyRules(context)) {
+    if (rule.ruleValue.toolName === agentToolName &amp;&amp;
+        rule.ruleValue.ruleContent !== undefined) {
+      deniedAgentTypes.add(rule.ruleValue.ruleContent)
+    }
+  }
+  return agents.filter(agent =&gt; !deniedAgentTypes.has(agent.agentType))
+}
+</code></pre>
+<h3>5.5 决策主流程 (伪代码)</h3>
+<pre><code>hasPermissionsToUseToolInner(tool, input, context):
+  permCtx = context.getAppState().toolPermissionContext
+
+  // 阶段 1: 检查 deny 规则 (最高优先级)
+  denyRule = getDenyRuleForTool(permCtx, tool)
+  if denyRule:
+    return { behavior: &#39;deny&#39;, reason: { type: &#39;rule&#39;, rule: denyRule } }
+
+  // 阶段 2a: 检查 ask 规则
+  askRule = getAskRuleForTool(permCtx, tool)
+
+  // 阶段 2b: 检查 allow 规则 (工具级)
+  allowRule = toolAlwaysAllowedRule(permCtx, tool)
+  if allowRule:
+    return { behavior: &#39;allow&#39;, reason: { type: &#39;rule&#39;, rule: allowRule } }
+
+  // 阶段 3: 调用工具自身的 checkPermissions
+  // 每个工具实现自己的细粒度检查 (如 Bash 的子命令分析, File 的路径匹配)
+  toolResult = tool.checkPermissions(input, permCtx)
+  if toolResult.behavior !== &#39;passthrough&#39;:
+    // 如果有 ask 规则且工具返回 allow, ask 规则优先
+    if askRule &amp;&amp; toolResult.behavior === &#39;allow&#39;:
+      return { behavior: &#39;ask&#39;, reason: { type: &#39;rule&#39;, rule: askRule } }
+    return toolResult
+
+  // 阶段 4: 基于模式的默认行为
+  if mode === &#39;bypassPermissions&#39;:
+    return { behavior: &#39;allow&#39; }
+  if mode === &#39;acceptEdits&#39; &amp;&amp; tool 是编辑类工具:
+    return { behavior: &#39;allow&#39; }
+  return { behavior: &#39;ask&#39;, message: &#39;需要用户确认&#39; }
+
+hasPermissionsToUseTool(tool, input, context) 的外层:
+  result = hasPermissionsToUseToolInner(...)
+
+  // 后处理: allow 时重置连续拒绝计数
+  if result.behavior === &#39;allow&#39;:
+    if auto 模式 &amp;&amp; consecutiveDenials &gt; 0:
+      recordSuccess(denialState)
+    return result
+
+  // 后处理: ask 时的模式转换
+  if result.behavior === &#39;ask&#39;:
+    if mode === &#39;dontAsk&#39;:
+      return { behavior: &#39;deny&#39;, reason: { type: &#39;mode&#39;, mode: &#39;dontAsk&#39; } }
+    if mode === &#39;auto&#39;:
+      // 运行 YOLO 分类器
+      classifierResult = classifyYoloAction(...)
+      if !classifierResult.shouldBlock:
+        return { behavior: &#39;allow&#39;, reason: { type: &#39;classifier&#39;, ... } }
+      else:
+        recordDenial(denialState)
+        if shouldFallbackToPrompting(denialState):
+          return result  // 回退到交互式提示
+        return { behavior: &#39;deny&#39;, reason: { type: &#39;classifier&#39;, ... } }
+    if shouldAvoidPermissionPrompts:
+      // Hook 系统可能接管
+      hookDecision = runPermissionRequestHooksForHeadlessAgent(...)
+      return hookDecision ?? { behavior: &#39;deny&#39;, reason: &#39;asyncAgent&#39; }
+    return result
+</code></pre>
+<hr>
+<h2>6. 用户审批流程</h2>
+<h3>6.1 审批选项</h3>
+<p>当决策为 <code>ask</code> 时, 用户面临以下选择:</p>
+<table>
+<thead>
+<tr>
+<th>选项</th>
+<th>效果</th>
+<th>destination</th>
+<th>持久化</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Allow (once)</td>
+<td>本次允许, 仅当前调用</td>
+<td>-</td>
+<td>否</td>
+</tr>
+<tr>
+<td>Always allow (session)</td>
+<td>当前会话一直允许</td>
+<td><code>session</code></td>
+<td>否 (内存)</td>
+</tr>
+<tr>
+<td>Always allow (user)</td>
+<td>永久允许, 全局</td>
+<td><code>userSettings</code></td>
+<td>是</td>
+</tr>
+<tr>
+<td>Always allow (project)</td>
+<td>项目级允许</td>
+<td><code>projectSettings</code></td>
+<td>是</td>
+</tr>
+<tr>
+<td>Always allow (local)</td>
+<td>项目级, gitignored</td>
+<td><code>localSettings</code></td>
+<td>是</td>
+</tr>
+<tr>
+<td>Deny</td>
+<td>拒绝本次调用</td>
+<td>-</td>
+<td>否</td>
+</tr>
+</tbody></table>
+<h3>6.2 决策消息生成</h3>
+<pre><code class="language-typescript">// permissions.ts:137-211
+export function createPermissionRequestMessage(
+  toolName: string, decisionReason?: PermissionDecisionReason
+): string {
+  if (decisionReason) {
+    switch (decisionReason.type) {
+      case &#39;classifier&#39;:
+        return `Classifier &#39;${decisionReason.classifier}&#39; requires approval...`
+      case &#39;hook&#39;:
+        return `Hook &#39;${decisionReason.hookName}&#39; blocked this action: ${decisionReason.reason}`
+      case &#39;rule&#39;:
+        return `Permission rule &#39;${ruleString}&#39; from ${sourceString} requires approval...`
+      case &#39;subcommandResults&#39;:
+        // 列出需要审批的子命令
+        return `This ${toolName} command contains multiple operations...`
+      case &#39;permissionPromptTool&#39;:
+        return `Tool &#39;${decisionReason.permissionPromptToolName}&#39; requires approval...`
+      case &#39;sandboxOverride&#39;:
+        return &#39;Run outside of the sandbox&#39;
+      case &#39;mode&#39;:
+        return `Current permission mode (${modeTitle}) requires approval...`
+      // ...
+    }
+  }
+  return `Claude requested permissions to use ${toolName}...`
+}
+</code></pre>
+<h3>6.3 企业策略控制</h3>
+<pre><code class="language-typescript">// permissionsLoader.ts:31-44
+export function shouldAllowManagedPermissionRulesOnly(): boolean {
+  return (
+    getSettingsForSource(&#39;policySettings&#39;)?.allowManagedPermissionRulesOnly === true
+  )
+}
+
+// 当 allowManagedPermissionRulesOnly 启用时:
+// 1. &quot;Always allow&quot; 选项被隐藏
+// 2. 用户无法自行添加新的持久化规则
+// 3. 仅 policySettings 中的规则生效
+export function shouldShowAlwaysAllowOptions(): boolean {
+  return !shouldAllowManagedPermissionRulesOnly()
+}
+</code></pre>
+<h3>6.4 无头 (Headless) 环境的 Hook 审批</h3>
+<pre><code class="language-typescript">// permissions.ts:400-471
+async function runPermissionRequestHooksForHeadlessAgent(
+  tool, input, toolUseID, context, permissionMode, suggestions
+): Promise&lt;PermissionDecision | null&gt; {
+  // 在 SDK 模式或 claude -p 管道模式下, 无法显示交互式提示
+  // 通过 PermissionRequest hooks 让外部系统做决策
+  for await (const hookResult of executePermissionRequestHooks(...)) {
+    if (!hookResult.permissionRequestResult) continue
+    const decision = hookResult.permissionRequestResult
+    if (decision.behavior === &#39;allow&#39;) {
+      // Hook 可提供 updatedPermissions, 同时持久化到设置文件
+      if (decision.updatedPermissions?.length) {
+        persistPermissionUpdates(decision.updatedPermissions)
+        context.setAppState(prev =&gt; ({
+          ...prev,
+          toolPermissionContext: applyPermissionUpdates(
+            prev.toolPermissionContext, decision.updatedPermissions!
+          ),
+        }))
+      }
+      return { behavior: &#39;allow&#39;, decisionReason: { type: &#39;hook&#39;, hookName: &#39;PermissionRequest&#39; } }
+    }
+    if (decision.behavior === &#39;deny&#39;) {
+      if (decision.interrupt) context.abortController.abort()
+      return { behavior: &#39;deny&#39;, message: decision.message || &#39;Permission denied by hook&#39;,
+               decisionReason: { type: &#39;hook&#39;, ... } }
+    }
+  }
+  return null  // 没有 hook 做出决策 -&gt; 回退到自动拒绝
+}
+</code></pre>
+<hr>
+<h2>7. 权限来源与优先级</h2>
+<p><strong>源文件</strong>: <code>src/utils/settings/constants.ts</code> (7-93行)</p>
+<h3>7.1 设置来源定义</h3>
+<pre><code class="language-typescript">// settings/constants.ts:7-22
+export const SETTING_SOURCES = [
+  &#39;userSettings&#39;,      // ~/.claude/settings.json (全局)
+  &#39;projectSettings&#39;,   // .claude/settings.json (项目, 共享于 VCS)
+  &#39;localSettings&#39;,     // .claude/local.json (项目, gitignored)
+  &#39;flagSettings&#39;,      // --settings CLI flag 指定
+  &#39;policySettings&#39;,    // managed-settings.json (企业策略)
+] as const
+</code></pre>
+<h3>7.2 来源显示名</h3>
+<table>
+<thead>
+<tr>
+<th>source</th>
+<th>简称</th>
+<th>完整显示名</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>userSettings</code></td>
+<td>User</td>
+<td>user settings</td>
+</tr>
+<tr>
+<td><code>projectSettings</code></td>
+<td>Project</td>
+<td>shared project settings</td>
+</tr>
+<tr>
+<td><code>localSettings</code></td>
+<td>Local</td>
+<td>project local settings</td>
+</tr>
+<tr>
+<td><code>flagSettings</code></td>
+<td>Flag</td>
+<td>command line arguments</td>
+</tr>
+<tr>
+<td><code>policySettings</code></td>
+<td>Managed</td>
+<td>enterprise managed settings</td>
+</tr>
+<tr>
+<td><code>cliArg</code></td>
+<td>-</td>
+<td>CLI argument</td>
+</tr>
+<tr>
+<td><code>command</code></td>
+<td>-</td>
+<td>command configuration</td>
+</tr>
+<tr>
+<td><code>session</code></td>
+<td>-</td>
+<td>current session</td>
+</tr>
+</tbody></table>
+<h3>7.3 权限优先级规则</h3>
+<pre><code>1. deny 规则始终最先评估, 且绝对优先
+   - 任何来源的 deny 都不可覆盖
+
+2. 当 policySettings.allowManagedPermissionRulesOnly === true 时:
+   - 仅加载 policySettings 中的规则
+   - 所有用户/项目设置的规则被忽略
+   - &quot;Always allow&quot; UI 选项隐藏
+
+3. 规则按来源遍历顺序:
+   userSettings -&gt; projectSettings -&gt; localSettings -&gt; flagSettings
+     -&gt; policySettings -&gt; cliArg -&gt; command -&gt; session
+
+4. 同一 behavior 内, 首个匹配的规则决定结果
+
+5. session 规则:
+   - 仅存在于内存中
+   - 应用重启后丢失
+   - 优先级在所有来源中最低 (最后遍历)
+</code></pre>
+<h3>7.4 settings.json 中的权限配置 Schema</h3>
+<pre><code class="language-typescript">// settings/types.ts:42-85
+export const PermissionsSchema = lazySchema(() =&gt;
+  z.object({
+    allow: z.array(PermissionRuleSchema()).optional()
+      .describe(&#39;List of permission rules for allowed operations&#39;),
+    deny: z.array(PermissionRuleSchema()).optional()
+      .describe(&#39;List of permission rules for denied operations&#39;),
+    ask: z.array(PermissionRuleSchema()).optional()
+      .describe(&#39;List of permission rules that should always prompt&#39;),
+    defaultMode: z.enum(PERMISSION_MODES).optional()
+      .describe(&#39;Default permission mode when Claude Code needs access&#39;),
+    disableBypassPermissionsMode: z.enum([&#39;disable&#39;]).optional()
+      .describe(&#39;Disable the ability to bypass permission prompts&#39;),
+    additionalDirectories: z.array(z.string()).optional()
+      .describe(&#39;Additional directories to include in the permission scope&#39;),
+  }).passthrough(),
+)
+</code></pre>
+<hr>
+<h2>8. 权限与工具执行的耦合</h2>
+<p><strong>源文件</strong>: <code>src/services/tools/toolExecution.ts</code> (1-600+ 行)</p>
+<h3>8.1 工具执行入口</h3>
+<pre><code class="language-typescript">// toolExecution.ts:337-342 (签名)
+export async function* runToolUse(
+  toolUse: ToolUseBlock,
+  assistantMessage: AssistantMessage,
+  canUseTool: CanUseToolFn,  // 即 hasPermissionsToUseTool
+  toolUseContext: ToolUseContext,
+): AsyncGenerator&lt;MessageUpdateLazy, void&gt;
+</code></pre>
+<p>核心执行流程:</p>
+<ol>
+<li>查找工具定义 (含遗留别名 fallback)</li>
+<li>运行 PreToolUse hooks</li>
+<li>权限检查 (<code>canUseTool</code>)</li>
+<li>OTel span 记录权限决策</li>
+<li>根据决策执行或拒绝</li>
+<li>运行 PostToolUse hooks</li>
+</ol>
+<h3>8.2 OTel 遥测集成</h3>
+<pre><code class="language-typescript">// toolExecution.ts:181-250
+// 将规则来源映射到标准化的 OTel source 词汇:
+function ruleSourceToOTelSource(ruleSource: string, behavior: &#39;allow&#39; | &#39;deny&#39;): string {
+  switch (ruleSource) {
+    case &#39;session&#39;:
+      return behavior === &#39;allow&#39; ? &#39;user_temporary&#39; : &#39;user_reject&#39;
+    case &#39;localSettings&#39;:
+    case &#39;userSettings&#39;:
+      return behavior === &#39;allow&#39; ? &#39;user_permanent&#39; : &#39;user_reject&#39;
+    default:
+      return &#39;config&#39;
+  }
+}
+
+function decisionReasonToOTelSource(reason, behavior): string {
+  switch (reason.type) {
+    case &#39;permissionPromptTool&#39;:
+      // SDK host 可设置 decisionClassification
+      return classified ?? (behavior === &#39;allow&#39; ? &#39;user_temporary&#39; : &#39;user_reject&#39;)
+    case &#39;rule&#39;:
+      return ruleSourceToOTelSource(reason.rule.source, behavior)
+    case &#39;hook&#39;:
+      return &#39;hook&#39;
+    default:
+      return &#39;config&#39;
+  }
+}
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>OTel source</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>user_temporary</code></td>
+<td>会话级临时授权</td>
+</tr>
+<tr>
+<td><code>user_permanent</code></td>
+<td>持久化到磁盘的永久授权</td>
+</tr>
+<tr>
+<td><code>user_reject</code></td>
+<td>用户主动拒绝</td>
+</tr>
+<tr>
+<td><code>config</code></td>
+<td>配置文件 (CLI, policy, flag, mode, classifier 等)</td>
+</tr>
+<tr>
+<td><code>hook</code></td>
+<td>Hook 返回的决策</td>
+</tr>
+</tbody></table>
+<h3>8.3 MCP 工具的特殊处理</h3>
+<pre><code class="language-typescript">// toolExecution.ts:283-335
+function findMcpServerConnection(toolName, mcpClients): MCPServerConnection | undefined {
+  if (!toolName.startsWith(&#39;mcp__&#39;)) return undefined
+  const mcpInfo = mcpInfoFromString(toolName)
+  if (!mcpInfo) return undefined
+  // 名称归一化: &quot;claude.ai Slack&quot; -&gt; &quot;claude_ai_Slack&quot;
+  return mcpClients.find(
+    client =&gt; normalizeNameForMCP(client.name) === mcpInfo.serverName
+  )
+}
+
+function getMcpServerType(toolName, mcpClients): McpServerType {
+  const conn = findMcpServerConnection(toolName, mcpClients)
+  if (conn?.type === &#39;connected&#39;) return conn.config.type ?? &#39;stdio&#39;
+  return undefined
+}
+</code></pre>
+<p>McpServerType 常量: <code>&#39;stdio&#39; | &#39;sse&#39; | &#39;http&#39; | &#39;ws&#39; | &#39;sdk&#39; | &#39;sse-ide&#39; | &#39;ws-ide&#39; | &#39;claudeai-proxy&#39; | undefined</code></p>
+<hr>
+<h2>9. 安全相关的权限约束</h2>
+<h3>9.1 工具验证配置表</h3>
+<p><strong>源文件</strong>: <code>src/utils/settings/toolValidationConfig.ts</code> (1-104行)</p>
+<table>
+<thead>
+<tr>
+<th>配置类别</th>
+<th>工具列表</th>
+<th>支持的模式</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>filePatternTools</code></td>
+<td>Read, Write, Edit, Glob, NotebookRead, NotebookEdit</td>
+<td>glob 模式 (<code>*.ts</code>, <code>src/**</code>)</td>
+</tr>
+<tr>
+<td><code>bashPrefixTools</code></td>
+<td>Bash</td>
+<td>通配符 (<code>*</code> 任意位置) 和遗留 <code>command:*</code> 前缀</td>
+</tr>
+</tbody></table>
+<p>自定义验证规则:</p>
+<table>
+<thead>
+<tr>
+<th>工具</th>
+<th>规则</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>WebSearch</code></td>
+<td>不支持通配符 <code>*</code> 或 <code>?</code></td>
+</tr>
+<tr>
+<td><code>WebFetch</code></td>
+<td>必须使用 <code>domain:</code> 前缀 (如 <code>domain:example.com</code>)</td>
+</tr>
+</tbody></table>
+<h3>9.2 权限规则验证流程</h3>
+<p><strong>源文件</strong>: <code>src/utils/settings/permissionValidation.ts</code> (58-239行)</p>
+<pre><code>validatePermissionRule(rule):
+  1. 空规则检查 -&gt; 错误
+  2. 括号匹配 (转义感知) -&gt; 错误
+  3. 空括号 &quot;()&quot; 检查 -&gt; 建议用不带括号的形式
+  4. 解析规则 -&gt; permissionRuleValueFromString(rule)
+  5. MCP 规则验证:
+     - MCP 规则不支持括号内容
+     - 有效: mcp__server, mcp__server__*, mcp__server__tool
+  6. 工具名首字母大写检查
+  7. 自定义验证 (WebSearch, WebFetch)
+  8. Bash 特定验证:
+     - `:*` 必须在末尾
+     - `:*` 前需有前缀
+     - 通配符可出现在任意位置
+  9. 文件工具验证:
+     - 不支持 `:*` 语法 (提示使用 glob 模式)
+     - 通配符位置检查
+</code></pre>
+<h3>9.3 危险 Bash 模式检测</h3>
+<p><strong>源文件</strong>: <code>src/utils/permissions/permissionSetup.ts</code> (94-147行)</p>
+<pre><code class="language-typescript">export function isDangerousBashPermission(
+  toolName: string, ruleContent: string | undefined
+): boolean {
+  if (toolName !== BASH_TOOL_NAME) return false
+
+  // 工具级允许 (无 ruleContent) -&gt; 允许所有命令, 危险
+  if (ruleContent === undefined || ruleContent === &#39;&#39;) return true
+
+  // 单独的通配符 (*) -&gt; 匹配一切, 危险
+  if (content === &#39;*&#39;) return true
+
+  // 对每个 DANGEROUS_BASH_PATTERNS 中的模式 (python, node, ruby, etc.):
+  for (const pattern of DANGEROUS_BASH_PATTERNS) {
+    if (content === pattern) return true        // 精确匹配 &quot;python&quot;
+    if (content === `${pattern}:*`) return true  // &quot;python:*&quot;
+    if (content === `${pattern}*`) return true   // &quot;python*&quot;
+    if (content === `${pattern} *`) return true  // &quot;python *&quot;
+    if (content.startsWith(`${pattern} -`) &amp;&amp;
+        content.endsWith(&#39;*&#39;)) return true        // &quot;python -c *&quot;
+  }
+  return false
+}
+</code></pre>
+<p>PowerShell 有类似的 <code>isDangerousPowerShellPermission</code> (permissionSetup.ts:157-200+行), 额外检测:
+<code>pwsh, powershell, cmd, wsl, iex, invoke-expression, icm, invoke-command,  start-process, saps, start, start-job, sajb, start-threadjob,  register-objectevent, register-engineevent, register-wmievent</code></p>
+<h3>9.4 拒绝追踪 (Denial Tracking)</h3>
+<p><strong>源文件</strong>: <code>src/utils/permissions/denialTracking.ts</code> (1-46行)</p>
+<pre><code class="language-typescript">export type DenialTrackingState = {
+  consecutiveDenials: number   // 连续拒绝计数
+  totalDenials: number         // 总拒绝计数
+}
+
+export const DENIAL_LIMITS = {
+  maxConsecutive: 3,   // 连续 3 次拒绝 -&gt; 回退到用户提示
+  maxTotal: 20,        // 总共 20 次拒绝 -&gt; 回退到用户提示
+} as const
+
+export function shouldFallbackToPrompting(state: DenialTrackingState): boolean {
+  return (
+    state.consecutiveDenials &gt;= DENIAL_LIMITS.maxConsecutive ||
+    state.totalDenials &gt;= DENIAL_LIMITS.maxTotal
+  )
+}
+
+// 操作函数
+export function recordDenial(state): DenialTrackingState {
+  return { ...state, consecutiveDenials: state.consecutiveDenials + 1,
+           totalDenials: state.totalDenials + 1 }
+}
+export function recordSuccess(state): DenialTrackingState {
+  if (state.consecutiveDenials === 0) return state  // 无需修改
+  return { ...state, consecutiveDenials: 0 }        // 重置连续计数, 保留总计
+}
+</code></pre>
+<p>设计意图: 当 auto 模式的 AI 分类器连续拒绝达到阈值时, 系统自动降级为交互式提示, 防止分类器陷入死循环或过度激进地拒绝。</p>
+<hr>
+<h2>10. 权限缓存和持久化</h2>
+<h3>10.1 权限更新类型</h3>
+<p><strong>源文件</strong>: <code>src/types/permissions.ts</code> (98-131行)</p>
+<pre><code class="language-typescript">export type PermissionUpdateDestination =
+  | &#39;userSettings&#39; | &#39;projectSettings&#39; | &#39;localSettings&#39;
+  | &#39;session&#39; | &#39;cliArg&#39;
+
+export type PermissionUpdate =
+  | { type: &#39;addRules&#39;; destination: PermissionUpdateDestination;
+      rules: PermissionRuleValue[]; behavior: PermissionBehavior }
+  | { type: &#39;replaceRules&#39;; destination; rules; behavior }
+  | { type: &#39;removeRules&#39;; destination; rules; behavior }
+  | { type: &#39;setMode&#39;; destination; mode: ExternalPermissionMode }
+  | { type: &#39;addDirectories&#39;; destination; directories: string[] }
+  | { type: &#39;removeDirectories&#39;; destination; directories: string[] }
+</code></pre>
+<h3>10.2 持久化判定</h3>
+<pre><code class="language-typescript">// PermissionUpdate.ts:208-216
+export function supportsPersistence(
+  destination: PermissionUpdateDestination
+): destination is EditableSettingSource {
+  return (
+    destination === &#39;localSettings&#39; ||
+    destination === &#39;userSettings&#39; ||
+    destination === &#39;projectSettings&#39;
+  )
+  // &#39;session&#39; 和 &#39;cliArg&#39; 不会写入磁盘
+}
+</code></pre>
+<h3>10.3 持久化操作详表</h3>
+<p><strong>源文件</strong>: <code>src/utils/permissions/PermissionUpdate.ts</code> (222-342行)</p>
+<table>
+<thead>
+<tr>
+<th>update.type</th>
+<th>磁盘操作</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>addRules</code></td>
+<td>读取设置文件 -&gt; 去重 -&gt; 追加到 permissions[behavior] 数组 -&gt; 写回</td>
+</tr>
+<tr>
+<td><code>replaceRules</code></td>
+<td>替换整个 permissions[behavior] 数组</td>
+</tr>
+<tr>
+<td><code>removeRules</code></td>
+<td>parse-serialize roundtrip 归一化 -&gt; 过滤匹配规则 -&gt; 写回</td>
+</tr>
+<tr>
+<td><code>setMode</code></td>
+<td>更新 permissions.defaultMode</td>
+</tr>
+<tr>
+<td><code>addDirectories</code></td>
+<td>追加到 permissions.additionalDirectories (去重)</td>
+</tr>
+<tr>
+<td><code>removeDirectories</code></td>
+<td>从 additionalDirectories 过滤移除</td>
+</tr>
+</tbody></table>
+<h3>10.4 内存中的权限更新</h3>
+<pre><code class="language-typescript">// PermissionUpdate.ts:55-188
+export function applyPermissionUpdate(
+  context: ToolPermissionContext, update: PermissionUpdate
+): ToolPermissionContext {
+  // 每次返回新对象, 不修改原 context
+  switch (update.type) {
+    case &#39;setMode&#39;:
+      return { ...context, mode: update.mode }
+    case &#39;addRules&#39;:
+      const ruleKind = update.behavior === &#39;allow&#39; ? &#39;alwaysAllowRules&#39;
+                     : update.behavior === &#39;deny&#39;  ? &#39;alwaysDenyRules&#39;
+                     :                                &#39;alwaysAskRules&#39;
+      return { ...context, [ruleKind]: {
+        ...context[ruleKind],
+        [update.destination]: [...(existing || []), ...ruleStrings]
+      }}
+    case &#39;replaceRules&#39;:
+      return { ...context, [ruleKind]: {
+        ...context[ruleKind],
+        [update.destination]: ruleStrings  // 完全替换
+      }}
+    case &#39;removeRules&#39;:
+      return { ...context, [ruleKind]: {
+        ...context[ruleKind],
+        [update.destination]: existingRules.filter(r =&gt; !rulesToRemove.has(r))
+      }}
+    case &#39;addDirectories&#39;: ...
+    case &#39;removeDirectories&#39;: ...
+  }
+}
+</code></pre>
+<h3>10.5 磁盘加载</h3>
+<pre><code class="language-typescript">// permissionsLoader.ts:120-133
+export function loadAllPermissionRulesFromDisk(): PermissionRule[] {
+  // 企业锁定模式: 仅使用 policySettings
+  if (shouldAllowManagedPermissionRulesOnly()) {
+    return getPermissionRulesForSource(&#39;policySettings&#39;)
+  }
+  // 否则从所有启用的来源加载
+  const rules: PermissionRule[] = []
+  for (const source of getEnabledSettingSources()) {
+    rules.push(...getPermissionRulesForSource(source))
+  }
+  return rules
+}
+
+// permissionsLoader.ts:91-114 - JSON 到 PermissionRule 的转换
+function settingsJsonToRules(data: SettingsJson | null, source: PermissionRuleSource): PermissionRule[] {
+  if (!data?.permissions) return []
+  const rules: PermissionRule[] = []
+  for (const behavior of [&#39;allow&#39;, &#39;deny&#39;, &#39;ask&#39;]) {
+    const behaviorArray = data.permissions[behavior]
+    if (behaviorArray) {
+      for (const ruleString of behaviorArray) {
+        rules.push({
+          source, ruleBehavior: behavior,
+          ruleValue: permissionRuleValueFromString(ruleString),
+        })
+      }
+    }
+  }
+  return rules
+}
+</code></pre>
+<h3>10.6 宽松加载 (编辑专用)</h3>
+<pre><code class="language-typescript">// permissionsLoader.ts:61-83
+// 当正常 schema 验证失败时 (如 hooks 字段有错误),
+// 使用宽松加载保留现有规则, 避免因不相关字段的错误导致无法追加新规则
+function getSettingsForSourceLenient_FOR_EDITING_ONLY_NOT_FOR_READING(
+  source: SettingSource
+): SettingsJson | null {
+  const filePath = getSettingsFilePathForSource(source)
+  const content = readFileSync(resolvedPath)
+  const data = safeParseJSON(content, false)
+  // 不做 schema 验证, 直接返回原始 JSON
+  return data &amp;&amp; typeof data === &#39;object&#39; ? (data as SettingsJson) : null
+}
+</code></pre>
+<hr>
+<h2>11. 关键设计模式总结</h2>
+<h3>11.1 分层决策 (Layered Decision)</h3>
+<pre><code>Layer 1: 规则匹配 (deny &gt; allow &gt; ask, 跨所有来源)
+    |
+    v (passthrough)
+Layer 2: 工具自身的 checkPermissions (Bash 子命令分析, File 路径 glob, MCP 服务器级)
+    |
+    v (passthrough)
+Layer 3: 模式处理 (bypassPermissions, acceptEdits, dontAsk, auto)
+    |
+    v (ask)
+Layer 4: Hook 系统 (PreToolUse, PermissionRequest)
+    |
+    v (无决策)
+Layer 5: 用户交互 / AI 分类器 / 自动拒绝
+</code></pre>
+<h3>11.2 不可变上下文 (Immutable Context)</h3>
+<p><code>ToolPermissionContext</code> 所有字段标记为 <code>readonly</code>, 每次更新都通过 <code>applyPermissionUpdate</code> 返回新对象。这确保了并发安全和可预测的状态传播。</p>
+<h3>11.3 来源追踪 (Source Tracking)</h3>
+<p>每条规则从磁盘加载到最终遥测, 全程携带 <code>source</code> 字段:</p>
+<pre><code>配置文件 -&gt; settingsJsonToRules(带 source)
+  -&gt; PermissionRule -&gt; toolMatchesRule(匹配决策)
+    -&gt; PermissionDecisionReason(带 rule.source)
+      -&gt; ruleSourceToOTelSource(遥测)
+</code></pre>
+<h3>11.4 遗留兼容 (Legacy Compatibility)</h3>
+<ul>
+<li>工具名别名映射 (<code>LEGACY_TOOL_NAME_ALIASES</code>): Task -&gt; Agent, KillShell -&gt; TaskStop</li>
+<li>规则比较时通过 parse-serialize roundtrip 归一化</li>
+<li><code>Bash(*)</code> 和 <code>Bash()</code> 和 <code>Bash</code> 三者等价</li>
+<li><code>Bash(command:*)</code> 遗留前缀语法继续工作</li>
+</ul>
+<h3>11.5 安全优先 (Security-first)</h3>
+<ul>
+<li>deny 规则绝对优先, 没有覆盖路径</li>
+<li>危险 Bash/PowerShell 模式在进入 auto 模式时自动剥离</li>
+<li>企业策略可完全锁定规则来源 (<code>allowManagedPermissionRulesOnly</code>)</li>
+<li>拒绝追踪 (maxConsecutive=3, maxTotal=20) 防止分类器过度激进</li>
+<li><code>safetyCheck.classifierApprovable = false</code> 确保即使 auto 模式也需人工审批</li>
+<li>项目设置无法代替用户接受 bypass 对话框 (防止恶意仓库 RCE)</li>
+</ul>
+<h3>11.6 通道权限中继 (Channel Permission Relay)</h3>
+<p><strong>源文件</strong>: <code>src/services/mcp/channelPermissions.ts</code></p>
+<p>Claude Code 支持通过 MCP 通道 (Telegram, iMessage, Discord) 远程审批权限:</p>
+<ul>
+<li>5 字母短 ID (25 字母表, 排除易混淆的 <code>l</code>), 25^5 约 980 万空间</li>
+<li>通过 MCP notification (<code>notifications/claude/channel/permission</code>) 传递, 非文本正则匹配</li>
+<li>有屏蔽词过滤 (ID_AVOID_SUBSTRINGS) 避免生成不雅 ID, 最多重试 10 次</li>
+<li>与本地 UI 竞争: 先到先得 (<code>claim</code> 机制)</li>
+<li>需要服务器显式声明两个 capability: <code>claude/channel</code> 和 <code>claude/channel/permission</code></li>
+<li>独立 GrowthBook 开关 (<code>tengu_harbor_permissions</code>), 与通道本身 (<code>tengu_harbor</code>) 解耦</li>
+</ul>
+</body>
+</html>

@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>13-observability</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1>Claude Code 遥测、日志与可观测性详细分析</h1>
+<h2>目录</h2>
+<ul>
+<li><a href="#1-%E5%8F%AF%E8%A7%82%E6%B5%8B%E6%80%A7%E6%9E%B6%E6%9E%84%E6%80%BB%E8%A7%88">1. 可观测性架构总览</a></li>
+<li><a href="#2-analytics-%E7%B3%BB%E7%BB%9F-growthbook">2. Analytics 系统 (GrowthBook)</a><ul>
+<li><a href="#21-growthbook-%E9%9B%86%E6%88%90%E6%9E%B6%E6%9E%84">2.1 GrowthBook 集成架构</a></li>
+<li><a href="#22-feature-gate-%E4%B8%8E%E5%8A%A8%E6%80%81%E9%85%8D%E7%BD%AE">2.2 Feature Gate 与动态配置</a></li>
+</ul>
+</li>
+<li><a href="#3-%E4%BA%8B%E4%BB%B6%E6%97%A5%E5%BF%97%E7%B3%BB%E7%BB%9F">3. 事件日志系统</a><ul>
+<li><a href="#31-analytics-sink-%E6%9E%B6%E6%9E%84">3.1 Analytics Sink 架构</a></li>
+<li><a href="#32-datadog-%E9%9B%86%E6%88%90">3.2 Datadog 集成</a></li>
+<li><a href="#33-first-party-1p-%E4%BA%8B%E4%BB%B6%E6%97%A5%E5%BF%97">3.3 First-Party (1P) 事件日志</a></li>
+<li><a href="#34-%E4%BA%8B%E4%BB%B6%E9%87%87%E6%A0%B7%E7%AD%96%E7%95%A5">3.4 事件采样策略</a></li>
+<li><a href="#35-sink-killswitch">3.5 Sink Killswitch</a></li>
+</ul>
+</li>
+<li><a href="#4-otel-%E9%9B%86%E6%88%90">4. OTel 集成</a><ul>
+<li><a href="#41-loggerprovider-%E4%B8%8E-exporter">4.1 LoggerProvider 与 Exporter</a></li>
+<li><a href="#42-batchlogrecordprocessor-%E9%85%8D%E7%BD%AE">4.2 BatchLogRecordProcessor 配置</a></li>
+</ul>
+</li>
+<li><a href="#5-%E4%BA%8B%E4%BB%B6%E5%85%83%E6%95%B0%E6%8D%AE%E4%B8%8E%E5%AF%8C%E5%8C%96">5. 事件元数据与富化</a></li>
+<li><a href="#6-%E6%97%A5%E5%BF%97%E7%B3%BB%E7%BB%9F">6. 日志系统</a><ul>
+<li><a href="#61-error-log-%E7%B3%BB%E7%BB%9F">6.1 Error Log 系统</a></li>
+<li><a href="#62-debug-log-%E7%B3%BB%E7%BB%9F">6.2 Debug Log 系统</a></li>
+</ul>
+</li>
+<li><a href="#7-%E5%90%AF%E5%8A%A8%E6%80%A7%E8%83%BD%E5%88%86%E6%9E%90">7. 启动性能分析</a></li>
+<li><a href="#8-%E9%9A%90%E7%A7%81%E5%92%8C%E6%95%B0%E6%8D%AE%E5%A4%84%E7%90%86">8. 隐私和数据处理</a></li>
+<li><a href="#9-%E5%85%B3%E9%94%AE%E8%AE%BE%E8%AE%A1%E6%A8%A1%E5%BC%8F%E6%80%BB%E7%BB%93">9. 关键设计模式总结</a></li>
+</ul>
+<hr>
+<h2>1. 可观测性架构总览</h2>
+<p>Claude Code 的可观测性系统覆盖四个维度: 事件遥测、特性实验、错误跟踪、性能分析。所有组件通过松耦合的 Sink 模式连接, 启动前的事件自动排队。</p>
+<pre><code>                      +------------------------+
+                      |   Application Code     |
+                      |  logEvent() / logError |
+                      +-----------+------------+
+                                  |
+                  +---------------+--------------+
+                  |                               |
+         +--------v--------+            +--------v--------+
+         | Analytics Sink   |            | Error Log Sink  |
+         | (index.ts)       |            | (log.ts)        |
+         +--------+--------+            +--------+--------+
+                  |                               |
+        +---------+----------+           +--------+--------+
+        |                    |           |                  |
+  +-----v-----+    +--------v--+   +----v----+    +-------v------+
+  | Datadog    |    | 1P Event  |   | In-mem  |    | File-based   |
+  | Batch 15s  |    | Logger    |   | Ring    |    | Error Log    |
+  +------------+    | (OTel)    |   | Buffer  |    | (ant-only)   |
+                    +-----+-----+   +---------+    +--------------+
+                          |
+                    +-----v------+
+                    | OTel Batch |
+                    | Processor  |
+                    +-----+------+
+                          |
+                    +-----v------+
+                    | 1P HTTP    |
+                    | Exporter   |
+                    +------------+
+
+  +-------------------+     +-------------------+     +-------------------+
+  | GrowthBook        |     | Debug Log         |     | Startup Profiler  |
+  | (Feature Flags)   |     | (BufferedWriter)  |     | (perf.mark)       |
+  +-------------------+     +-------------------+     +-------------------+
+</code></pre>
+<p><strong>源文件清单:</strong></p>
+<table>
+<thead>
+<tr>
+<th>组件</th>
+<th>源文件</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Analytics 入口</td>
+<td><code>src/services/analytics/index.ts</code></td>
+</tr>
+<tr>
+<td>Sink 实现</td>
+<td><code>src/services/analytics/sink.ts</code></td>
+</tr>
+<tr>
+<td>Datadog</td>
+<td><code>src/services/analytics/datadog.ts</code></td>
+</tr>
+<tr>
+<td>1P Logger</td>
+<td><code>src/services/analytics/firstPartyEventLogger.ts</code></td>
+</tr>
+<tr>
+<td>1P Exporter</td>
+<td><code>src/services/analytics/firstPartyEventLoggingExporter.ts</code></td>
+</tr>
+<tr>
+<td>GrowthBook</td>
+<td><code>src/services/analytics/growthbook.ts</code></td>
+</tr>
+<tr>
+<td>事件元数据</td>
+<td><code>src/services/analytics/metadata.ts</code></td>
+</tr>
+<tr>
+<td>配置/Killswitch</td>
+<td><code>src/services/analytics/config.ts</code>, <code>sinkKillswitch.ts</code></td>
+</tr>
+<tr>
+<td>Error/Debug Log</td>
+<td><code>src/utils/log.ts</code>, <code>src/utils/debug.ts</code></td>
+</tr>
+<tr>
+<td>启动分析</td>
+<td><code>src/utils/startupProfiler.ts</code></td>
+</tr>
+<tr>
+<td>隐私级别</td>
+<td><code>src/utils/privacyLevel.ts</code></td>
+</tr>
+</tbody></table>
+<hr>
+<h2>2. Analytics 系统 (GrowthBook)</h2>
+<h3>2.1 GrowthBook 集成架构</h3>
+<blockquote>
+<p>源文件: <code>src/services/analytics/growthbook.ts</code></p>
+</blockquote>
+<p>GrowthBook 是特性开关和实验平台, 使用 <code>remoteEval</code> 模式:</p>
+<pre><code class="language-typescript">type GrowthBookUserAttributes = {
+  id: string
+  sessionId: string
+  deviceID: string
+  platform: &#39;win32&#39; | &#39;darwin&#39; | &#39;linux&#39;
+  organizationUUID?: string
+  accountUUID?: string
+  userType?: string           // ant/external
+  subscriptionType?: string
+  rateLimitTier?: string
+  appVersion?: string
+  github?: GitHubActionsMetadata
+}
+</code></pre>
+<p><strong>模块级状态管理:</strong></p>
+<pre><code class="language-typescript">let client: GrowthBook | null = null
+let clientCreatedWithAuth = false
+
+const experimentDataByFeature = new Map&lt;string, StoredExperimentData&gt;()
+const remoteEvalFeatureValues = new Map&lt;string, unknown&gt;()  // SDK workaround
+const loggedExposures = new Set&lt;string&gt;()         // 曝光去重 (热路径防重复)
+let reinitializingPromise: Promise&lt;unknown&gt; | null // 安全 gate 等待初始化
+
+// 刷新信号 (订阅者模式, 支持 catch-up)
+const refreshed = createSignal()
+function onGrowthBookRefresh(listener): () =&gt; void {
+  const unsubscribe = refreshed.subscribe(() =&gt; callSafe(listener))
+  // 已有数据则在下个 microtask 触发 (处理初始化竞态)
+  if (remoteEvalFeatureValues.size &gt; 0) {
+    queueMicrotask(() =&gt; { if (subscribed) callSafe(listener) })
+  }
+  return unsubscribe
+}
+</code></pre>
+<h3>2.2 Feature Gate 与动态配置</h3>
+<pre><code class="language-typescript">// 带缓存的读取接口 (名称反映数据新鲜度语义)
+function checkStatsigFeatureGate_CACHED_MAY_BE_STALE(gateName: string): boolean
+function getFeatureValue_CACHED_WITH_REFRESH&lt;T&gt;(featureName: string, defaultValue: T): T
+function getDynamicConfig_CACHED_MAY_BE_STALE&lt;T&gt;(configName: string, defaultValue: T): T
+</code></pre>
+<p><strong>关键 GrowthBook 配置:</strong></p>
+<table>
+<thead>
+<tr>
+<th>配置名</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>tengu_log_datadog_events</code></td>
+<td>Datadog 事件 gate</td>
+</tr>
+<tr>
+<td><code>tengu_event_sampling_config</code></td>
+<td>事件采样率</td>
+</tr>
+<tr>
+<td><code>tengu_1p_event_batch_config</code></td>
+<td>1P 批处理参数</td>
+</tr>
+<tr>
+<td><code>tengu_frond_boric</code></td>
+<td>Sink Killswitch (混淆名)</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>3. 事件日志系统</h2>
+<h3>3.1 Analytics Sink 架构</h3>
+<blockquote>
+<p>源文件: <code>src/services/analytics/index.ts</code></p>
+</blockquote>
+<p><strong>零依赖入口 + 延迟绑定</strong> 设计, 避免循环导入:</p>
+<pre><code class="language-typescript">type AnalyticsSink = {
+  logEvent: (eventName: string, metadata: LogEventMetadata) =&gt; void
+  logEventAsync: (eventName: string, metadata: LogEventMetadata) =&gt; Promise&lt;void&gt;
+}
+
+const eventQueue: QueuedEvent[] = []  // Sink 绑定前缓冲
+let sink: AnalyticsSink | null = null
+
+// 幂等绑定, 通过 queueMicrotask 异步排空 (不阻塞启动)
+function attachAnalyticsSink(newSink: AnalyticsSink): void {
+  if (sink !== null) return
+  sink = newSink
+  queueMicrotask(() =&gt; { /* drain queue */ })
+}
+
+// PII 防护: metadata 不接受 string 类型
+function logEvent(
+  eventName: string,
+  metadata: { [key: string]: boolean | number | undefined }
+): void
+</code></pre>
+<h3>3.2 Datadog 集成</h3>
+<blockquote>
+<p>源文件: <code>src/services/analytics/datadog.ts</code></p>
+</blockquote>
+<p><strong>配置常量:</strong></p>
+<table>
+<thead>
+<tr>
+<th>常量</th>
+<th>值</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>DATADOG_LOGS_ENDPOINT</code></td>
+<td><code>https://http-intake.logs.us5.datadoghq.com/api/v2/logs</code></td>
+</tr>
+<tr>
+<td><code>DEFAULT_FLUSH_INTERVAL_MS</code></td>
+<td><code>15000</code> (15s)</td>
+</tr>
+<tr>
+<td><code>MAX_BATCH_SIZE</code></td>
+<td><code>100</code></td>
+</tr>
+<tr>
+<td><code>NETWORK_TIMEOUT_MS</code></td>
+<td><code>5000</code></td>
+</tr>
+</tbody></table>
+<p><strong>日志格式:</strong></p>
+<pre><code class="language-typescript">type DatadogLog = {
+  ddsource: &#39;nodejs&#39;
+  ddtags: string         // event:&lt;name&gt;,platform:&lt;p&gt;,version:&lt;v&gt;,...
+  message: string        // eventName
+  service: &#39;claude-code&#39;
+  hostname: &#39;claude-code&#39;
+}
+</code></pre>
+<p><strong>事件白名单</strong>: 仅约 40 个 <code>tengu_*</code> 事件发送到 Datadog (<code>DATADOG_ALLOWED_EVENTS</code>)。</p>
+<p><strong>Tag 字段</strong> (16 个): <code>arch</code>, <code>clientType</code>, <code>errorType</code>, <code>http_status_range</code>, <code>http_status</code>, <code>kairosActive</code>, <code>model</code>, <code>platform</code>, <code>provider</code>, <code>skillMode</code>, <code>subscriptionType</code>, <code>toolName</code>, <code>userBucket</code>, <code>userType</code>, <code>version</code>, <code>versionBase</code>。</p>
+<p><strong>基数控制:</strong></p>
+<ul>
+<li>MCP 工具名 <code>mcp__*</code> 归一化为 <code>&#39;mcp&#39;</code></li>
+<li>外部用户模型名归一化 (不在 MODEL_COSTS 中的统一为 <code>&#39;other&#39;</code>)</li>
+<li>dev 版本截断时间戳和 SHA</li>
+</ul>
+<p><strong>用户分桶</strong> (隐私保护的唯一用户近似):</p>
+<pre><code class="language-typescript">const NUM_USER_BUCKETS = 30
+const getUserBucket = memoize((): number =&gt; {
+  const hash = createHash(&#39;sha256&#39;).update(getOrCreateUserID()).digest(&#39;hex&#39;)
+  return parseInt(hash.slice(0, 8), 16) % NUM_USER_BUCKETS
+})
+</code></pre>
+<h3>3.3 First-Party (1P) 事件日志</h3>
+<blockquote>
+<p>源文件: <code>src/services/analytics/firstPartyEventLogger.ts</code></p>
+</blockquote>
+<p>基于 OpenTelemetry SDK, 独立于客户 OTLP 遥测:</p>
+<pre><code>logEventTo1P(eventName, metadata)
+  -&gt; logEventTo1PAsync()
+     -&gt; getEventMetadata() + getCoreUserData()
+     -&gt; firstPartyEventLogger.emit({
+          body: eventName,
+          attributes: { event_name, event_id, core_metadata,
+                        user_metadata, event_metadata, user_id }
+        })
+</code></pre>
+<p><strong>初始化:</strong></p>
+<pre><code class="language-typescript">function initialize1PEventLogging(): void {
+  const batchConfig = getBatchConfig()  // GrowthBook 动态配置
+
+  const eventLoggingExporter = new FirstPartyEventLoggingExporter({
+    maxBatchSize, skipAuth, maxAttempts, path, baseUrl,
+    isKilled: () =&gt; isSinkKilled(&#39;firstParty&#39;),
+  })
+
+  firstPartyEventLoggerProvider = new LoggerProvider({
+    resource: resourceFromAttributes({
+      [ATTR_SERVICE_NAME]: &#39;claude-code&#39;,
+      [ATTR_SERVICE_VERSION]: MACRO.VERSION,
+    }),
+    processors: [new BatchLogRecordProcessor(eventLoggingExporter, { ... })],
+  })
+
+  // 重要: 从本地 Provider 获取 Logger, 不使用全局 API
+  firstPartyEventLogger = firstPartyEventLoggerProvider.getLogger(
+    &#39;com.anthropic.claude_code.events&#39;, MACRO.VERSION,
+  )
+}
+</code></pre>
+<p><strong>配置热更新</strong> (<code>reinitialize1PEventLoggingIfConfigChanged</code>):</p>
+<ol>
+<li>置空 logger (并发调用走 bail-out)</li>
+<li><code>forceFlush</code> 排空旧 buffer</li>
+<li>构建新 provider/logger</li>
+<li>失败时恢复旧 provider (防止不可恢复的 null 状态)</li>
+</ol>
+<h3>3.4 事件采样策略</h3>
+<pre><code class="language-typescript">type EventSamplingConfig = {
+  [eventName: string]: { sample_rate: number }  // 0-1
+}
+
+function shouldSampleEvent(eventName: string): number | null {
+  // 无配置 = 100% 记录 (return null)
+  // rate &gt;= 1 = 100% (return null, 不需要 metadata)
+  // rate &lt;= 0 = 全部丢弃 (return 0)
+  // 0 &lt; rate &lt; 1 = 随机采样, 命中返回 rate (注入 metadata 供后端补偿)
+}
+</code></pre>
+<h3>3.5 Sink Killswitch</h3>
+<blockquote>
+<p>源文件: <code>src/services/analytics/sinkKillswitch.ts</code></p>
+</blockquote>
+<pre><code class="language-typescript">type SinkName = &#39;datadog&#39; | &#39;firstParty&#39;
+
+// GrowthBook 动态配置 (混淆名: tengu_frond_boric)
+// { datadog?: true } = 停止 Datadog 分发
+// fail-open: 缺失/格式错误 = sink 保持开启
+function isSinkKilled(sink: SinkName): boolean {
+  const config = getDynamicConfig_CACHED_MAY_BE_STALE&lt;
+    Partial&lt;Record&lt;SinkName, boolean&gt;&gt;
+  &gt;(&#39;tengu_frond_boric&#39;, {})
+  return config?.[sink] === true
+}
+</code></pre>
+<hr>
+<h2>4. OTel 集成</h2>
+<h3>4.1 LoggerProvider 与 Exporter</h3>
+<p>1P 事件日志使用独立 <code>LoggerProvider</code>, 与客户遥测完全隔离:</p>
+<pre><code>客户 OTLP 遥测 (全局 Provider) -&gt; 客户端点
+1P 内部事件 (本地 Provider) -&gt; /api/event_logging/batch
+</code></pre>
+<p><strong>FirstPartyEventLoggingExporter</strong> 实现 <code>LogRecordExporter</code> 接口, 增加弹性:</p>
+<ul>
+<li>失败事件 append-only 日志 (并发安全, 按 <code>BATCH_UUID + sessionId</code> 隔离)</li>
+<li>二次退避重试, 超过 <code>maxAttempts</code> 后丢弃</li>
+<li>成功时立即重试排队事件 (端点恢复)</li>
+<li>大批量自动分片</li>
+<li>401 错误时无认证回退重试</li>
+</ul>
+<p><strong>事件类型:</strong></p>
+<pre><code class="language-typescript">type FirstPartyEventLoggingEvent = {
+  event_type: &#39;ClaudeCodeInternalEvent&#39; | &#39;GrowthbookExperimentEvent&#39;
+  event_data: unknown  // proto toJSON() 输出
+}
+</code></pre>
+<h3>4.2 BatchLogRecordProcessor 配置</h3>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>默认值</th>
+<th>GrowthBook 可配置</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>scheduledDelayMillis</code></td>
+<td><code>10000</code> (10s)</td>
+<td><code>tengu_1p_event_batch_config.scheduledDelayMillis</code></td>
+</tr>
+<tr>
+<td><code>maxExportBatchSize</code></td>
+<td><code>200</code></td>
+<td><code>.maxExportBatchSize</code></td>
+</tr>
+<tr>
+<td><code>maxQueueSize</code></td>
+<td><code>8192</code></td>
+<td><code>.maxQueueSize</code></td>
+</tr>
+</tbody></table>
+<hr>
+<h2>5. 事件元数据与富化</h2>
+<blockquote>
+<p>源文件: <code>src/services/analytics/metadata.ts</code></p>
+</blockquote>
+<p>每个事件在记录时被以下元数据富化:</p>
+<pre><code class="language-typescript">// getEventMetadata() 返回结构 (伪代码)
+{
+  envContext: {
+    platform, arch, version, model, provider,
+    userType, subscriptionType, clientType
+  },
+  sessionId, parentSessionId,
+  isInteractive, kairosActive,
+  agentId, teamName, isTeammate
+}
+</code></pre>
+<p><strong>工具名脱敏策略:</strong></p>
+<pre><code class="language-typescript">// 标准脱敏: MCP 工具名 -&gt; &#39;mcp_tool&#39;
+function sanitizeToolNameForAnalytics(toolName: string) {
+  return toolName.startsWith(&#39;mcp__&#39;) ? &#39;mcp_tool&#39; : toolName
+}
+
+// 条件性详细记录 (仅以下场景):
+// 1. Cowork 入口 (CLAUDE_CODE_ENTRYPOINT=local-agent)
+// 2. claude.ai 代理 (mcpServerType=claudeai-proxy)
+// 3. 官方注册表 MCP (URL 匹配)
+</code></pre>
+<hr>
+<h2>6. 日志系统</h2>
+<h3>6.1 Error Log 系统</h3>
+<blockquote>
+<p>源文件: <code>src/utils/log.ts</code></p>
+</blockquote>
+<p>采用与 Analytics 相同的 Sink 模式:</p>
+<pre><code class="language-typescript">type ErrorLogSink = {
+  logError: (error: Error) =&gt; void
+  logMCPError: (serverName: string, error: unknown) =&gt; void
+  logMCPDebug: (serverName: string, message: string) =&gt; void
+  getErrorsPath: () =&gt; string
+  getMCPLogsPath: (serverName: string) =&gt; string
+}
+</code></pre>
+<p><strong>logError 多目标写入:</strong></p>
+<ul>
+<li>In-memory 环形缓冲 (最近 100 条, <code>getInMemoryErrors()</code> 访问)</li>
+<li>Debug log (通过 <code>logForDebugging</code>)</li>
+<li>持久化错误日志 (ant 用户, <code>~/.claude/errors/</code>)</li>
+</ul>
+<p><strong>禁用条件:</strong> Bedrock/Vertex/Foundry, <code>DISABLE_ERROR_REPORTING</code>, <code>essential-traffic</code> 隐私级别。</p>
+<p><strong>API 请求捕获</strong> (<code>captureAPIRequest</code>): 仅主线程 REPL, 存储参数不含 messages (避免保留整个对话)。ant 用户额外保留 messages 引用供 <code>/share</code> 使用。</p>
+<h3>6.2 Debug Log 系统</h3>
+<blockquote>
+<p>源文件: <code>src/utils/debug.ts</code></p>
+</blockquote>
+<p><strong>日志级别:</strong> <code>verbose(0) &lt; debug(1) &lt; info(2) &lt; warn(3) &lt; error(4)</code></p>
+<p><strong>激活方式:</strong></p>
+<table>
+<thead>
+<tr>
+<th>方式</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>--debug</code> / <code>-d</code></td>
+<td>CLI flag</td>
+</tr>
+<tr>
+<td><code>DEBUG=1</code></td>
+<td>环境变量</td>
+</tr>
+<tr>
+<td><code>--debug=pattern</code></td>
+<td>带过滤模式</td>
+</tr>
+<tr>
+<td><code>--debug-file=path</code></td>
+<td>输出到指定文件</td>
+</tr>
+<tr>
+<td><code>-d2e</code></td>
+<td>输出到 stderr</td>
+</tr>
+<tr>
+<td><code>/debug</code> 命令</td>
+<td>运行时启用</td>
+</tr>
+<tr>
+<td><code>CLAUDE_CODE_DEBUG_LOG_LEVEL=verbose</code></td>
+<td>最低级别</td>
+</tr>
+</tbody></table>
+<p><strong>BufferedWriter 双模式:</strong></p>
+<ul>
+<li><strong>即时模式</strong> (<code>--debug</code>): 同步写入 (防止 <code>process.exit</code> 丢失)</li>
+<li><strong>缓冲模式</strong> (ant 无 <code>--debug</code>): ~1s 间隔异步刷新, 低 I/O 开销</li>
+</ul>
+<p><strong>输出格式:</strong> <code>{ISO8601} [{LEVEL}] {message}\n</code> (多行消息 JSON 编码保持 JSONL 格式)</p>
+<p><strong>文件位置:</strong> <code>~/.claude/debug/{sessionId}.txt</code>, <code>~/.claude/debug/latest</code> 符号链接指向当前会话。</p>
+<hr>
+<h2>7. 启动性能分析</h2>
+<blockquote>
+<p>源文件: <code>src/utils/startupProfiler.ts</code></p>
+</blockquote>
+<p><strong>采样策略</strong> (模块加载时一次性决定):</p>
+<ul>
+<li>ant 用户: 100% 采样</li>
+<li>外部用户: 0.5% (<code>STATSIG_SAMPLE_RATE = 0.005</code>)</li>
+<li>详细分析: <code>CLAUDE_CODE_PROFILE_STARTUP=1</code> (含内存快照)</li>
+</ul>
+<p><strong>性能阶段:</strong></p>
+<pre><code class="language-typescript">const PHASE_DEFINITIONS = {
+  import_time:   [&#39;cli_entry&#39;, &#39;main_tsx_imports_loaded&#39;],
+  init_time:     [&#39;init_function_start&#39;, &#39;init_function_end&#39;],
+  settings_time: [&#39;eagerLoadSettings_start&#39;, &#39;eagerLoadSettings_end&#39;],
+  total_time:    [&#39;cli_entry&#39;, &#39;main_after_run&#39;],
+}
+</code></pre>
+<p><strong>检查点 API:</strong></p>
+<pre><code class="language-typescript">function profileCheckpoint(name: string): void {
+  if (!SHOULD_PROFILE) return
+  getPerformance().mark(name)
+  if (DETAILED_PROFILING) memorySnapshots.push(process.memoryUsage())
+}
+
+function logStartupPerf(): void {
+  if (!STATSIG_LOGGING_SAMPLED) return
+  logEvent(&#39;tengu_startup_perf&#39;, {
+    import_time_ms, init_time_ms, settings_time_ms, total_time_ms,
+    checkpoint_count: marks.length,
+  })
+}
+</code></pre>
+<p>详细报告输出到 <code>~/.claude/startup-perf/{sessionId}.txt</code>。</p>
+<hr>
+<h2>8. 隐私和数据处理</h2>
+<blockquote>
+<p>源文件: <code>src/utils/privacyLevel.ts</code>, <code>src/services/analytics/config.ts</code></p>
+</blockquote>
+<p><strong>隐私级别 (递增限制):</strong></p>
+<pre><code class="language-typescript">type PrivacyLevel = &#39;default&#39; | &#39;no-telemetry&#39; | &#39;essential-traffic&#39;
+
+// CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC -&gt; essential-traffic
+// DISABLE_TELEMETRY -&gt; no-telemetry
+// (无) -&gt; default
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>级别</th>
+<th>telemetry</th>
+<th>auto-update</th>
+<th>grove</th>
+<th>1P events</th>
+<th>Datadog</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>default</td>
+<td>Y</td>
+<td>Y</td>
+<td>Y</td>
+<td>Y</td>
+<td>Y</td>
+</tr>
+<tr>
+<td>no-telemetry</td>
+<td>N</td>
+<td>Y</td>
+<td>Y</td>
+<td>N</td>
+<td>N</td>
+</tr>
+<tr>
+<td>essential-traffic</td>
+<td>N</td>
+<td>N</td>
+<td>N</td>
+<td>N</td>
+<td>N</td>
+</tr>
+</tbody></table>
+<p><strong>Analytics 禁用条件:</strong></p>
+<pre><code class="language-typescript">function isAnalyticsDisabled(): boolean {
+  return process.env.NODE_ENV === &#39;test&#39;
+    || CLAUDE_CODE_USE_BEDROCK || CLAUDE_CODE_USE_VERTEX || CLAUDE_CODE_USE_FOUNDRY
+    || isTelemetryDisabled()
+}
+</code></pre>
+<p><strong>PII 保护机制:</strong></p>
+<ol>
+<li><strong>类型级安全</strong>: <code>AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS</code> (never 类型)</li>
+<li><strong><em>PROTO</em> 隔离</strong>: PII 数据路由到受控列, 通用通道自动剥离</li>
+<li><strong>MCP 名脱敏</strong>: 用户配置的 MCP 服务器名统一为 <code>&#39;mcp_tool&#39;</code></li>
+<li><strong>3P 过滤</strong>: Bedrock/Vertex/Foundry 不发送 Datadog 事件</li>
+<li><strong>用户分桶</strong>: SHA-256 mod 30 代替真实用户 ID</li>
+</ol>
+<hr>
+<h2>9. 关键设计模式总结</h2>
+<table>
+<thead>
+<tr>
+<th>设计模式</th>
+<th>说明</th>
+<th>应用位置</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Sink 延迟绑定</strong></td>
+<td>零依赖入口, 启动前事件自动排队</td>
+<td><code>index.ts</code>, <code>log.ts</code></td>
+</tr>
+<tr>
+<td><strong>类型级 PII 防护</strong></td>
+<td><code>never</code> 类型强制审查, metadata 无 string</td>
+<td><code>AnalyticsMetadata_*</code></td>
+</tr>
+<tr>
+<td><strong><em>PROTO</em> 通道隔离</strong></td>
+<td>PII 路由受控列, 通用通道剥离</td>
+<td><code>stripProtoFields</code></td>
+</tr>
+<tr>
+<td><strong>事件采样</strong></td>
+<td>动态 per-event 采样率, 注入 metadata 供补偿</td>
+<td><code>shouldSampleEvent</code></td>
+</tr>
+<tr>
+<td><strong>Sink Killswitch</strong></td>
+<td>远程动态禁用单个 sink, fail-open</td>
+<td><code>sinkKillswitch.ts</code></td>
+</tr>
+<tr>
+<td><strong>Provider 隔离</strong></td>
+<td>内部事件与客户遥测独立 LoggerProvider</td>
+<td><code>initialize1PEventLogging</code></td>
+</tr>
+<tr>
+<td><strong>配置热更新</strong></td>
+<td>GrowthBook 刷新时安全重建 OTel pipeline</td>
+<td><code>reinitialize1PEventLogging*</code></td>
+</tr>
+<tr>
+<td><strong>分桶隐私</strong></td>
+<td>SHA-256 mod 30 近似唯一用户</td>
+<td><code>getUserBucket</code></td>
+</tr>
+<tr>
+<td><strong>基数控制</strong></td>
+<td>MCP/模型/版本归一化防 Datadog 爆炸</td>
+<td><code>datadog.ts</code></td>
+</tr>
+<tr>
+<td><strong>BufferedWriter</strong></td>
+<td>双模式: 即时 (--debug) / 缓冲 (ant)</td>
+<td><code>debug.ts</code></td>
+</tr>
+<tr>
+<td><strong>Fail-Open</strong></td>
+<td>Killswitch 缺失时 sink 保持开启</td>
+<td><code>isSinkKilled</code></td>
+</tr>
+<tr>
+<td><strong>采样决策前置</strong></td>
+<td>启动时一次性决定, 未采样零开销</td>
+<td><code>startupProfiler.ts</code></td>
+</tr>
+</tbody></table>
+</body>
+</html>
