@@ -1,0 +1,1916 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code 最佳实践完全指南</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700&family=Playfair+Display:wght@400;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  --bg-primary: #0a0c10;
+  --bg-secondary: #0d1117;
+  --bg-tertiary: #161b22;
+  --bg-card: #13171e;
+  --border: #21262d;
+  --border-light: #30363d;
+  --text-primary: #e6edf3;
+  --text-secondary: #8b949e;
+  --text-muted: #656d76;
+  --accent: #d4a054;
+  --accent-dim: #b8862e;
+  --accent-glow: rgba(212, 160, 84, 0.15);
+  --accent-glow-strong: rgba(212, 160, 84, 0.25);
+  --code-bg: #0d1117;
+  --code-border: #21262d;
+  --link: #d4a054;
+  --nav-width: 280px;
+  --hero-height: 340px;
+}
+
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 24px;
+}
+
+body {
+  font-family: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  line-height: 1.8;
+  font-size: 15px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Sidebar Navigation ── */
+.sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: var(--nav-width);
+  height: 100vh;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border);
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.sidebar-header {
+  padding: 28px 24px 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.sidebar-logo {
+  font-family: 'Playfair Display', serif;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: 0.02em;
+  line-height: 1.3;
+}
+
+.sidebar-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.sidebar-nav {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 0;
+}
+
+.sidebar-nav::-webkit-scrollbar {
+  width: 3px;
+}
+
+.sidebar-nav::-webkit-scrollbar-thumb {
+  background: var(--border-light);
+  border-radius: 3px;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  padding: 10px 24px;
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 13.5px;
+  font-weight: 400;
+  transition: all 0.2s ease;
+  border-left: 2px solid transparent;
+  gap: 12px;
+}
+
+.nav-item:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.nav-item.active {
+  color: var(--accent);
+  background: var(--accent-glow);
+  border-left-color: var(--accent);
+  font-weight: 500;
+}
+
+.nav-num {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  min-width: 20px;
+  opacity: 0.7;
+}
+
+.nav-item.active .nav-num {
+  color: var(--accent-dim);
+  opacity: 1;
+}
+
+/* ── Hamburger (mobile) ── */
+.hamburger {
+  display: none;
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  z-index: 200;
+  width: 40px;
+  height: 40px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.hamburger span {
+  display: block;
+  width: 18px;
+  height: 2px;
+  background: var(--text-secondary);
+  border-radius: 1px;
+  transition: all 0.3s ease;
+}
+
+.overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 90;
+}
+
+/* ── Main Content ── */
+.main {
+  margin-left: var(--nav-width);
+  min-height: 100vh;
+}
+
+/* ── Hero ── */
+.hero {
+  position: relative;
+  padding: 80px 60px 48px;
+  background: linear-gradient(160deg, #0d1117 0%, #0a0c10 50%, #11140a 100%);
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.hero::before {
+  content: '';
+  position: absolute;
+  top: -40%;
+  right: -10%;
+  width: 500px;
+  height: 500px;
+  background: radial-gradient(circle, var(--accent-glow-strong) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+.hero-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--accent-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  margin-bottom: 16px;
+}
+
+.hero h1 {
+  font-family: 'Playfair Display', serif;
+  font-size: 36px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.25;
+  margin-bottom: 28px;
+}
+
+.hero-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.hero-meta-item {
+  font-size: 13.5px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.hero-meta-item strong {
+  color: var(--accent);
+  font-weight: 500;
+  margin-right: 8px;
+}
+
+/* ── Content ── */
+.content {
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 48px 60px 120px;
+}
+
+section {
+  margin-bottom: 56px;
+}
+
+h2 {
+  font-family: 'Playfair Display', serif;
+  font-size: 26px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 24px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+h3 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-top: 32px;
+  margin-bottom: 16px;
+}
+
+h4 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-top: 24px;
+  margin-bottom: 12px;
+}
+
+p {
+  margin-bottom: 16px;
+  color: var(--text-secondary);
+  line-height: 1.9;
+}
+
+strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+a {
+  color: var(--link);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.2s;
+}
+
+a:hover {
+  border-bottom-color: var(--accent-dim);
+}
+
+/* ── Code ── */
+code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  background: var(--bg-tertiary);
+  color: var(--accent);
+  padding: 2px 7px;
+  border-radius: 4px;
+  border: 1px solid var(--code-border);
+}
+
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--code-border);
+  border-radius: 8px;
+  padding: 20px 24px;
+  margin-bottom: 20px;
+  overflow-x: auto;
+  position: relative;
+}
+
+pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+pre[data-lang]::before {
+  content: attr(data-lang);
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.6;
+}
+
+/* ── Tables ── */
+.table-wrap {
+  overflow-x: auto;
+  margin-bottom: 20px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+thead {
+  background: var(--bg-tertiary);
+}
+
+th {
+  padding: 12px 16px;
+  text-align: left;
+  font-weight: 600;
+  color: var(--accent);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  border-bottom: 1px solid var(--border);
+}
+
+td {
+  padding: 10px 16px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+}
+
+tbody tr:nth-child(even) {
+  background: rgba(255, 255, 255, 0.015);
+}
+
+tbody tr:nth-child(odd) {
+  background: var(--bg-card);
+}
+
+tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* ── Blockquote ── */
+blockquote {
+  border-left: 3px solid var(--accent-dim);
+  padding: 14px 20px;
+  margin-bottom: 20px;
+  background: var(--accent-glow);
+  border-radius: 0 6px 6px 0;
+  font-size: 14px;
+  color: var(--text-secondary);
+  line-height: 1.8;
+}
+
+blockquote a {
+  color: var(--accent);
+}
+
+/* ── Lists ── */
+ul, ol {
+  margin-bottom: 16px;
+  padding-left: 24px;
+}
+
+li {
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+  line-height: 1.8;
+}
+
+li code {
+  font-size: 12.5px;
+}
+
+/* ── Responsive ── */
+@media (max-width: 960px) {
+  .sidebar {
+    transform: translateX(-100%);
+    transition: transform 0.3s ease;
+  }
+  .sidebar.open {
+    transform: translateX(0);
+  }
+  .hamburger {
+    display: flex;
+  }
+  .overlay.open {
+    display: block;
+  }
+  .main {
+    margin-left: 0;
+  }
+  .hero {
+    padding: 70px 24px 36px;
+  }
+  .hero h1 {
+    font-size: 26px;
+  }
+  .content {
+    padding: 32px 24px 80px;
+  }
+}
+
+@media (max-width: 600px) {
+  .hero h1 {
+    font-size: 22px;
+  }
+  h2 {
+    font-size: 22px;
+  }
+  pre {
+    padding: 14px 16px;
+  }
+  th, td {
+    padding: 8px 10px;
+    font-size: 12.5px;
+  }
+}
+</style>
+</head>
+<body>
+
+<!-- Hamburger -->
+<button class="hamburger" id="hamburger" aria-label="Toggle navigation">
+  <span></span><span></span><span></span>
+</button>
+<div class="overlay" id="overlay"></div>
+
+<!-- Sidebar -->
+<nav class="sidebar" id="sidebar">
+  <div class="sidebar-header">
+    <div class="sidebar-logo">Claude Code<br>Best Practices</div>
+    <div class="sidebar-sub">Complete Guide</div>
+  </div>
+  <div class="sidebar-nav" id="sidebarNav">
+    <a class="nav-item active" href="#ch1"><span class="nav-num">01</span>上下文窗口</a>
+    <a class="nav-item" href="#ch2"><span class="nav-num">02</span>CLAUDE.md</a>
+    <a class="nav-item" href="#ch3"><span class="nav-num">03</span>高效提示</a>
+    <a class="nav-item" href="#ch4"><span class="nav-num">04</span>工具使用</a>
+    <a class="nav-item" href="#ch5"><span class="nav-num">05</span>工作流模式</a>
+    <a class="nav-item" href="#ch6"><span class="nav-num">06</span>配置详解</a>
+    <a class="nav-item" href="#ch7"><span class="nav-num">07</span>成本优化</a>
+    <a class="nav-item" href="#ch8"><span class="nav-num">08</span>CI集成</a>
+    <a class="nav-item" href="#ch9"><span class="nav-num">09</span>快捷键</a>
+    <a class="nav-item" href="#ch10"><span class="nav-num">10</span>常见陷阱</a>
+    <a class="nav-item" href="#ch11"><span class="nav-num">11</span>复合工程</a>
+    <a class="nav-item" href="#ch12"><span class="nav-num">12</span>效能总结</a>
+  </div>
+</nav>
+
+<!-- Main -->
+<div class="main">
+  <!-- Hero -->
+  <div class="hero">
+    <div class="hero-label">Technical Reference</div>
+    <h1>Claude Code 最佳实践完全指南</h1>
+    <div class="hero-meta">
+      <div class="hero-meta-item"><strong>调研日期</strong>2026-03-30（最后更新：2026-03-30）</div>
+      <div class="hero-meta-item"><strong>信息来源</strong>Anthropic 官方文档、Claude Code 内置指南、ECC 框架、社区实践、团队实操验证</div>
+      <div class="hero-meta-item"><strong>目标</strong>为团队提供一份可直接落地的 Claude Code 使用手册</div>
+    </div>
+  </div>
+
+  <!-- Content -->
+  <div class="content">
+<section id="ch1">
+<h2>一、核心原则：上下文窗口是第一约束</h2>
+<blockquote>"Most best practices for Claude Code are based on one constraint: Claude's context window fills up fast, and performance degrades as it fills."<br>— <a href="https://code.claude.com/docs/en/best-practices" target="_blank" rel="noopener">Anthropic Best Practices</a></blockquote>
+<p>Claude Code 的优化策略都围绕一个事实：<strong>上下文窗口是有限资源</strong>。会话上下文包含对话历史、已读文件、命令输出、CLAUDE.md、Skills 与系统指令等；随着上下文增大，Claude Code 会自动管理（先清理旧工具输出，必要时总结对话），但主动管理上下文仍然是降低成本和保持质量的关键。</p>
+<h3>1.1 上下文消耗来源</h3>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>来源</th>
+<th>消耗量</th>
+<th>加载时机</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>CLAUDE.md + rules</td>
+<td>中</td>
+<td>会话启动时</td>
+</tr>
+<tr>
+<td>对话历史</td>
+<td>高（持续增长）</td>
+<td>每轮累积</td>
+</tr>
+<tr>
+<td>文件读取结果</td>
+<td>高</td>
+<td>每次 Read/Grep</td>
+</tr>
+<tr>
+<td>工具调用输出</td>
+<td>中-高</td>
+<td>每次工具使用</td>
+</tr>
+<tr>
+<td>MCP 工具定义</td>
+<td>低-中</td>
+<td>延迟加载或启动时</td>
+</tr>
+<tr>
+<td>Skills</td>
+<td>低</td>
+<td>按需加载</td>
+</tr>
+</tbody></table></div>
+<h3>1.2 上下文管理策略</h3>
+<p><strong>主动压缩（最重要的习惯）：</strong></p>
+<pre data-lang="bash"><code># 在逻辑阶段边界处手动压缩
+/compact 保留 API 变更和数据库 schema 的上下文，总结之前的调试步骤
+
+# 切换到不相关任务前
+/compact 保留当前进度
+/clear
+
+# 也可以在 CLAUDE.md 中指定压缩策略
+# Compact instructions
+# When using compact, focus on:
+# - Test failures and error messages
+# - Code changes made
+# - Key architectural decisions</code></pre>
+<p><strong>上下文退化阈值（社区测试数据）：</strong></p>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>使用率</th>
+<th>表现影响</th>
+<th>建议操作</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>低占用</td>
+<td>无明显退化</td>
+<td>正常工作</td>
+</tr>
+<tr>
+<td>中等占用</td>
+<td>精度开始下降，早期指令可能被压缩</td>
+<td>考虑 <code>/compact</code></td>
+</tr>
+<tr>
+<td>高占用</td>
+<td>幻觉增加，指令遵从率下降</td>
+<td>立即 <code>/compact</code></td>
+</tr>
+<tr>
+<td>接近上限</td>
+<td>严重退化，自动压缩触发</td>
+<td>强制 <code>/clear</code> 重新开始</td>
+</tr>
+</tbody></table></div>
+<blockquote>注：官方未公开固定百分比阈值。可通过 <code>/context</code> 命令观察当前占用情况，建议在阶段性任务完成后主动 <code>/compact</code>，而非等待自动压缩。</blockquote>
+<p><strong>为什么手动压缩优于自动压缩：</strong></p>
+<ul>
+<li>自动压缩在接近上下文上限时触发（官方未公开固定阈值）— 此时你已经为所有之前的轮次支付了高额 token 成本</li>
+<li>手动压缩让你控制<strong>什么被保留</strong></li>
+<li>在逻辑断点压缩保留关键推理上下文</li>
+</ul>
+<p><strong>在 CLAUDE.md 中指定压缩策略（推荐）：</strong></p>
+<pre data-lang="markdown"><code>## Compact Instructions
+完成阶段性任务后建议 /compact，压缩时保留：代码变更摘要、未完成的待办、关键架构决策。
+切换到不相关任务前先 /clear。</code></pre>
+<p><strong>用子 Agent 保护主上下文：</strong></p>
+<pre><code># BAD：在主会话中探索大量文件
+读取 src/ 下所有文件来理解架构
+
+# GOOD：委托给子 agent
+使用一个子 agent 来调研认证模块如何处理 token 刷新</code></pre>
+<p>子 agent 在独立的上下文窗口中运行。它们的详细输出（文件读取、探索过程）不会污染主对话，只返回摘要。</p>
+<h3>1.3 关键命令</h3>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>命令</th>
+<th>作用</th>
+<th>何时使用</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>/compact [focus]</code></td>
+<td>压缩对话历史，可指定保留重点</td>
+<td>每个逻辑阶段完成后</td>
+</tr>
+<tr>
+<td><code>/clear</code></td>
+<td>重置上下文</td>
+<td>切换到不相关任务时</td>
+</tr>
+<tr>
+<td><code>/context</code></td>
+<td>查看上下文使用情况</td>
+<td>监控上下文消耗</td>
+</tr>
+<tr>
+<td><code>/cost</code></td>
+<td>查看 token 消耗和费用</td>
+<td>追踪成本</td>
+</tr>
+<tr>
+<td><code>claude --continue</code></td>
+<td>恢复最近的会话</td>
+<td>继续之前的工作</td>
+</tr>
+<tr>
+<td><code>claude --resume</code></td>
+<td>从历史会话中选择恢复</td>
+<td>回到特定任务</td>
+</tr>
+</tbody></table></div>
+</section><section id="ch2">
+<h2>二、CLAUDE.md —— 项目记忆文件</h2>
+<h3>2.1 什么是 CLAUDE.md</h3>
+<p>CLAUDE.md 是 Claude Code 的<strong>持久记忆文件</strong>。每次会话启动时自动加载，其内容作为系统上下文的一部分影响 Claude 的所有行为。类似于 Cursor 的 <code>.cursorrules</code> 或 GitHub Copilot 的 <code>.github/copilot-instructions.md</code>。</p>
+<h3>2.2 文件层级与加载顺序</h3>
+<pre><code>~/.claude/CLAUDE.md                    # 个人级别，所有项目生效
+~/.claude/rules/*.md                   # 个人规则文件，按需加载
+&lt;project-root&gt;/CLAUDE.md              # 项目级别，通过 git 共享
+&lt;project-root&gt;/.claude/rules/*.md     # 项目规则文件，按需加载
+&lt;subdirectory&gt;/CLAUDE.md              # 子目录级别，仅在该目录下生效</code></pre>
+<p>所有匹配的文件会<strong>叠加</strong>而非覆盖。更具体的文件在更通用的文件之上增加指令。</p>
+<p>**特殊文件：<code>CLAUDE.local.md</code>**</p>
+<p>在项目根目录创建的 <code>CLAUDE.local.md</code> 会被 Claude 自动读取，且自动被 gitignore。适合存放：</p>
+<ul>
+<li>个人本地后端地址（不同开发者不同）</li>
+<li>个人调试偏好</li>
+<li>临时的工作备忘</li>
+</ul>
+<h3>2.3 该写什么 vs 不该写什么</h3>
+<p><strong>该写：</strong></p>
+<pre data-lang="markdown"><code># CLAUDE.md 模板
+
+## 项目概览
+[1-3 句话：是什么、技术栈、主语言]
+
+## 架构
+[目录结构，每个顶层目录的简要描述]
+[关键模式：分层架构、DDD、微服务等]
+
+## 常用命令
+npm install              # 安装依赖
+npm run dev              # 启动开发服务器
+npm test                 # 运行全部测试
+npm test -- --grep "name" # 运行单个测试（重要！Claude 会频繁使用）
+npm run lint             # 代码检查
+npm run build            # 构建
+
+## 代码规范
+- [Commit 格式]
+- [分支策略]
+- [代码风格规则]
+- [框架特定模式]
+
+## 关键约束
+- [绝不能违反的硬性规则]
+- [安全边界]
+- [导入限制]
+
+## CI/CD
+[流水线检查哪些内容]</code></pre>
+<p><strong>不该写：</strong></p>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>不该写的内容</th>
+<th>原因</th>
+<th>替代方案</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>密钥、API Key、Token</td>
+<td>安全风险</td>
+<td>使用环境变量</td>
+</tr>
+<tr>
+<td>大段代码或文档</td>
+<td>消耗上下文</td>
+<td>使用 <code>@docs/api.md</code> 引用</td>
+</tr>
+<tr>
+<td>频繁变化的信息</td>
+<td>容易过时</td>
+<td>让 Claude 按需查询</td>
+</tr>
+<tr>
+<td>工具权限配置</td>
+<td>不属于自然语言指令</td>
+<td>使用 <code>settings.json</code></td>
+</tr>
+<tr>
+<td>README 的重复内容</td>
+<td>浪费空间</td>
+<td>CLAUDE.md 是给 Claude 的，不是给人的</td>
+</tr>
+<tr>
+<td>显而易见的事</td>
+<td>"写干净的代码"没有信息量</td>
+<td>写具体的、非显而易见的约束</td>
+</tr>
+</tbody></table></div>
+<h3>2.4 保持精简</h3>
+<p><strong>目标：200 行以内。</strong> CLAUDE.md 在每次会话启动时加载，消耗 token。</p>
+<p>当内容超过 200 行时：</p>
+<ul>
+<li>将专题内容拆分到 <code>.claude/rules/*.md</code>（按需加载）</li>
+<li>将可复用工作流移到 <code>.claude/commands/*.md</code>（按需调用）</li>
+<li>将专业知识移到 <code>.claude/skills/</code>（标准位置，Claude Code 自动发现）</li>
+</ul>
+<h3>2.4.1 Path-Scoped Rules（路径作用域规则）</h3>
+<p><code>.claude/rules/*.md</code> 支持 YAML frontmatter 中的 <code>paths:</code> 字段，使规则仅在 Claude 操作匹配路径的文件时加载：</p>
+<pre data-lang="yaml"><code>---
+paths:
+  - "src/routes/**"
+  - "src/modules/dashboard/**"
+---
+
+# 三级菜单 Tab 路由规约
+...</code></pre>
+<p><strong>效果</strong>：当 Claude 只在 <code>src/api/</code> 下工作时，路由规约不会被加载，节省上下文。</p>
+<p><strong>适用场景</strong>：</p>
+<ul>
+<li>模块专属规约（如路由、监控布局）→ 加 paths 限制</li>
+<li>通用规约（如代码质量清单）→ 不加 paths，始终可用</li>
+</ul>
+<h3>2.4.2 @ 引用语法</h3>
+<p>CLAUDE.md 中可以用 <code>@path/to/file</code> 语法引用其他文件（支持最多 5 层递归），Claude 会在需要时自动拉取内容：</p>
+<pre data-lang="markdown"><code># 当前写法
+详细规约见 `.claude/rules/module-conventions.md`。
+
+# @ 引用写法（Claude 会按需拉取内容）
+详细规约见 @.claude/rules/module-conventions.md。</code></pre>
+<p><strong>注意</strong>：@ 引用会将文件内容嵌入上下文。对于已通过 <code>.claude/rules/</code> 自动加载的文件，不需要再用 @ 引用。@ 更适合引用不在 <code>.claude/</code> 目录下的文件，如 <code>@design-guideline.md</code>。</p>
+<h3>2.5 真实世界示例</h3>
+<p><strong>示例项目 A（~124 行，结构良好）：</strong></p>
+<ul>
+<li>Project Overview → Architecture → Agent Orchestration → LLM Adapters → Tool System → Skill Creator → Common Commands → CI Pipeline → Configuration → Conventions</li>
+<li>每个部分都是 Claude 工作时需要的具体可操作信息</li>
+<li>末尾有行为指令：<code>注意：不要提交代码，永远留给我提交</code></li>
+</ul>
+<p><strong>示例项目 B（199 行，五层架构）：</strong></p>
+<p>重构前 ~425 行，重构后 199 行。采用五层配置架构：</p>
+<pre><code>CLAUDE.md (199行，每次加载)
+├── Hard Constraints、Project Snapshot、Architecture、Theme、API Planning
+├── On-Demand Rules 索引、Custom Commands 索引、Skill 入口
+│
+├── .claude/rules/ (按需加载)
+│   ├── quality-checklist.md (98行) — 代码质量检查清单、ESLint、自检流程
+│   ├── component-reference.md (119行) — 能力参考、图标/表格/组件文档源
+│   └── module-conventions.md (41行) — 模块路由规约 [paths: src/routes/**, src/modules/dashboard/**]
+│
+├── .claude/commands/ (按需调用)
+│   ├── lint.md — /lint [files]
+│   ├── self-check.md — /self-check [files]（引用 /lint + quality-checklist.md）
+│   ├── new-page.md — /new-page &lt;name&gt;
+│   └── new-api.md — /new-api &lt;feature&gt;
+│
+├── .claude/skills/ (自动发现)
+│   ├── frontend-encyclopedia/ — 全项目通用能力百科
+│   └── feature-layout-guide/ — 业务模块布局标准
+│
+└── .claude/settings.local.json — 权限 + Hooks</code></pre>
+<p>关键经验：</p>
+<ul>
+<li>代码质量清单（~150 行）是最大的拆分收益项</li>
+<li><code>/self-check</code> 命令引用 <code>/lint</code> 和 <code>quality-checklist.md</code>，避免三处维护同一逻辑</li>
+<li>Skills 放在 <code>.claude/skills/</code> 而非 <code>docs/skills/</code>，利用 Claude Code 自动发现机制</li>
+<li>rules 文件用 <code>paths:</code> frontmatter 限制加载范围</li>
+</ul>
+<h3>2.6 配置层级总览</h3>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>关注点</th>
+<th>放在哪里</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>工具权限、MCP 服务器、Hooks</td>
+<td><code>settings.json</code> / <code>settings.local.json</code></td>
+</tr>
+<tr>
+<td>项目架构、规范、构建命令</td>
+<td><code>CLAUDE.md</code>（项目级，≤200 行）</td>
+</tr>
+<tr>
+<td>模块专属详细规约</td>
+<td><code>.claude/rules/*.md</code>（按需加载，可加 paths 限制）</td>
+</tr>
+<tr>
+<td>可复用 prompt 模板</td>
+<td><code>.claude/commands/*.md</code>（按需调用）</td>
+</tr>
+<tr>
+<td>领域知识与工作流</td>
+<td><code>.claude/skills/</code>（自动发现，按需激活）</td>
+</tr>
+<tr>
+<td>个人偏好（语言、风格）</td>
+<td><code>~/.claude/CLAUDE.md</code> 或 <code>~/.claude/rules/*.md</code></td>
+</tr>
+<tr>
+<td>个人本地配置</td>
+<td><code>CLAUDE.local.md</code>（自动 gitignore）</td>
+</tr>
+<tr>
+<td>安全策略、commit 规则</td>
+<td><code>~/.claude/rules/*.md</code>（个人级）</td>
+</tr>
+</tbody></table></div>
+</section><section id="ch3">
+<h2>三、高效提示技巧</h2>
+<h3>3.1 具体优于模糊</h3>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>质量</th>
+<th>示例</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><strong>太模糊</strong></td>
+<td>"修复登录 bug"</td>
+</tr>
+<tr>
+<td><strong>较好</strong></td>
+<td>"用户报告会话超时后登录失败。检查 src/auth/ 中的 token 刷新"</td>
+</tr>
+<tr>
+<td><strong>最佳</strong></td>
+<td>"会话超时后登录失败。检查 src/auth/tokenRefresh.ts。先写一个失败的测试，然后修复它。用 <code>npm test</code> 验证"</td>
+</tr>
+</tbody></table></div>
+<h3>3.2 高效提示的模式</h3>
+<p><strong>1. 提供验证标准：</strong></p>
+<pre><code>写 validateEmail 函数。
+测试用例: "user@example.com" → true, "invalid" → false, "user@.com" → false。
+实现后运行测试。</code></pre>
+<p><strong>2. 引用具体文件：</strong></p>
+<pre><code>修复认证流程。问题在 src/auth/session.ts 的 token 刷新逻辑中。</code></pre>
+<p><strong>3. 描述症状而非解决方案：</strong></p>
+<pre><code># GOOD：描述症状
+用户删除旧文件时报 500 错误。Error: "EACCES: permission denied"。检查 src/fileStore.ts
+
+# BAD：直接给方案
+修改文件权限</code></pre>
+<p><strong>4. 使用 @ 引用文件：</strong></p>
+<pre><code>修复 @src/auth.ts 中的 token 过期处理</code></pre>
+<p><strong>5. 使用图片/截图：</strong></p>
+<pre><code>[粘贴 UI 截图]
+实现这个设计。完成后截图对比原图，列出差异并修复。</code></pre>
+<h3>3.3 纠正两次后重新开始</h3>
+<p>当你纠正 Claude 两次但问题仍存在时，<strong>上下文已被失败尝试污染</strong>。正确做法：</p>
+<pre data-lang="bash"><code>/clear
+# 用一个更好的初始 prompt 重新开始，把你从之前的尝试中学到的信息融入进去</code></pre>
+</section><section id="ch4">
+<h2>四、工具使用指南</h2>
+<h3>4.1 选对工具</h3>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>任务</th>
+<th>最佳工具</th>
+<th>避免</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>按名称查找文件</td>
+<td><strong>Glob</strong></td>
+<td><code>find</code>, <code>ls</code></td>
+</tr>
+<tr>
+<td>搜索文件内容</td>
+<td><strong>Grep</strong></td>
+<td><code>grep</code>, <code>rg</code></td>
+</tr>
+<tr>
+<td>读取已知文件</td>
+<td><strong>Read</strong></td>
+<td><code>cat</code>, <code>head</code>, <code>tail</code></td>
+</tr>
+<tr>
+<td>修改已有文件</td>
+<td><strong>Edit</strong></td>
+<td><code>sed</code>, <code>awk</code></td>
+</tr>
+<tr>
+<td>创建新文件</td>
+<td><strong>Write</strong></td>
+<td><code>echo &gt;</code>, <code>cat &lt;&lt;EOF</code></td>
+</tr>
+<tr>
+<td>执行命令</td>
+<td><strong>Bash</strong></td>
+<td>—</td>
+</tr>
+<tr>
+<td>复杂多步研究</td>
+<td><strong>Agent</strong>（子 agent）</td>
+<td>在主上下文中逐个探索</td>
+</tr>
+</tbody></table></div>
+<h3>4.2 Read：精确读取</h3>
+<pre data-lang="bash"><code># GOOD：只读需要的部分
+Read("src/auth.ts", offset=50, limit=30)  # 只读第 50-80 行
+
+# BAD：读取整个大文件
+Read("src/auth.ts")  # 10000 行文件全部进入上下文</code></pre>
+<h3>4.3 Grep → Read 工作流</h3>
+<pre data-lang="bash"><code># 第一步：用 Grep 定位
+Grep("handleTokenRefresh", "src/**/*.ts", output_mode="files_with_matches")
+
+# 第二步：只 Read 相关文件
+Read("src/auth/tokenRefresh.ts")</code></pre>
+<h3>4.4 Edit vs Write</h3>
+<ul>
+<li><strong>Edit</strong>：只发送差异，上下文开销小，更安全</li>
+<li><strong>Write</strong>：完全覆盖文件，仅用于新建文件或完全重写</li>
+<li><strong>规则</strong>：必须先 Read 再 Edit/Write</li>
+</ul>
+<h3>4.5 Bash：最小化输出</h3>
+<pre data-lang="bash"><code># BAD：返回 10 万行
+npm test
+
+# GOOD：过滤输出
+npm test 2&gt;&amp;1 | grep -E "FAIL|PASS|Error" | head -20</code></pre>
+</section><section id="ch5">
+<h2>五、工作流模式</h2>
+<h3>5.1 Plan Mode（复杂任务必用）</h3>
+<p>当面对多文件变更、不熟悉的代码库或大规模重构时：</p>
+<pre><code>Shift+Tab  → 进入 Plan Mode</code></pre>
+<p><strong>工作流：</strong></p>
+<ol>
+<li><strong>探索</strong>（只读）：Claude 分析请求，读取相关文件</li>
+<li><strong>规划</strong>：Claude 产出结构化计划（涉及哪些文件、修改顺序、风险点）</li>
+<li><strong>迭代</strong>：你审查计划，提出修改（"加上错误处理" / "跳过步骤 3"）</li>
+<li><strong>执行</strong>：切回正常模式，Claude 按计划逐步实施</li>
+</ol>
+<h3>5.2 TDD 工作流</h3>
+<pre><code>1. "为 validateEmail 写失败的测试。不要实现。"
+   → Claude 产出测试文件（RED）
+
+2. "实现最小代码让测试通过。"
+   → Claude 实现功能（GREEN）
+
+3. "重构，保持测试通过。"
+   → Claude 优化代码（IMPROVE）
+
+4. "运行 npm test 并检查覆盖率。"
+   → 验证 80%+ 覆盖</code></pre>
+<h3>5.3 调试工作流</h3>
+<pre><code>1. 粘贴完整的错误堆栈
+2. "先写一个复现这个 bug 的失败测试"
+3. "生成 3 个可能的原因假设，逐一验证"
+4. "修复并确认测试通过"</code></pre>
+<p><strong>关键原则：</strong> 先复现，后修复。不要直接"修 bug"，先证明 bug 存在。</p>
+<h3>5.4 多 Agent 并行</h3>
+<pre><code># 三个独立任务，用并行子 agent
+对认证模块做安全审查、对缓存层做性能审查、对工具函数做类型检查，
+使用三个独立的子 agent 并行执行。</code></pre>
+<p><strong>模型路由：</strong></p>
+<ul>
+<li>轻量级 agent（搜索、格式化、测试运行）→ <strong>Haiku 4.5</strong>（成本约为 Sonnet 的 1/3）</li>
+<li>核心开发 agent（代码生成、重构）→ <strong>Sonnet 4.6</strong></li>
+<li>架构决策 agent（复杂推理）→ <strong>Opus 4.6</strong></li>
+</ul>
+<h3>5.5 Git 集成</h3>
+<pre data-lang="bash"><code># 让 Claude 从 diff 生成 commit message（比从记忆生成更准确）
+git diff --staged | claude -p "基于这个 diff 生成 conventional commit message"
+
+# PR 描述
+git diff main...HEAD | claude -p "为这个 PR 写详细的描述和测试计划"</code></pre>
+<h3>5.6 Writer/Reviewer 双会话模式</h3>
+<pre data-lang="bash"><code># 会话 A：写代码
+实现 API 端点的限流中间件
+
+# 会话 B（新开）：以新视角审查
+审查 @src/middleware/rateLimiter.ts，检查边界条件、竞态条件、一致性问题</code></pre>
+<p>新会话没有写代码时的上下文偏见，审查更客观。</p>
+</section><section id="ch6">
+<h2>六、配置详解</h2>
+<h3>6.1 settings.json 结构</h3>
+<pre data-lang="jsonc"><code>{
+  // 权限管理
+  "permissions": {
+    "allow": [
+      "Read",                    // 所有文件读取
+      "Glob",                    // 文件搜索
+      "Grep",                    // 内容搜索
+      "Bash(git *)",             // 所有 git 命令
+      "Bash(npm test)",          // npm test
+      "Bash(npm run *)",         // 所有 npm scripts
+      "Edit",                    // 文件编辑
+      "Write"                    // 文件写入
+    ],
+    "deny": [
+      "Bash(rm -rf *)",         // 阻止危险删除
+      "Bash(sudo *)",           // 阻止 sudo
+      "Bash(npm publish*)",     // 阻止意外发布
+      "Bash(git push --force*)", // 阻止强制推送
+      "Bash(git reset --hard *)" // 阻止丢失改动
+    ]
+  },
+
+  // 模型配置
+  "model": "claude-sonnet-4-6",
+
+  // 注意：MCP 服务器配置在 .mcp.json 中，不在 settings.json
+
+  // Hooks
+  "hooks": {
+    "PostToolUse": [{
+      "matcher": "Write|Edit",
+      "hooks": [{ "type": "command", "command": "prettier --write $CLAUDE_FILE_PATH 2&gt;/dev/null || true" }]
+    }]
+  },
+
+  // 行为
+  "alwaysThinkingEnabled": true
+}</code></pre>
+<h3>6.2 配置作用域</h3>
+<pre><code>Enterprise 管理策略       ← 最高优先级（不可覆盖）
+    ↓
+~/.claude/settings.json  ← 个人全局
+    ↓
+.claude/settings.json    ← 项目级（提交到 git）
+    ↓
+.claude/settings.local.json ← 项目本地（gitignore）</code></pre>
+<h3>6.3 权限模式</h3>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>模式</th>
+<th>自动批准</th>
+<th>切换方式</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>default</code></td>
+<td>仅文件读取</td>
+<td><code>Shift+Tab</code> 循环</td>
+</tr>
+<tr>
+<td><code>acceptEdits</code></td>
+<td>读取 + 编辑</td>
+<td>迭代开发时</td>
+</tr>
+<tr>
+<td><code>plan</code></td>
+<td>仅读取（只读）</td>
+<td>探索、规划时</td>
+</tr>
+<tr>
+<td><code>auto</code></td>
+<td>一切（分类器检查）</td>
+<td>长任务，信任方向</td>
+</tr>
+<tr>
+<td><code>bypassPermissions</code></td>
+<td>一切（无检查）</td>
+<td><strong>仅限隔离容器</strong></td>
+</tr>
+</tbody></table></div>
+<h3>6.4 Hooks 系统</h3>
+<p><strong>Hook 类型：</strong></p>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>Hook</th>
+<th>触发时机</th>
+<th>能否阻止操作</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>PreToolUse</code></td>
+<td>工具执行前</td>
+<td>是（exit 2）</td>
+</tr>
+<tr>
+<td><code>PostToolUse</code></td>
+<td>工具执行后</td>
+<td>否</td>
+</tr>
+<tr>
+<td><code>Notification</code></td>
+<td>通知发出时</td>
+<td>否</td>
+</tr>
+<tr>
+<td><code>UserPromptSubmit</code></td>
+<td>用户提交输入时</td>
+<td>是</td>
+</tr>
+<tr>
+<td><code>Stop</code></td>
+<td>Claude 完成回复时</td>
+<td>否</td>
+</tr>
+</tbody></table></div>
+<p><strong>实用 Hook 示例：</strong></p>
+<pre data-lang="bash"><code># 写入后自动格式化
+#!/bin/bash
+# ~/.claude/hooks/post-edit-format.sh
+FILE="$CLAUDE_FILE_PATH"
+if [[ "$FILE" == *.ts || "$FILE" == *.tsx ]]; then
+  npx prettier --write "$FILE" 2&gt;/dev/null
+fi</code></pre>
+<pre data-lang="bash"><code># 写入后自动 ESLint 检查（本项目实战示例）
+# settings.local.json hooks 配置
+# 当 Write 或 Edit 工具执行后，自动对 .js/.jsx/.ts/.tsx 文件运行 ESLint
+# matcher: "Write|Edit"
+# command: 从 stdin JSON 提取 file_path，如果是 JS/TS 文件则执行 eslint</code></pre>
+<pre data-lang="bash"><code># 阻止写入包含密钥的内容
+#!/bin/bash
+# ~/.claude/hooks/validate-no-secrets.sh
+INPUT=$(cat -)
+CONTENT=$(echo "$INPUT" | jq -r '.content // empty')
+if echo "$CONTENT" | grep -qiE '(api_key|secret|password)\s*=\s*["\x27][^\s]+'; then
+  echo "BLOCKED: 检测到硬编码密钥。请使用环境变量。"
+  exit 1
+fi</code></pre>
+<p><strong>Hook 输入输出机制：</strong></p>
+<p>Hook 通过 <strong>stdin 接收结构化 JSON</strong> 数据（包含工具名、参数、输出等），而非环境变量。可用的环境变量仅限于项目/插件级别：</p>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>变量</th>
+<th>说明</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>CLAUDE_PROJECT_DIR</code></td>
+<td>项目根目录</td>
+</tr>
+<tr>
+<td><code>CLAUDE_PLUGIN_ROOT</code></td>
+<td>插件根目录</td>
+</tr>
+<tr>
+<td><code>CLAUDE_PLUGIN_DATA</code></td>
+<td>插件数据目录</td>
+</tr>
+<tr>
+<td><code>CLAUDE_ENV_FILE</code></td>
+<td>环境文件路径</td>
+</tr>
+</tbody></table></div>
+<p><strong>stdin JSON 示例（PreToolUse）：</strong></p>
+<pre data-lang="json"><code>{
+  "tool_name": "Edit",
+  "tool_input": { "file_path": "/src/auth.ts", "old_string": "...", "new_string": "..." }
+}</code></pre>
+<p><strong>社区高频推荐 Hooks：</strong></p>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>Hook 类型</th>
+<th>用途</th>
+<th>优先级</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>PostToolUse `Write\</td>
+<td>Edit` → ESLint</td>
+<td>写入后自动 lint 检查</td>
+<td>P0</td>
+</tr>
+<tr>
+<td>PostToolUse `Write\</td>
+<td>Edit` → Prettier</td>
+<td>写入后自动格式化</td>
+<td>P1</td>
+</tr>
+<tr>
+<td>PreToolUse `Write\</td>
+<td>Edit` → 密钥检测</td>
+<td>拦截含 <code>sk-*</code>/<code>AKIA*</code>/<code>ghp_*</code> 等模式的写入</td>
+<td>P0</td>
+</tr>
+<tr>
+<td>PreToolUse <code>Bash</code> → 危险命令拦截</td>
+<td>阻止 <code>rm -rf</code>、<code>git push --force</code></td>
+<td>P1</td>
+</tr>
+<tr>
+<td>Stop → 完成度验证</td>
+<td>Claude 完成回复时检查是否真正完成</td>
+<td>P2</td>
+</tr>
+</tbody></table></div>
+<p><strong>Hook 性能建议：</strong></p>
+<ul>
+<li>安全拦截（PreToolUse）必须同步执行</li>
+<li>格式化、日志、测试类 hooks 建议设置 <code>timeout</code> 避免阻塞</li>
+<li>exit 0 = 成功，exit 2 = 阻塞性错误（对支持阻止的事件生效，如 PreToolUse 阻止工具调用、UserPromptSubmit 拒绝输入），其他非零 = 非阻塞性错误（执行继续，stderr 仅 verbose 模式可见）</li>
+</ul>
+<blockquote>来源：<a href="https://code.claude.com/docs/en/hooks" target="_blank" rel="noopener">Claude Code Hooks 官方文档</a>、<a href="https://github.com/trailofbits/claude-code-config" target="_blank" rel="noopener">Trail of Bits claude-code-config</a></blockquote>
+<h3>6.5 自定义 Slash 命令</h3>
+<p>在 <code>.claude/commands/</code> 中创建 Markdown 文件：</p>
+<pre data-lang="markdown"><code>&lt;!-- .claude/commands/tdd.md --&gt;
+按照 TDD 流程实现以下需求：
+
+1. 先写失败的测试（RED）
+2. 实现最小代码让测试通过（GREEN）
+3. 重构，保持测试通过（IMPROVE）
+
+需求: $ARGUMENTS</code></pre>
+<p>使用：<code>/tdd 邮箱验证函数</code></p>
+<pre data-lang="markdown"><code>&lt;!-- .claude/commands/review.md --&gt;
+审查以下代码的质量、安全性和性能问题。
+重点关注：错误处理、输入验证、性能影响、测试覆盖率。
+将问题分类为 CRITICAL / HIGH / MEDIUM / LOW。
+
+代码或文件: $ARGUMENTS</code></pre>
+<p>使用：<code>/review src/auth/login.ts</code></p>
+<p><strong>命令目录结构：</strong></p>
+<pre><code>.claude/commands/
+  review.md          → /review
+  tdd.md             → /tdd
+  fix-tests.md       → /fix-tests
+  new-api.md         → /new-api</code></pre>
+<p><strong>社区高频推荐命令（按使用率排序）：</strong></p>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>命令</th>
+<th>用途</th>
+<th>适用场景</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>/review</code></td>
+<td>多维度代码审查（正确性+安全+性能+规范）</td>
+<td>每次代码修改后、PR 前</td>
+</tr>
+<tr>
+<td><code>/commit</code></td>
+<td>从 diff 生成规范 commit message</td>
+<td>Git 提交时</td>
+</tr>
+<tr>
+<td><code>/debug</code></td>
+<td>系统化根因分析（观察→假设→验证→修复）</td>
+<td>遇到 bug、测试失败</td>
+</tr>
+<tr>
+<td><code>/test</code></td>
+<td>自动生成测试用例</td>
+<td>新功能开发、bug 修复</td>
+</tr>
+<tr>
+<td><code>/refactor</code></td>
+<td>代码坏味道识别 + 引导式重构</td>
+<td>技术债清理</td>
+</tr>
+<tr>
+<td><code>/explain</code></td>
+<td>深度解释代码架构与数据流</td>
+<td>理解不熟悉的模块</td>
+</tr>
+</tbody></table></div>
+<p><strong>命令编写关键模式：</strong></p>
+<ul>
+<li><code>$ARGUMENTS</code> 实现参数化</li>
+<li>命令可引用相同的规则文件实现逻辑复用（如 <code>/self-check</code> 引用与 <code>/lint</code> 相同的规则来源）</li>
+<li>引用 rules 文件实现"单一来源"（避免规则在命令和 rules 中双写）</li>
+</ul>
+<blockquote>来源：<a href="https://code.claude.com/docs/en/commands" target="_blank" rel="noopener">Anthropic 官方 commands 文档</a>、社区实践</blockquote>
+<h3>6.6 自定义 Agent</h3>
+<p>在 <code>.claude/agents/</code> 中创建 Markdown 文件：</p>
+<pre data-lang="markdown"><code>---
+name: security-reviewer
+description: 安全代码审查专家
+model: sonnet
+tools:
+  - Read
+  - Grep
+  - Glob
+disallowedTools:
+  - Write
+  - Edit
+  - Bash
+---
+
+你是一名高级安全工程师。分析提供的代码，检查：
+
+1. 输入验证和注入风险
+2. 认证和授权漏洞
+3. 敏感数据暴露
+4. OWASP Top 10 相关问题
+
+## 输出格式
+- CRITICAL: 必须在合并前修复
+- HIGH: 应该在合并前修复
+- MEDIUM: 方便时修复</code></pre>
+<p><strong>Agent 字段说明：</strong></p>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>字段</th>
+<th>说明</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>Agent 显示名称</td>
+</tr>
+<tr>
+<td><code>description</code></td>
+<td>功能描述</td>
+</tr>
+<tr>
+<td><code>model</code></td>
+<td>使用的模型：<code>haiku</code> / <code>sonnet</code> / <code>opus</code></td>
+</tr>
+<tr>
+<td><code>tools</code></td>
+<td>允许使用的工具（白名单）</td>
+</tr>
+<tr>
+<td><code>disallowedTools</code></td>
+<td>禁止使用的工具（黑名单）</td>
+</tr>
+</tbody></table></div>
+<p><strong>Skill vs Agent 核心区别：</strong></p>
+<ul>
+<li><strong>Skill</strong>：默认注入当前上下文（轻量、低成本），也可通过 <code>context: fork</code> 在独立上下文中运行。适合领域知识增强</li>
+<li><strong>Agent</strong>：始终在独立 context window 中运行（重量、高成本但可并行），适合需要限制工具权限或并行工作的场景</li>
+</ul>
+<p><strong>社区高频推荐 Agent 类型：</strong></p>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>Agent</th>
+<th>用途</th>
+<th>推荐 model</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>code-reviewer</td>
+<td>代码质量审查（只读）</td>
+<td>sonnet</td>
+</tr>
+<tr>
+<td>security-auditor</td>
+<td>安全漏洞扫描（只读）</td>
+<td>sonnet</td>
+</tr>
+<tr>
+<td>planner</td>
+<td>需求拆解与计划编写</td>
+<td>opus</td>
+</tr>
+<tr>
+<td>test-engineer</td>
+<td>测试用例生成与验证</td>
+<td>sonnet</td>
+</tr>
+<tr>
+<td>doc-writer</td>
+<td>文档与注释生成</td>
+<td>haiku</td>
+</tr>
+<tr>
+<td>build-error-resolver</td>
+<td>构建错误快速修复</td>
+<td>sonnet</td>
+</tr>
+</tbody></table></div>
+<p><strong>Agent model 选择策略：</strong></p>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>任务复杂度</th>
+<th>推荐模型</th>
+<th>成本（相对 Sonnet）</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>文件搜索、文档生成、格式化</td>
+<td>Haiku 4.5</td>
+<td>~1/3</td>
+</tr>
+<tr>
+<td>代码审查、编写、重构、测试</td>
+<td>Sonnet 4.6</td>
+<td>1x（基准）</td>
+</tr>
+<tr>
+<td>架构设计、复杂推理、深度分析</td>
+<td>Opus 4.6</td>
+<td>~5/3</td>
+</tr>
+</tbody></table></div>
+<h3>6.7 Skills（<code>.claude/skills/</code>）</h3>
+<p>Skills 是比 commands 更重的知识载体，支持自动发现和丰富的 frontmatter 配置。</p>
+<p><strong>标准位置</strong>：<code>.claude/skills/&lt;skill-name&gt;/SKILL.md</code></p>
+<p>Claude Code 会在工作目录的子目录中编辑文件时自动发现并加载对应的 skills，无需在 CLAUDE.md 中手动索引（但推荐索引以便人类查阅）。</p>
+<p><strong>SKILL.md frontmatter 增强：</strong></p>
+<pre data-lang="yaml"><code>---
+name: feature-layout-guide
+description: 业务模块页面布局标准
+# 可选字段：
+allowed-tools:        # 限制此 skill 可用的工具（白名单）
+  - Read
+  - Grep
+  - Glob
+model: sonnet          # 指定执行模型
+paths:                 # 仅在编辑匹配路径时自动加载
+  - "src/modules/dashboard/**"
+---</code></pre>
+<p><strong>Skills vs Commands vs Rules 对比：</strong></p>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>维度</th>
+<th>Rules</th>
+<th>Commands</th>
+<th>Skills</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>加载方式</td>
+<td>自动（可加 paths 限制）</td>
+<td>手动 <code>/命令名</code></td>
+<td>元数据始终在上下文，SKILL.md 按需加载</td>
+</tr>
+<tr>
+<td>触发者</td>
+<td>始终生效</td>
+<td>仅用户</td>
+<td>用户 + Claude 自动（可配置）</td>
+</tr>
+<tr>
+<td>内容类型</td>
+<td>规约条文</td>
+<td>可执行工作流</td>
+<td>领域知识 + Playbook + 可附带脚本/参考文件</td>
+</tr>
+<tr>
+<td>典型长度</td>
+<td>30-120 行</td>
+<td>10-30 行</td>
+<td>100-500 行（SKILL.md）+ 子文件无限</td>
+</tr>
+<tr>
+<td>上下文成本</td>
+<td>高（始终占用）</td>
+<td>低（仅调用时）</td>
+<td>最优（渐进披露）</td>
+</tr>
+<tr>
+<td>适合场景</td>
+<td>代码质量、命名规范</td>
+<td>lint、自检、脚手架</td>
+<td>组件百科、布局标准、调试方法论</td>
+</tr>
+</tbody></table></div>
+<p><strong>Skill 目录结构（官方示例 + 推荐扩展）：</strong></p>
+<pre><code>my-skill/
+├── SKILL.md              # [必须] 主指令文件（&lt;500 行，&lt;5k token）
+├── scripts/              # [可选] 可执行脚本（Claude 执行而非读取）
+│   └── validate.sh
+├── examples/             # [可选] 使用示例（Claude 按需读取）
+│   └── sample.md
+├── reference.md          # [可选] 详细 API 参考文档
+└── template.md           # [可选] 模板文件（Claude 填充）</code></pre>
+<p><strong>渐进披露（Progressive Disclosure）三级加载：</strong></p>
+<ol>
+<li><strong>元数据</strong>（~100 词）：name + description，始终在上下文</li>
+<li><strong>SKILL.md 正文</strong>（&lt;500 行）：skill 被触发时加载</li>
+<li><strong>子文件</strong>（无限）：SKILL.md 中引用，按需加载</li>
+</ol>
+<p><strong>Frontmatter 关键配置建议：</strong></p>
+<ul>
+<li><code>description</code> 应前置核心触发场景和关键词，Claude 根据 description 决定是否加载 skill（超过 250 字符会被截断）</li>
+<li><code>disable-model-invocation: true</code>：有副作用的操作（deploy、commit）禁止自动触发</li>
+<li><code>allowed-tools</code>：只读分析用 <code>Read,Grep,Glob</code>；文件修改用 <code>Read,Edit,Write</code></li>
+</ul>
+<p><strong>社区高频推荐 Skill 类型：</strong></p>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>Skill</th>
+<th>用途</th>
+<th>优先级</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>verification-before-completion</code></td>
+<td>完成前强制验证（evidence before assertions）</td>
+<td>P0</td>
+</tr>
+<tr>
+<td><code>reviewing-code</code></td>
+<td>多维度代码审查（超越 lint 的逻辑审查）</td>
+<td>P0</td>
+</tr>
+<tr>
+<td><code>writing-plans</code></td>
+<td>复杂任务拆解为可执行步骤</td>
+<td>P0</td>
+</tr>
+<tr>
+<td><code>systematic-debugging</code></td>
+<td>4 阶段根因分析（观察→假设→验证→修复）</td>
+<td>P1</td>
+</tr>
+<tr>
+<td><code>security-review</code></td>
+<td>认证/输入/API/密钥的安全检查清单</td>
+<td>P1</td>
+</tr>
+<tr>
+<td><code>research-before-coding</code></td>
+<td>写代码前先搜索是否有现成库/模式</td>
+<td>P1</td>
+</tr>
+<tr>
+<td><code>project-coding-patterns</code></td>
+<td>从 Git 历史提取的项目编码模式</td>
+<td>P2</td>
+</tr>
+</tbody></table></div>
+<blockquote>来源：<a href="https://github.com/anthropics/skills" target="_blank" rel="noopener">Anthropic 官方 skills 仓库</a>、<a href="https://github.com/affaan-m/everything-claude-code" target="_blank" rel="noopener">Everything Claude Code</a>（135+ skills）、<a href="https://github.com/obra/superpowers" target="_blank" rel="noopener">Superpowers 框架</a></blockquote>
+<h3>6.8 MCP 服务器</h3>
+<p>MCP 服务器配置在项目根目录的 <code>.mcp.json</code> 文件中（而非 <code>settings.json</code>）：</p>
+<pre data-lang="jsonc"><code>// .mcp.json
+{
+  "mcpServers": {
+    // Stdio 传输（本地，最常用）
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_TOKEN": "ghp_..." }
+    },
+    // HTTP 传输（远程服务器）
+    "remote-api": {
+      "url": "https://mcp.example.com/sse"
+    }
+  }
+}</code></pre>
+<p><strong>常用 MCP 服务器：</strong></p>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>服务器</th>
+<th>用途</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>@modelcontextprotocol/server-github</code></td>
+<td>Issues、PRs、代码搜索</td>
+</tr>
+<tr>
+<td><code>@modelcontextprotocol/server-filesystem</code></td>
+<td>沙箱文件访问</td>
+</tr>
+<tr>
+<td><code>@modelcontextprotocol/server-postgres</code></td>
+<td>数据库查询</td>
+</tr>
+<tr>
+<td><code>@modelcontextprotocol/server-brave-search</code></td>
+<td>网络搜索</td>
+</tr>
+<tr>
+<td><code>@anthropic-ai/mcp-server-playwright</code></td>
+<td>浏览器自动化</td>
+</tr>
+</tbody></table></div>
+</section><section id="ch7">
+<h2>七、成本优化</h2>
+<h3>7.1 定价模型</h3>
+<p><strong>订阅制（固定月费）：</strong></p>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>计划</th>
+<th>月费</th>
+<th>适用场景</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>Claude Free</td>
+<td>$0</td>
+<td>体验</td>
+</tr>
+<tr>
+<td>Claude Pro</td>
+<td>$17（年付）/ $20（月付）</td>
+<td>日常开发，含 Claude Code</td>
+</tr>
+<tr>
+<td>Claude Max 5x</td>
+<td>$100 起</td>
+<td>重度使用，5x/20x 用量</td>
+</tr>
+</tbody></table></div>
+<p><strong>API 按量付费（2026 年最新）：</strong></p>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>模型</th>
+<th>输入 (每 1M token)</th>
+<th>输出 (每 1M token)</th>
+<th>备注</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>Opus 4.6</td>
+<td>$5</td>
+<td>$25</td>
+<td>最强推理</td>
+</tr>
+<tr>
+<td>Sonnet 4.6</td>
+<td>$3</td>
+<td>$15</td>
+<td>主力开发</td>
+</tr>
+<tr>
+<td>Haiku 4.5</td>
+<td>$1</td>
+<td>$5</td>
+<td>轻量任务</td>
+</tr>
+</tbody></table></div>
+<blockquote>价格来源：<a href="https://platform.claude.com/docs/en/about-claude/pricing" target="_blank" rel="noopener">Anthropic 官方定价</a>。旧模型（Opus 4 $15/$75）仍可用但已不推荐。</blockquote>
+<h3>7.2 成本优化策略（按影响排序）</h3>
+<p>以下排序基于经验估算，具体节省幅度取决于会话长度、读写文件量与任务类型。可通过 <code>/cost</code> 命令对比优化前后的 token 消耗来验证。</p>
+<p><strong>1. 上下文管理（影响最大）</strong></p>
+<pre data-lang="bash"><code>/clear                           # 任务间清理
+/compact 保留代码变更的上下文      # 阶段间压缩</code></pre>
+<p><strong>2. 模型选择</strong></p>
+<pre data-lang="bash"><code>/model sonnet                    # 默认使用 Sonnet，不用 Opus
+/model haiku                     # 简单任务用 Haiku</code></pre>
+<p><strong>3. 精确读取</strong></p>
+<pre data-lang="bash"><code># 用 Grep 定位后再读取，而非逐个文件扫描
+# 读取时用 offset + limit 只读需要的部分</code></pre>
+<p><strong>4. 子 Agent 隔离</strong></p>
+<pre data-lang="bash"><code># 探索性工作委托给子 agent，不在主上下文中累积</code></pre>
+<p><strong>5. 精确提示</strong></p>
+<pre><code># 具体 = 更少的文件探索
+# 模糊 = 广泛扫描 = 更多 token</code></pre>
+<h3>7.3 子 Agent 成本策略</h3>
+<pre data-lang="markdown"><code>---
+name: file-searcher
+model: haiku     # 轻量任务用 Haiku，比 Sonnet 便宜 4x
+---</code></pre>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>Agent 类型</th>
+<th>推荐模型</th>
+<th>原因</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>文件搜索、格式化</td>
+<td>Haiku 4.5</td>
+<td>频繁调用，简单任务</td>
+</tr>
+<tr>
+<td>代码生成、重构</td>
+<td>Sonnet 4.6</td>
+<td>主力开发模型</td>
+</tr>
+<tr>
+<td>架构决策、深度分析</td>
+<td>Opus 4.6</td>
+<td>需要最深推理</td>
+</tr>
+</tbody></table></div>
+<h3>7.4 CI/Headless 模式的成本控制</h3>
+<pre data-lang="bash"><code># 设置硬性预算上限
+claude -p --max-budget-usd 5 "修复所有 TypeScript 错误"
+
+# 使用低 effort 减少思考 token
+claude -p --effort low "格式化这个文件"
+
+# 限制工具访问减少探索
+claude -p --allowedTools Read,Grep,Glob "分析代码库的安全问题"</code></pre>
+</section><section id="ch8">
+<h2>八、Headless/CI 集成</h2>
+<h3>8.1 基本用法</h3>
+<pre data-lang="bash"><code># 单次非交互执行
+claude -p "修复所有 ESLint 错误，然后运行 npm run lint 验证"
+
+# 管道输入
+cat error.log | claude -p "分析这个错误日志，建议修复方案"
+git diff | claude -p "审查这个 diff"
+
+# JSON 输出（机器解析）
+claude -p --output-format json "列出所有 TODO 注释"</code></pre>
+<h3>8.2 GitHub Actions 集成</h3>
+<pre data-lang="yaml"><code>name: Claude Code Review
+on: [pull_request]
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Review PR
+        run: |
+          claude -p "审查这个 PR 的变更。\
+            运行 'git diff origin/main...HEAD' 查看变更。\
+            报告发现的问题。" \
+            --output-format json \
+            --max-budget-usd 5 &gt; review.json
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}</code></pre>
+<h3>8.3 Git Worktree 隔离</h3>
+<p>多个 Agent 可以在独立的 worktree 中并行工作，避免文件冲突：</p>
+<pre><code>主会话: /project (main 分支)
+  ├── Agent 1: /project-worktrees/feature-auth (feature/auth 分支)
+  ├── Agent 2: /project-worktrees/feature-cache (feature/cache 分支)
+  └── Agent 3: /project-worktrees/fix-tests (fix/tests 分支)</code></pre>
+</section><section id="ch9">
+<h2>九、键盘快捷键速查</h2>
+<div class="table-wrap"><table>
+<thead><tr>
+<th>快捷键</th>
+<th>功能</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>Enter</code></td>
+<td>发送消息</td>
+</tr>
+<tr>
+<td><code>Esc</code></td>
+<td>取消当前生成</td>
+</tr>
+<tr>
+<td><code>Esc Esc</code></td>
+<td>Rewind 或 summarize（回退/按选定消息做摘要）</td>
+</tr>
+<tr>
+<td><code>Shift+Tab</code> / <code>Alt+M</code></td>
+<td>循环切换权限模式（default、acceptEdits、plan 及已启用的 auto 等）</td>
+</tr>
+<tr>
+<td><code>Option+T</code> / <code>Alt+T</code></td>
+<td>切换扩展思考</td>
+</tr>
+<tr>
+<td><code>Ctrl+O</code></td>
+<td>切换详细模式（查看思考输出）</td>
+</tr>
+<tr>
+<td><code>Ctrl+C</code></td>
+<td>中断 / 退出</td>
+</tr>
+<tr>
+<td><code>Ctrl+L</code></td>
+<td>清屏</td>
+</tr>
+<tr>
+<td><code>/</code></td>
+<td>打开命令菜单</td>
+</tr>
+<tr>
+<td><code>@</code></td>
+<td>引用文件</td>
+</tr>
+</tbody></table></div>
+</section><section id="ch10">
+<h2>十、常见陷阱与解决方案</h2>
+<h3>陷阱 1：万能会话</h3>
+<p><strong>问题：</strong> 一个任务，然后不相关的问题，再回到第一个任务。上下文充满无关信息。</p>
+<p><strong>解决：</strong></p>
+<pre data-lang="bash"><code>/rename oauth-migration
+/clear
+# 处理第二个任务
+claude --resume   # 选择 "oauth-migration" 回到第一个任务</code></pre>
+<h3>陷阱 2：不读就改</h3>
+<p><strong>问题：</strong> 直接编辑未读过的文件，导致上下文缺失或修改错误。</p>
+<p><strong>解决：</strong> Claude Code 强制要求先 Read 再 Edit/Write。养成 Grep → Read → Edit 的习惯。</p>
+<h3>陷阱 3：CLAUDE.md 过长</h3>
+<p><strong>问题：</strong> 超过 200 行的 CLAUDE.md，重要规则被淹没。</p>
+<p><strong>解决：</strong> 拆分到 <code>.claude/rules/*.md</code>（按需加载）和 <code>.claude/commands/*.md</code>（按需调用）。</p>
+<h3>陷阱 4：无限探索</h3>
+<p><strong>问题：</strong> "调查一下这个问题"没有范围限制。Claude 读取数百个文件，上下文耗尽。</p>
+<p><strong>解决：</strong></p>
+<pre data-lang="bash"><code># 限定范围
+使用子 agent 调研 src/auth/ 中的 token 刷新
+
+# 或者
+调查：哪些文件负责会话验证？</code></pre>
+<h3>陷阱 5：信任但不验证</h3>
+<p><strong>问题：</strong> Claude 产出看起来合理但未处理边界情况的代码。</p>
+<p><strong>解决：</strong> 总是提供验证标准：</p>
+<pre><code>写 validateEmail。测试: "user@example.com" → true, "invalid" → false。
+实现后运行测试。</code></pre>
+<h3>陷阱 6：权限过宽</h3>
+<p><strong>问题：</strong> <code>Bash(*)</code> 允许一切，可能造成意外损坏。</p>
+<p><strong>解决：</strong> 使用最具体的权限模式：</p>
+<pre data-lang="json"><code>{
+  "permissions": {
+    "allow": ["Bash(npm test)", "Bash(git commit *)"],
+    "deny": ["Bash(rm -rf *)", "Bash(sudo *)"]
+  }
+}</code></pre>
+</section><section id="ch11">
+<h2>十一、复合工程（Compounding Engineering）</h2>
+<blockquote>每次 Claude 犯错时，将纠正写入 CLAUDE.md 或 rules，使其成为永久上下文，确保同类错误不再重复。</blockquote>
+<h3>11.1 核心理念</h3>
+<p>Claude Code 的 CLAUDE.md 是一个<strong>可累积的知识库</strong>。每次会话中发现的项目特定陷阱，都应该被提炼为规则持久化下来。</p>
+<h3>11.2 实践方法</h3>
+<pre><code>1. 发现 Claude 犯了一个项目特定的错误（如使用了废弃 API、选错了 CSS 基线）
+2. 纠正 Claude 并验证修复
+3. 将纠正提炼为规则：
+   - 高频通用 → 写入 CLAUDE.md Hard Constraints
+   - 模块专属 → 写入 .claude/rules/&lt;module&gt;.md
+  - 代码质量 → 追加到 .claude/rules/quality-checklist.md
+4. 下次会话中 Claude 自动遵循，不再重复犯错</code></pre>
+<h3>11.3 本项目示例</h3>
+<p>例如，某个项目中的 <code>quality-checklist.md</code> 就是复合工程的产物 — 从反复出现的 SonarQube 扫描问题和代码审查反馈中提炼出的 40+ 条强制规则。每发现一个新的高频问题模式，就追加一条规则。</p>
+</section><section id="ch12">
+<h2>十二、效能层级总结</h2>
+<p>按经验影响排序（具体比例因项目和使用方式而异，可通过 <code>/cost</code> 验证）：</p>
+<pre><code>1. 上下文管理    (影响最大)  ← 频繁 /clear 和 /compact，使用子 agent
+2. 精确提示      (影响较大)  ← 引用文件，给出示例，描述症状
+3. 验证驱动      (影响较大)  ← 测试、截图、期望输出
+4. 配置优化      (影响中等)  ← Hooks、权限、Skills
+5. 工具选择      (影响中等)  ← Grep vs Read, Edit vs Write</code></pre>
+<p><strong>先掌握 1-3，再优化 4-5。</strong> 基础扎实后再追求进阶。</p>
+</section>
+  </div>
+</div>
+
+<script>
+(function() {
+  // Hamburger toggle
+  var hamburger = document.getElementById('hamburger');
+  var sidebar = document.getElementById('sidebar');
+  var overlay = document.getElementById('overlay');
+
+  hamburger.addEventListener('click', function() {
+    sidebar.classList.toggle('open');
+    overlay.classList.toggle('open');
+  });
+
+  overlay.addEventListener('click', function() {
+    sidebar.classList.remove('open');
+    overlay.classList.remove('open');
+  });
+
+  // Close sidebar on nav click (mobile)
+  document.querySelectorAll('.nav-item').forEach(function(item) {
+    item.addEventListener('click', function() {
+      if (window.innerWidth <= 960) {
+        sidebar.classList.remove('open');
+        overlay.classList.remove('open');
+      }
+    });
+  });
+
+  // Scroll spy
+  var sections = document.querySelectorAll('section[id]');
+  var navItems = document.querySelectorAll('.nav-item');
+
+  function updateActive() {
+    var current = '';
+    var scrollY = window.scrollY || document.documentElement.scrollTop;
+    sections.forEach(function(section) {
+      var top = section.offsetTop - 80;
+      if (scrollY >= top) {
+        current = section.getAttribute('id');
+      }
+    });
+    navItems.forEach(function(item) {
+      item.classList.remove('active');
+      if (item.getAttribute('href') === '#' + current) {
+        item.classList.add('active');
+      }
+    });
+  }
+
+  window.addEventListener('scroll', updateActive, { passive: true });
+  updateActive();
+})();
+</script>
+
+</body>
+</html>
