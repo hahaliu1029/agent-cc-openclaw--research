@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>08-model-failover</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1 id="08-failover-provider">08 - 模型 Failover 与 Provider 韧性深度调研</h1>
+<hr />
+<h2 id="1-failover">1. Failover 总体架构 — 两阶段容错设计</h2>
+<p>OpenClaw 的容错设计采用<strong>两阶段级联策略</strong>:</p>
+<p><strong>第一阶段: Auth Profile 轮转</strong> (同一 Provider 内部)
+当请求某个 provider 失败时，先尝试轮换该 provider 下的其他认证 profile（API key、OAuth token 等），不更换模型。</p>
+<p><strong>第二阶段: Model Fallback 链</strong> (跨 Provider/模型切换)
+当 provider 的所有 profile 都已耗尽（冷却中/全部失败），才切换到配置的 fallback 模型列表中的下一个候选。</p>
+<h3 id="11">1.1 决策流程</h3>
+<div class="codehilite"><pre><span></span><code><span class="err">用户请求</span><span class="w"></span>
+<span class="w">  </span><span class="o">|</span><span class="w"></span>
+<span class="w">  </span><span class="n">v</span><span class="w"></span>
+<span class="err">解析</span><span class="w"> </span><span class="n">session</span><span class="w"> </span><span class="err">模型</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">auth</span><span class="w"> </span><span class="n">profile</span><span class="w"> </span><span class="err">偏好</span><span class="w"></span>
+<span class="w">  </span><span class="o">|</span><span class="w"></span>
+<span class="w">  </span><span class="n">v</span><span class="w"></span>
+<span class="err">构建</span><span class="w"> </span><span class="n">model</span><span class="w"> </span><span class="n">candidate</span><span class="w"> </span><span class="n">chain</span><span class="w"> </span><span class="p">(</span><span class="err">当前模型</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">fallbacks</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">配置的</span><span class="w"> </span><span class="n">primary</span><span class="p">)</span><span class="w"></span>
+<span class="w">  </span><span class="o">|</span><span class="w"></span>
+<span class="w">  </span><span class="n">v</span><span class="w"></span>
+<span class="p">[</span><span class="err">循环</span><span class="p">]</span><span class="w"> </span><span class="err">对每个</span><span class="w"> </span><span class="n">candidate</span><span class="p">:</span><span class="w"></span>
+<span class="w">  </span><span class="o">|</span><span class="w"></span>
+<span class="w">  </span><span class="o">+--</span><span class="w"> </span><span class="err">检查该</span><span class="w"> </span><span class="n">candidate</span><span class="w"> </span><span class="err">的</span><span class="w"> </span><span class="n">auth</span><span class="w"> </span><span class="n">profiles</span><span class="w"> </span><span class="err">是否全部</span><span class="w"> </span><span class="n">cooldown</span><span class="w"></span>
+<span class="w">  </span><span class="o">|</span><span class="w">     </span><span class="o">|</span><span class="w"></span>
+<span class="w">  </span><span class="o">|</span><span class="w">     </span><span class="o">+--</span><span class="w"> </span><span class="err">全部</span><span class="w"> </span><span class="n">cooldown</span><span class="err">?</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">执行</span><span class="w"> </span><span class="n">cooldown</span><span class="w"> </span><span class="err">决策</span><span class="w"> </span><span class="p">(</span><span class="n">skip</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">probe</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">attempt</span><span class="p">)</span><span class="w"></span>
+<span class="w">  </span><span class="o">|</span><span class="w">     </span><span class="o">+--</span><span class="w"> </span><span class="err">有可用</span><span class="w"> </span><span class="n">profile</span><span class="err">?</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">直接尝试</span><span class="w"></span>
+<span class="w">  </span><span class="o">|</span><span class="w"></span>
+<span class="w">  </span><span class="o">+--</span><span class="w"> </span><span class="err">尝试运行</span><span class="w"> </span><span class="p">(</span><span class="n">runFallbackCandidate</span><span class="p">)</span><span class="w"></span>
+<span class="w">  </span><span class="o">|</span><span class="w">     </span><span class="o">|</span><span class="w"></span>
+<span class="w">  </span><span class="o">|</span><span class="w">     </span><span class="o">+--</span><span class="w"> </span><span class="err">成功</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">返回结果</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="err">已用</span><span class="w"> </span><span class="n">attempts</span><span class="w"> </span><span class="err">记录</span><span class="w"></span>
+<span class="w">  </span><span class="o">|</span><span class="w">     </span><span class="o">+--</span><span class="w"> </span><span class="err">失败</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">分类错误</span><span class="w"></span>
+<span class="w">  </span><span class="o">|</span><span class="w">           </span><span class="o">|</span><span class="w"></span>
+<span class="w">  </span><span class="o">|</span><span class="w">           </span><span class="o">+--</span><span class="w"> </span><span class="n">AbortError</span><span class="w"> </span><span class="p">(</span><span class="err">非</span><span class="w"> </span><span class="n">timeout</span><span class="p">)</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">立即抛出</span><span class="p">,</span><span class="w"> </span><span class="err">不继续</span><span class="w"></span>
+<span class="w">  </span><span class="o">|</span><span class="w">           </span><span class="o">+--</span><span class="w"> </span><span class="n">Context</span><span class="w"> </span><span class="n">Overflow</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">立即抛出</span><span class="p">,</span><span class="w"> </span><span class="err">不继续</span><span class="w"></span>
+<span class="w">  </span><span class="o">|</span><span class="w">           </span><span class="o">+--</span><span class="w"> </span><span class="n">LiveSessionModelSwitchError</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">标记</span><span class="w"> </span><span class="n">overloaded</span><span class="p">,</span><span class="w"> </span><span class="err">继续</span><span class="w"></span>
+<span class="w">  </span><span class="o">|</span><span class="w">           </span><span class="o">+--</span><span class="w"> </span><span class="n">FailoverError</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">记录</span><span class="w"> </span><span class="n">attempt</span><span class="p">,</span><span class="w"> </span><span class="err">继续</span><span class="w"></span>
+<span class="w">  </span><span class="o">|</span><span class="w">           </span><span class="o">+--</span><span class="w"> </span><span class="err">最后一个</span><span class="w"> </span><span class="n">candidate</span><span class="w"> </span><span class="err">的未知错误</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">抛出</span><span class="w"></span>
+<span class="w">  </span><span class="o">|</span><span class="w">           </span><span class="o">+--</span><span class="w"> </span><span class="err">非最后的未知错误</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">继续下一个</span><span class="w"></span>
+<span class="w">  </span><span class="o">|</span><span class="w"></span>
+<span class="w">  </span><span class="n">v</span><span class="w"></span>
+<span class="err">所有</span><span class="w"> </span><span class="n">candidate</span><span class="w"> </span><span class="err">失败</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">抛出</span><span class="w"> </span><span class="n">FallbackSummaryError</span><span class="w"> </span><span class="p">(</span><span class="err">含所有</span><span class="w"> </span><span class="n">attempts</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">soonest</span><span class="w"> </span><span class="n">cooldown</span><span class="p">)</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="12">1.2 核心源码文件</h3>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>职责</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>src/agents/model-fallback.ts</code></td>
+<td>主 fallback 循环 (<code>runWithModelFallback</code>)</td>
+</tr>
+<tr>
+<td><code>src/agents/pi-embedded-runner/run/failover-policy.ts</code></td>
+<td>嵌入式 runner 的 failover 决策</td>
+</tr>
+<tr>
+<td><code>src/agents/failover-error.ts</code></td>
+<td>错误分类与 <code>FailoverError</code> 类</td>
+</tr>
+<tr>
+<td><code>src/auto-reply/reply/agent-runner-execution.ts</code></td>
+<td>外层 reply runner 调用 fallback 循环</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="2-auth-profile">2. Auth Profile 轮转</h2>
+<h3 id="21">2.1 轮转排序算法</h3>
+<p>排序在 <code>src/agents/auth-profiles/order.ts</code> 的 <code>resolveAuthProfileOrder</code> 实现:</p>
+<p><strong>优先级源:</strong>
+1. <code>auth.order[provider]</code> — 用户显式配置的顺序
+2. <code>auth.profiles</code> — 按 provider 过滤的已配置 profile
+3. <code>auth-profiles.json</code> 中存储的 profile</p>
+<p><strong>Round-robin 排序 (无显式顺序时):</strong>
+- <strong>主键:</strong> profile 类型 (OAuth=0 &gt; Token=1 &gt; API Key=2)
+- <strong>次键:</strong> <code>usageStats.lastUsed</code> (最早使用的优先, 实现 round-robin)
+- <strong>冷却中的 profile</strong> 被移至末尾，按冷却到期时间排序 (最早到期的优先)</p>
+<div class="codehilite"><pre><span></span><code><span class="c1">// order.ts: orderProfilesByMode 核心排序</span>
+<span class="kd">const</span> <span class="nx">scored</span> <span class="o">=</span> <span class="nx">available</span><span class="p">.</span><span class="nx">map</span><span class="p">((</span><span class="nx">profileId</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="p">{</span>
+    <span class="kd">const</span> <span class="kr">type</span> <span class="o">=</span> <span class="nx">store</span><span class="p">.</span><span class="nx">profiles</span><span class="p">[</span><span class="nx">profileId</span><span class="p">]</span><span class="o">?</span><span class="p">.</span><span class="kr">type</span><span class="p">;</span>
+    <span class="kd">const</span> <span class="nx">typeScore</span> <span class="o">=</span> <span class="kr">type</span> <span class="o">===</span> <span class="s2">&quot;oauth&quot;</span> <span class="o">?</span> <span class="nx">0</span> : <span class="kt">type</span> <span class="o">===</span> <span class="s2">&quot;token&quot;</span> <span class="o">?</span> <span class="nx">1</span> : <span class="kt">type</span> <span class="o">===</span> <span class="s2">&quot;api_key&quot;</span> <span class="o">?</span> <span class="nx">2</span> : <span class="kt">3</span><span class="p">;</span>
+    <span class="kd">const</span> <span class="nx">lastUsed</span> <span class="o">=</span> <span class="nx">store</span><span class="p">.</span><span class="nx">usageStats</span><span class="o">?</span><span class="p">.[</span><span class="nx">profileId</span><span class="p">]</span><span class="o">?</span><span class="p">.</span><span class="nx">lastUsed</span> <span class="o">??</span> <span class="mf">0</span><span class="p">;</span>
+    <span class="k">return</span> <span class="p">{</span> <span class="nx">profileId</span><span class="p">,</span> <span class="nx">typeScore</span><span class="p">,</span> <span class="nx">lastUsed</span> <span class="p">};</span>
+<span class="p">});</span>
+</code></pre></div>
+
+<h3 id="22-session-stickiness">2.2 Session Stickiness (缓存友好)</h3>
+<p>OpenClaw 对 auth profile 实行<strong>会话级固定</strong>:
+- 选定后在整个 session 中复用，不会每次请求都轮换
+- 固定解除条件: session 重置、compaction 完成、profile 进入冷却
+- 用户手动选择设置的是<strong>用户级 override</strong>，不会被自动轮换
+- 自动选择的 profile 是<strong>偏好级</strong>: 率先尝试，但遇到限流/超时可以轮换到其他 profile</p>
+<h3 id="23-runner-failover">2.3 嵌入式 Runner 中的 Failover 决策</h3>
+<p><code>src/agents/pi-embedded-runner/run/failover-policy.ts</code> 定义了决策动作:</p>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kr">type</span> <span class="nx">RunFailoverDecisionAction</span> <span class="o">=</span>
+  <span class="o">|</span> <span class="s2">&quot;continue_normal&quot;</span>     <span class="c1">// 继续正常流程</span>
+  <span class="o">|</span> <span class="s2">&quot;rotate_profile&quot;</span>      <span class="c1">// 轮换 auth profile</span>
+  <span class="o">|</span> <span class="s2">&quot;fallback_model&quot;</span>      <span class="c1">// 切换到 fallback 模型</span>
+  <span class="o">|</span> <span class="s2">&quot;surface_error&quot;</span>       <span class="c1">// 向用户展示错误</span>
+  <span class="o">|</span> <span class="s2">&quot;return_error_payload&quot;</span><span class="p">;</span> <span class="c1">// 返回错误 payload</span>
+</code></pre></div>
+
+<p><strong>三阶段决策参数:</strong>
+- <code>retry_limit</code>: 重试次数耗尽后的决策
+- <code>prompt</code>: prompt 阶段失败的决策
+- <code>assistant</code>: assistant 响应阶段失败的决策</p>
+<p><strong>关键逻辑:</strong>
+- Prompt 阶段: 先尝试 rotate_profile (除 timeout 外)，再 fallback_model
+- Assistant 阶段: 非 abort 的 failover 失败 -&gt; rotate_profile -&gt; fallback_model
+- Timeout 在 prompt 阶段不触发 profile 轮换 (直接 fallback 或 surface)</p>
+<hr />
+<h2 id="3-fallback">3. 模型级 Fallback 链</h2>
+<h3 id="31-fallback">3.1 Fallback 配置</h3>
+<div class="codehilite"><pre><span></span><code>{
+  agents: {
+    defaults: {
+      model: {
+        primary: &quot;anthropic/claude-opus-4-6&quot;,
+        fallbacks: [&quot;openai/gpt-5.4&quot;, &quot;google/gemini-3.1-pro&quot;]
+      }
+    }
+  }
+}
+</code></pre></div>
+
+<p>CLI 命令: <code>openclaw models fallbacks add/remove/list/clear</code></p>
+<h3 id="32-candidate-chain">3.2 Candidate Chain 构建算法</h3>
+<p><code>src/agents/model-fallback.ts</code> 的 <code>resolveFallbackCandidates</code>:</p>
+<p><strong>规则:</strong>
+1. 请求的模型始终排第一
+2. 配置的 fallbacks 按顺序加入，经过<strong>去重但不过滤</strong> allowlist
+3. 同 provider 内: 始终使用完整 fallback 链
+4. 不同 provider: 仅当当前模型已在配置的 fallback 链中时才使用
+5. 当 run 来自 override 时, 配置的 primary 追加到末尾</p>
+<div class="codehilite"><pre><span></span><code><span class="c1">// 跨 provider 判断逻辑</span>
+<span class="k">if</span> <span class="p">(</span><span class="nx">normalizedPrimary</span><span class="p">.</span><span class="nx">provider</span> <span class="o">!==</span> <span class="nx">configuredPrimary</span><span class="p">.</span><span class="nx">provider</span><span class="p">)</span> <span class="p">{</span>
+    <span class="kd">const</span> <span class="nx">isConfiguredFallback</span> <span class="o">=</span> <span class="nx">configuredFallbacks</span><span class="p">.</span><span class="nx">some</span><span class="p">((</span><span class="nx">raw</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="p">{</span>
+        <span class="c1">// 检查当前模型是否已在 fallback 链中</span>
+    <span class="p">});</span>
+    <span class="k">return</span> <span class="nx">isConfiguredFallback</span> <span class="o">?</span> <span class="nx">configuredFallbacks</span> <span class="o">:</span> <span class="p">[];</span>
+<span class="p">}</span>
+<span class="c1">// 同 provider: 始终使用完整 fallback 链</span>
+<span class="k">return</span> <span class="nx">configuredFallbacks</span><span class="p">;</span>
+</code></pre></div>
+
+<h3 id="33-fallback">3.3 哪些错误推进 Fallback</h3>
+<p><strong>继续 fallback 的:</strong>
+- auth 失败、rate limit、overloaded/provider-busy、timeout
+- billing 禁用、<code>LiveSessionModelSwitchError</code>
+- 其他未识别错误 (当仍有剩余 candidate)</p>
+<p><strong>不继续 fallback 的:</strong>
+- 显式 abort (非 timeout/failover 形态)
+- Context overflow 错误 (应由 compaction/retry 逻辑处理)
+- 最后一个 candidate 的未知错误</p>
+<h3 id="34-fallback">3.4 Fallback 持久化</h3>
+<p>Fallback 选择前会持久化到 session entry:
+- <code>providerOverride</code>, <code>modelOverride</code>, <code>authProfileOverride</code> 等字段
+- 防止其他 session reader 读到过期状态
+- 失败后仅回滚这些字段（<strong>窄回滚</strong>），不影响其他并发的 session 变更</p>
+<hr />
+<h2 id="4">4. 冷却期管理</h2>
+<h3 id="41">4.1 冷却期层级</h3>
+<p><strong>Profile 级冷却 (cooldown) — 短暂退避:</strong></p>
+<div class="codehilite"><pre><span></span><code><span class="c1">// usage.ts: calculateAuthProfileCooldownMs</span>
+<span class="k">export</span> <span class="kd">function</span> <span class="nx">calculateAuthProfileCooldownMs</span><span class="p">(</span><span class="nx">errorCount</span>: <span class="kt">number</span><span class="p">)</span><span class="o">:</span> <span class="kt">number</span> <span class="p">{</span>
+    <span class="kd">const</span> <span class="nx">normalized</span> <span class="o">=</span> <span class="nb">Math</span><span class="p">.</span><span class="nx">max</span><span class="p">(</span><span class="mf">1</span><span class="p">,</span> <span class="nx">errorCount</span><span class="p">);</span>
+    <span class="k">if</span> <span class="p">(</span><span class="nx">normalized</span> <span class="o">&lt;=</span> <span class="mf">1</span><span class="p">)</span> <span class="k">return</span> <span class="mf">30</span><span class="nx">_000</span><span class="p">;</span>    <span class="c1">// 30 秒</span>
+    <span class="k">if</span> <span class="p">(</span><span class="nx">normalized</span> <span class="o">&lt;=</span> <span class="mf">2</span><span class="p">)</span> <span class="k">return</span> <span class="mf">60</span><span class="nx">_000</span><span class="p">;</span>    <span class="c1">// 1 分钟</span>
+    <span class="k">return</span> <span class="mf">5</span> <span class="o">*</span> <span class="mf">60</span><span class="nx">_000</span><span class="p">;</span>                     <span class="c1">// 5 分钟 (上限)</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p><strong>Profile 级禁用 (disabled) — 长时退避 (billing/auth_permanent):</strong></p>
+<div class="codehilite"><pre><span></span><code><span class="c1">// 计费失败退避配置</span>
+<span class="kd">const</span> <span class="nx">defaults</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="nx">billingBackoffHours</span>: <span class="kt">5</span><span class="p">,</span>           <span class="c1">// 计费失败初始退避: 5 小时</span>
+    <span class="nx">billingMaxHours</span>: <span class="kt">24</span><span class="p">,</span>              <span class="c1">// 计费失败最大退避: 24 小时</span>
+    <span class="nx">authPermanentBackoffMinutes</span>: <span class="kt">10</span><span class="p">,</span>  <span class="c1">// 永久认证失败: 10 分钟</span>
+    <span class="nx">authPermanentMaxMinutes</span>: <span class="kt">60</span><span class="p">,</span>      <span class="c1">// 永久认证失败上限: 60 分钟</span>
+    <span class="nx">failureWindowHours</span>: <span class="kt">24</span><span class="p">,</span>           <span class="c1">// 失败计数窗口: 24 小时</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p>退避公式:</p>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">calculateDisabledLaneBackoffMs</span><span class="p">(</span><span class="nx">params</span><span class="p">)</span> <span class="p">{</span>
+    <span class="kd">const</span> <span class="nx">exponent</span> <span class="o">=</span> <span class="nb">Math</span><span class="p">.</span><span class="nx">min</span><span class="p">(</span><span class="nx">normalized</span> <span class="o">-</span> <span class="mf">1</span><span class="p">,</span> <span class="mf">10</span><span class="p">);</span>
+    <span class="kd">const</span> <span class="nx">raw</span> <span class="o">=</span> <span class="nx">baseMs</span> <span class="o">*</span> <span class="mf">2</span> <span class="o">**</span> <span class="nx">exponent</span><span class="p">;</span>  <span class="c1">// 指数退避</span>
+    <span class="k">return</span> <span class="nb">Math</span><span class="p">.</span><span class="nx">min</span><span class="p">(</span><span class="nx">maxMs</span><span class="p">,</span> <span class="nx">raw</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="42">4.2 模型维度冷却</h3>
+<p>冷却支持<strong>模型级粒度</strong>:</p>
+<div class="codehilite"><pre><span></span><code><span class="c1">// 模型级冷却旁路</span>
+<span class="kd">function</span> <span class="nx">shouldBypassModelScopedCooldown</span><span class="p">(</span><span class="nx">stats</span><span class="p">,</span> <span class="nx">now</span><span class="p">,</span> <span class="nx">forModel</span><span class="p">)</span><span class="o">:</span> <span class="kt">boolean</span> <span class="p">{</span>
+    <span class="k">return</span> <span class="o">!!</span><span class="p">(</span>
+        <span class="nx">forModel</span> <span class="o">&amp;&amp;</span>
+        <span class="nx">stats</span><span class="p">.</span><span class="nx">cooldownReason</span> <span class="o">===</span> <span class="s2">&quot;rate_limit&quot;</span> <span class="o">&amp;&amp;</span>
+        <span class="nx">stats</span><span class="p">.</span><span class="nx">cooldownModel</span> <span class="o">&amp;&amp;</span>
+        <span class="nx">stats</span><span class="p">.</span><span class="nx">cooldownModel</span> <span class="o">!==</span> <span class="nx">forModel</span> <span class="o">&amp;&amp;</span>    <span class="c1">// 不同模型可以绕过</span>
+        <span class="o">!</span><span class="nx">isActiveUnusableWindow</span><span class="p">(</span><span class="nx">stats</span><span class="p">.</span><span class="nx">disabledUntil</span><span class="p">,</span> <span class="nx">now</span><span class="p">)</span> <span class="c1">// billing 禁用不可绕过</span>
+    <span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p><strong>设计原因:</strong>
+- 某些 provider 的 rate limit 是 per-model 的
+- 同 provider 的不同模型 (如 gpt-4o vs gpt-4o-mini) 可能有独立配额
+- Model-scoped cooldown 允许同 provider 的兄弟模型在 fallback 中仍然可用
+- Billing/auth 禁用仍然是 profile-wide 的 (不可绕过)</p>
+<h3 id="43">4.3 冷却状态追踪</h3>
+<p>存储在 <code>auth-state.json</code>:</p>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kr">type</span> <span class="nx">ProfileUsageStats</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="nx">lastUsed?</span>: <span class="kt">number</span><span class="p">;</span>
+    <span class="nx">cooldownUntil?</span>: <span class="kt">number</span><span class="p">;</span>           <span class="c1">// 冷却到期时间戳</span>
+    <span class="nx">cooldownReason?</span>: <span class="kt">AuthProfileFailureReason</span><span class="p">;</span>
+    <span class="nx">cooldownModel?</span>: <span class="kt">string</span><span class="p">;</span>           <span class="c1">// 导致冷却的模型 ID (模型级粒度)</span>
+    <span class="nx">disabledUntil?</span>: <span class="kt">number</span><span class="p">;</span>           <span class="c1">// 禁用到期时间戳</span>
+    <span class="nx">disabledReason?</span>: <span class="kt">AuthProfileFailureReason</span><span class="p">;</span>
+    <span class="nx">errorCount?</span>: <span class="kt">number</span><span class="p">;</span>
+    <span class="nx">failureCounts?</span>: <span class="kt">Partial</span><span class="o">&lt;</span><span class="nx">Record</span><span class="o">&lt;</span><span class="nx">AuthProfileFailureReason</span><span class="p">,</span> <span class="kt">number</span><span class="o">&gt;&gt;</span><span class="p">;</span>
+    <span class="nx">lastFailureAt?</span>: <span class="kt">number</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="44-circuit-breaker-half-open">4.4 冷却期过期清理 (Circuit Breaker Half-Open)</h3>
+<p><code>clearExpiredCooldowns</code> 实现了断路器模式:
+- 冷却到期时清除 <code>cooldownUntil</code> / <code>cooldownReason</code> / <code>cooldownModel</code>
+- 禁用到期时清除 <code>disabledUntil</code> / <code>disabledReason</code>
+- 所有冷却均过期后重置 <code>errorCount</code> 和 <code>failureCounts</code> — 给予 profile 全新起点</p>
+<hr />
+<h2 id="5-fallbacksummaryerror">5. FallbackSummaryError — 错误聚合机制</h2>
+<h3 id="51">5.1 定义</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kd">class</span> <span class="nx">FallbackSummaryError</span> <span class="k">extends</span> <span class="ne">Error</span> <span class="p">{</span>
+    <span class="k">readonly</span> <span class="nx">attempts</span>: <span class="kt">FallbackAttempt</span><span class="p">[];</span>
+    <span class="k">readonly</span> <span class="nx">soonestCooldownExpiry</span>: <span class="kt">number</span> <span class="o">|</span> <span class="kc">null</span><span class="p">;</span>
+
+    <span class="kr">constructor</span><span class="p">(</span>
+        <span class="nx">message</span>: <span class="kt">string</span><span class="p">,</span>
+        <span class="nx">attempts</span>: <span class="kt">FallbackAttempt</span><span class="p">[],</span>
+        <span class="nx">soonestCooldownExpiry</span>: <span class="kt">number</span> <span class="o">|</span> <span class="kc">null</span><span class="p">,</span>
+        <span class="nx">cause?</span>: <span class="kt">Error</span><span class="p">,</span>
+    <span class="p">)</span> <span class="p">{</span>
+        <span class="k">super</span><span class="p">(</span><span class="nx">message</span><span class="p">,</span> <span class="p">{</span> <span class="nx">cause</span> <span class="p">});</span>
+        <span class="k">this</span><span class="p">.</span><span class="nx">name</span> <span class="o">=</span> <span class="s2">&quot;FallbackSummaryError&quot;</span><span class="p">;</span>
+        <span class="k">this</span><span class="p">.</span><span class="nx">attempts</span> <span class="o">=</span> <span class="nx">attempts</span><span class="p">;</span>
+        <span class="k">this</span><span class="p">.</span><span class="nx">soonestCooldownExpiry</span> <span class="o">=</span> <span class="nx">soonestCooldownExpiry</span><span class="p">;</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="52-per-attempt">5.2 Per-Attempt 详情</h3>
+<p>每个失败尝试记录为 <code>FallbackAttempt</code>:</p>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kr">type</span> <span class="nx">FallbackAttempt</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="nx">provider</span>: <span class="kt">string</span><span class="p">;</span>
+    <span class="nx">model</span>: <span class="kt">string</span><span class="p">;</span>
+    <span class="nx">error</span>: <span class="kt">string</span><span class="p">;</span>
+    <span class="nx">reason?</span>: <span class="kt">FailoverReason</span><span class="p">;</span>
+    <span class="nx">status?</span>: <span class="kt">number</span><span class="p">;</span>
+    <span class="nx">code?</span>: <span class="kt">string</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="53-failoverreason">5.3 错误分类体系 (FailoverReason)</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kr">type</span> <span class="nx">FailoverReason</span> <span class="o">=</span>
+    <span class="o">|</span> <span class="s2">&quot;auth&quot;</span>              <span class="c1">// 认证失败 (401)</span>
+    <span class="o">|</span> <span class="s2">&quot;auth_permanent&quot;</span>    <span class="c1">// 永久认证失败 (403, key revoked)</span>
+    <span class="o">|</span> <span class="s2">&quot;format&quot;</span>            <span class="c1">// 请求格式错误 (400)</span>
+    <span class="o">|</span> <span class="s2">&quot;rate_limit&quot;</span>        <span class="c1">// 速率限制 (429)</span>
+    <span class="o">|</span> <span class="s2">&quot;overloaded&quot;</span>        <span class="c1">// Provider 过载 (503)</span>
+    <span class="o">|</span> <span class="s2">&quot;billing&quot;</span>           <span class="c1">// 计费失败 (402)</span>
+    <span class="o">|</span> <span class="s2">&quot;timeout&quot;</span>           <span class="c1">// 超时 (408)</span>
+    <span class="o">|</span> <span class="s2">&quot;model_not_found&quot;</span>   <span class="c1">// 模型不存在 (404)</span>
+    <span class="o">|</span> <span class="s2">&quot;session_expired&quot;</span>   <span class="c1">// 会话过期 (410)</span>
+    <span class="o">|</span> <span class="s2">&quot;unknown&quot;</span><span class="p">;</span>          <span class="c1">// 未知错误</span>
+</code></pre></div>
+
+<h3 id="54">5.4 错误信号分类链</h3>
+<p><code>src/agents/pi-embedded-helpers/errors.ts</code> 中 <code>classifyFailoverSignal</code> 执行多层分类:</p>
+<ol>
+<li><strong>HTTP Status Code</strong> 分类 (status -&gt; reason)</li>
+<li><strong>Error Code</strong> 分类 (code string -&gt; reason)</li>
+<li><strong>Message Pattern</strong> 分类 (正则匹配 -&gt; reason)</li>
+<li><strong>Provider-specific</strong> 分类 (各 provider 插件的 <code>classifyFailoverReason</code> hook)</li>
+</ol>
+<p><code>src/agents/pi-embedded-helpers/failover-matches.ts</code> 包含大量正则模式:
+- rate limit: <code>429</code>, <code>Too many requests</code>, <code>throttling</code>, <code>quota exceeded</code>, <code>resource_exhausted</code>
+- overloaded: <code>overloaded_error</code>, <code>high demand</code>, <code>service unavailable + overload indicator</code>
+- billing: <code>402</code>, <code>insufficient credits</code>, <code>payment required</code>, <code>insufficient balance</code>
+- timeout: <code>timeout</code>, <code>timed out</code>, <code>ECONNREFUSED</code>, <code>ECONNRESET</code>, <code>socket hang up</code>
+- auth: <code>unauthorized</code>, <code>forbidden</code>, <code>invalid api key</code>, <code>token expired</code></p>
+<hr />
+<h2 id="6-provider">6. Provider 注册与发现</h2>
+<h3 id="61-provider">6.1 插件式 Provider 注册</h3>
+<p>Provider 通过 plugin SDK 注册:</p>
+<div class="codehilite"><pre><span></span><code><span class="nx">api</span><span class="p">.</span><span class="nx">registerProvider</span><span class="p">({</span>
+    <span class="nx">id</span>: <span class="kt">providerId</span><span class="p">,</span>
+    <span class="nx">label</span>: <span class="kt">provider.label</span><span class="p">,</span>
+    <span class="nx">docsPath</span>: <span class="kt">provider.docsPath</span><span class="p">,</span>
+    <span class="nx">aliases</span>: <span class="kt">provider.aliases</span><span class="p">,</span>
+    <span class="nx">envVars</span>: <span class="kt">envVars</span><span class="p">,</span>
+    <span class="nx">auth</span>: <span class="kt">auth</span><span class="p">,</span>          <span class="c1">// 认证方法数组</span>
+    <span class="nx">catalog</span>: <span class="kt">catalog</span><span class="p">,</span>    <span class="c1">// 模型目录</span>
+    <span class="c1">// ... 更多 provider hook 属性</span>
+<span class="p">});</span>
+</code></pre></div>
+
+<h3 id="62-provider">6.2 Provider 能力声明</h3>
+<p>Provider 可通过多种 hook 声明能力:
+- <code>capabilities</code>: provider family、transcript/tooling quirks、transport/cache hints
+- <code>normalizeModelId</code>: 模型 ID 标准化
+- <code>normalizeTransport</code>: 传输协议标准化
+- <code>classifyFailoverReason</code>: provider 专属的错误 -&gt; failover reason 映射
+- <code>matchesContextOverflowError</code>: provider 专属的 context overflow 识别
+- <code>createStreamFn</code> / <code>wrapStreamFn</code>: 自定义/包装流传输
+- <code>resolveDynamicModel</code> / <code>prepareDynamicModel</code>: 动态模型解析</p>
+<h3 id="63">6.3 支持的传输协议</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kd">const</span> <span class="nx">MODEL_APIS</span> <span class="o">=</span> <span class="p">[</span>
+    <span class="s2">&quot;openai-completions&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;openai-responses&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;openai-codex-responses&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;anthropic-messages&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;google-generative-ai&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;github-copilot&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;bedrock-converse-stream&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;ollama&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;azure-openai-responses&quot;</span><span class="p">,</span>
+<span class="p">]</span> <span class="kr">as</span> <span class="kd">const</span><span class="p">;</span>
+</code></pre></div>
+
+<hr />
+<h2 id="7-provider">7. Provider 认证管理</h2>
+<h3 id="71">7.1 认证类型</h3>
+<p><strong>API Key:</strong></p>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kr">type</span> <span class="nx">ApiKeyCredential</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="kr">type</span><span class="o">:</span> <span class="s2">&quot;api_key&quot;</span><span class="p">;</span>
+    <span class="nx">provider</span>: <span class="kt">string</span><span class="p">;</span>
+    <span class="nx">key?</span>: <span class="kt">string</span><span class="p">;</span>
+    <span class="nx">keyRef?</span>: <span class="kt">SecretRef</span><span class="p">;</span>   <span class="c1">// 支持 SecretRef 引用</span>
+    <span class="nx">email?</span>: <span class="kt">string</span><span class="p">;</span>
+    <span class="nx">displayName?</span>: <span class="kt">string</span><span class="p">;</span>
+    <span class="nx">metadata?</span>: <span class="kt">Record</span><span class="o">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="kt">string</span><span class="o">&gt;</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p><strong>OAuth:</strong></p>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kr">type</span> <span class="nx">OAuthCredential</span> <span class="o">=</span> <span class="nx">OAuthCredentials</span> <span class="o">&amp;</span> <span class="p">{</span>
+    <span class="kr">type</span><span class="o">:</span> <span class="s2">&quot;oauth&quot;</span><span class="p">;</span>
+    <span class="nx">provider</span>: <span class="kt">string</span><span class="p">;</span>
+    <span class="nx">clientId?</span>: <span class="kt">string</span><span class="p">;</span>
+    <span class="nx">email?</span>: <span class="kt">string</span><span class="p">;</span>
+    <span class="nx">managedBy?</span>: <span class="kt">ExternalOAuthManager</span><span class="p">;</span> <span class="c1">// &quot;codex-cli&quot; | &quot;minimax-cli&quot;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p><strong>Token (静态 Bearer):</strong></p>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kr">type</span> <span class="nx">TokenCredential</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="kr">type</span><span class="o">:</span> <span class="s2">&quot;token&quot;</span><span class="p">;</span>
+    <span class="nx">provider</span>: <span class="kt">string</span><span class="p">;</span>
+    <span class="nx">token?</span>: <span class="kt">string</span><span class="p">;</span>
+    <span class="nx">tokenRef?</span>: <span class="kt">SecretRef</span><span class="p">;</span>
+    <span class="nx">expires?</span>: <span class="kt">number</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="72">7.2 存储架构</h3>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>内容</th>
+<th>安全级别</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>auth-profiles.json</code></td>
+<td>API key、OAuth token 等敏感数据</td>
+<td>高（secrets）</td>
+</tr>
+<tr>
+<td><code>auth-state.json</code></td>
+<td>usage stats、cooldown 状态</td>
+<td>低（状态）</td>
+</tr>
+<tr>
+<td><code>auth.profiles</code> (config)</td>
+<td>profile metadata + routing</td>
+<td>低（配置）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="73-profile-id">7.3 Profile ID 命名</h3>
+<ul>
+<li>默认: <code>provider:default</code></li>
+<li>OAuth 带 email: <code>provider:&lt;email&gt;</code> (如 <code>google:user@gmail.com</code>)</li>
+<li>允许多账户共存</li>
+</ul>
+<h3 id="74-api-key">7.4 API Key 环境变量轮换</h3>
+<p>支持多种环境变量格式:
+- <code>OPENCLAW_LIVE_&lt;PROVIDER&gt;_KEY</code> — 最高优先级覆盖
+- <code>&lt;PROVIDER&gt;_API_KEYS</code> — 逗号/分号分隔的列表
+- <code>&lt;PROVIDER&gt;_API_KEY</code> — 主 key
+- <code>&lt;PROVIDER&gt;_API_KEY_*</code> — 编号列表</p>
+<p>仅在 rate limit 响应 (429 等) 时轮换 key; 非限流错误立即失败。</p>
+<hr />
+<h2 id="8">8. 模型目录系统</h2>
+<h3 id="81">8.1 模型元数据</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kr">type</span> <span class="nx">ModelCatalogEntry</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="nx">id</span>: <span class="kt">string</span><span class="p">;</span>           <span class="c1">// 模型 ID</span>
+    <span class="nx">name</span>: <span class="kt">string</span><span class="p">;</span>         <span class="c1">// 显示名称</span>
+    <span class="nx">provider</span>: <span class="kt">string</span><span class="p">;</span>     <span class="c1">// Provider ID</span>
+    <span class="nx">contextWindow?</span>: <span class="kt">number</span><span class="p">;</span>   <span class="c1">// 上下文窗口大小</span>
+    <span class="nx">reasoning?</span>: <span class="kt">boolean</span><span class="p">;</span>      <span class="c1">// 是否支持推理</span>
+    <span class="nx">input?</span>: <span class="kt">ModelInputType</span><span class="p">[];</span> <span class="c1">// 输入类型: &quot;text&quot; | &quot;image&quot; | &quot;document&quot;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="82">8.2 完整模型定义</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kr">type</span> <span class="nx">ModelDefinitionConfig</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="nx">id</span>: <span class="kt">string</span><span class="p">;</span>
+    <span class="nx">name</span>: <span class="kt">string</span><span class="p">;</span>
+    <span class="nx">api?</span>: <span class="kt">ModelApi</span><span class="p">;</span>
+    <span class="nx">reasoning</span>: <span class="kt">boolean</span><span class="p">;</span>
+    <span class="nx">input</span>: <span class="kt">Array</span><span class="o">&lt;</span><span class="s2">&quot;text&quot;</span> <span class="o">|</span> <span class="s2">&quot;image&quot;</span><span class="o">&gt;</span><span class="p">;</span>
+    <span class="nx">cost</span><span class="o">:</span> <span class="p">{</span>
+        <span class="nx">input</span>: <span class="kt">number</span><span class="p">;</span>     <span class="c1">// 输入 token 价格</span>
+        <span class="nx">output</span>: <span class="kt">number</span><span class="p">;</span>    <span class="c1">// 输出 token 价格</span>
+        <span class="nx">cacheRead</span>: <span class="kt">number</span><span class="p">;</span>
+        <span class="nx">cacheWrite</span>: <span class="kt">number</span><span class="p">;</span>
+    <span class="p">};</span>
+    <span class="nx">contextWindow</span>: <span class="kt">number</span><span class="p">;</span>      <span class="c1">// 原生上下文窗口</span>
+    <span class="nx">contextTokens?</span>: <span class="kt">number</span><span class="p">;</span>     <span class="c1">// 运行时有效上下文上限</span>
+    <span class="nx">maxTokens</span>: <span class="kt">number</span><span class="p">;</span>
+    <span class="nx">headers?</span>: <span class="kt">Record</span><span class="o">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="kt">string</span><span class="o">&gt;</span><span class="p">;</span>
+    <span class="nx">compat?</span>: <span class="kt">ModelCompatConfig</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="83">8.3 动态模型解析</h3>
+<p>Provider 插件可实现:
+- <code>resolveDynamicModel</code> hook: 接受不在本地静态目录中的模型 ID
+- <code>prepareDynamicModel</code>: 在重试前刷新元数据
+- <code>augmentModelCatalog</code>: 在 discovery 和 config merge 后追加合成目录行</p>
+<h3 id="84">8.4 模型目录加载</h3>
+<p><code>loadModelCatalog</code> 是懒加载 + 缓存的:
+- 首次调用时解析 <code>models.json</code> + provider plugin catalogs
+- 结果被缓存
+- 支持强制刷新
+- Provider 插件通过 <code>augmentModelCatalogWithProviderPlugins</code> 注入额外目录行</p>
+<hr />
+<h2 id="9-prompt-failover">9. Prompt 缓存与 Failover 交互</h2>
+<h3 id="91-session-stickiness">9.1 Session Stickiness 与缓存</h3>
+<p>Auth profile 的 session 固定主要目的是<strong>保持 provider 缓存温度</strong>:
+- 固定 profile 意味着稳定的 API 访问路径，最大化 prompt cache 命中
+- 只有在冷却/session 重置/compaction 时才轮换</p>
+<h3 id="92-system-prompt-cache-boundary">9.2 System Prompt Cache Boundary</h3>
+<p>OpenClaw 将 system prompt 分为:
+- <strong>Stable Prefix</strong> (cache-friendly): 工具定义、skills 元数据、workspace 文件
+- <strong>Volatile Suffix</strong> (每轮变化): 心跳数据、运行时时间戳等</p>
+<p>设计选择:
+- 稳定内容排在易变内容之前，避免变化破坏缓存前缀
+- 跨 provider 统一应用 boundary
+- system prompt 指纹经过标准化 (空白、换行、hook 上下文、运行时能力排序)</p>
+<h3 id="93-failover">9.3 Failover 对缓存的影响</h3>
+<p>当 failover 发生切换到另一个 provider 时:
+- 缓存前缀需要重新建立 (cache write spike)
+- 通过 <code>cacheRetention</code> 配置管理缓存生命周期
+- 心跳可保持缓存窗口温热</p>
+<hr />
+<h2 id="10-failover">10. 流式传输中的 Failover</h2>
+<h3 id="101">10.1 流中断处理策略</h3>
+<p>OpenClaw 的流式 failover 通过 assistant 阶段的 failover 决策处理:</p>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">shouldRotateAssistant</span><span class="p">(</span><span class="nx">params</span>: <span class="kt">AssistantDecisionParams</span><span class="p">)</span><span class="o">:</span> <span class="kt">boolean</span> <span class="p">{</span>
+    <span class="k">return</span> <span class="p">(</span>
+        <span class="p">(</span><span class="o">!</span><span class="nx">params</span><span class="p">.</span><span class="nx">aborted</span> <span class="o">&amp;&amp;</span> <span class="p">(</span><span class="nx">params</span><span class="p">.</span><span class="nx">failoverFailure</span> <span class="o">||</span> <span class="nx">params</span><span class="p">.</span><span class="nx">failoverReason</span> <span class="o">!==</span> <span class="kc">null</span><span class="p">))</span> <span class="o">||</span>
+        <span class="p">(</span><span class="nx">params</span><span class="p">.</span><span class="nx">timedOut</span> <span class="o">&amp;&amp;</span> <span class="o">!</span><span class="nx">params</span><span class="p">.</span><span class="nx">timedOutDuringCompaction</span><span class="p">)</span>
+    <span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<ul>
+<li><strong>非 abort 的 failover 失败</strong>: 尝试 rotate profile -&gt; fallback model</li>
+<li><strong>timeout (非 compaction 中)</strong>: 尝试 rotate profile -&gt; fallback model</li>
+<li><strong>compaction 期间的 timeout</strong>: <code>continue_normal</code> (不 failover)</li>
+<li><strong>明确 abort</strong>: <code>continue_normal</code></li>
+</ul>
+<h3 id="102-transient-http">10.2 Transient HTTP 错误</h3>
+<p>对 transient HTTP 错误 (502/521 等) 有特殊处理:
+- 此类错误通常影响整个 provider，不是某个模型的问题
+- 策略: 等待后重试完整的 <code>runWithModelFallback()</code> 循环
+- 仅重试一次 (<code>didRetryTransientHttpError</code> 标记)</p>
+<hr />
+<h2 id="11-provider">11. Provider 健康检查</h2>
+<h3 id="111-reactive">11.1 被动检测 (Reactive)</h3>
+<p>OpenClaw 主要使用<strong>被动检测</strong>:
+- 通过实际请求失败来识别 provider 问题
+- 失败后通过 <code>markAuthProfileFailure</code> 记录到 auth state
+- 冷却期过期后进入 "half-open" 状态 (circuit breaker)</p>
+<h3 id="112-cooldown-probe">11.2 Cooldown Probe 机制</h3>
+<p>当所有 profile 都在冷却中时，primary candidate 可以进行<strong>探测</strong>:</p>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">shouldProbePrimaryDuringCooldown</span><span class="p">(</span><span class="nx">params</span><span class="p">)</span> <span class="p">{</span>
+    <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="nx">params</span><span class="p">.</span><span class="nx">isPrimary</span> <span class="o">||</span> <span class="o">!</span><span class="nx">params</span><span class="p">.</span><span class="nx">hasFallbackCandidates</span><span class="p">)</span> <span class="k">return</span> <span class="kc">false</span><span class="p">;</span>
+    <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="nx">isProbeThrottleOpen</span><span class="p">(</span><span class="nx">params</span><span class="p">.</span><span class="nx">now</span><span class="p">,</span> <span class="nx">params</span><span class="p">.</span><span class="nx">throttleKey</span><span class="p">))</span> <span class="k">return</span> <span class="kc">false</span><span class="p">;</span>
+    <span class="c1">// 探测条件: 冷却已过期或在 margin 窗口内</span>
+    <span class="k">return</span> <span class="nx">params</span><span class="p">.</span><span class="nx">now</span> <span class="o">&gt;=</span> <span class="nx">soonest</span> <span class="o">-</span> <span class="nx">PROBE_MARGIN_MS</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>探测参数:
+- <strong>节流</strong>: 每个 provider 每 30 秒最多一次探测
+- <strong>时间窗口</strong>: 冷却到期前 2 分钟内允许探测
+- <strong>探测状态 TTL</strong>: 24 小时后清理
+- <strong>容量上限</strong>: 最多追踪 256 个探测 key</p>
+<h3 id="113-transient-cooldown-probe-slot">11.3 Transient Cooldown Probe Slot</h3>
+<p>每个 provider 在一次 fallback run 中最多允许一次 transient cooldown probe:
+- <code>rate_limit</code>, <code>overloaded</code>, <code>unknown</code> — 使用 transient slot
+- <code>model_not_found</code>, <code>format</code>, <code>auth</code>, <code>auth_permanent</code>, <code>session_expired</code> — 保留 slot</p>
+<h3 id="114-wham-openai-codex">11.4 WHAM 主动探测 (OpenAI Codex 专属)</h3>
+<p>对 <code>openai-codex</code> provider, 系统会主动调用 ChatGPT WHAM usage API 来确定精确冷却时长:
+- 区分 burst contention (15s)、rolling limit (2h cap)、weekly limit (4h cap)
+- 识别 token 过期 (12h)、账户失效 (24h)</p>
+<hr />
+<h2 id="12_1">12. 配置系统</h2>
+<h3 id="121">12.1 核心配置项</h3>
+<p><strong>模型选择:</strong>
+- <code>agents.defaults.model.primary</code> — 主模型
+- <code>agents.defaults.model.fallbacks</code> — 回退模型列表
+- <code>agents.defaults.models</code> — 模型 allowlist + 别名 + provider 参数
+- <code>agents.defaults.imageModel.primary</code> / <code>.fallbacks</code> — 图像模型</p>
+<p><strong>Auth 配置:</strong>
+- <code>auth.profiles</code> — profile 元数据 (无秘密)
+- <code>auth.order</code> — 每 provider 的 profile 排序
+- <code>auth.cooldowns.billingBackoffHours</code> — 计费退避初始时间 (默认 5h)
+- <code>auth.cooldowns.billingBackoffHoursByProvider</code> — 按 provider 覆盖
+- <code>auth.cooldowns.billingMaxHours</code> — 计费退避上限 (默认 24h)
+- <code>auth.cooldowns.failureWindowHours</code> — 失败计数窗口 (默认 24h)
+- <code>auth.cooldowns.overloadedProfileRotations</code> — overloaded 时允许的 profile 轮换次数 (默认 1)
+- <code>auth.cooldowns.rateLimitedProfileRotations</code> — rate limit 时的轮换次数</p>
+<h3 id="122-per-agent">12.2 Per-Agent 覆盖</h3>
+<ul>
+<li><code>agents.list[].model</code> 可覆盖 <code>agents.defaults.model</code></li>
+<li><code>agents.list[].params.cacheRetention</code> 可覆盖 per-model 缓存策略</li>
+<li><code>agents.list[].heartbeat</code> 可独立设置心跳</li>
+</ul>
+<hr />
+<h2 id="13">13. 关键设计决策</h2>
+<h3 id="131">13.1 两阶段设计的原因</h3>
+<p><strong>为什么先 rotate profile 再 fallback model?</strong>
+- 同 provider 不同 profile 的切换成本最低 — 缓存保持有效
+- API key 轮换通常能解决简单的 rate limit
+- 跨模型切换涉及能力/定价差异，是最后手段</p>
+<h3 id="132">13.2 窄回滚策略</h3>
+<p><strong>为什么只回滚 fallback 拥有的 session 字段?</strong>
+- 防止 fallback 重试覆盖用户并发的模型变更
+- 防止覆盖心跳 override、compaction 更新等无关变更
+- 比 "save and restore the whole session" 更安全</p>
+<h3 id="133-context-overflow-fallback">13.3 Context Overflow 不触发 Fallback</h3>
+<p><strong>为什么?</strong>
+- Context overflow 应由 compaction/retry 处理
+- Fallback 到另一个模型可能上下文窗口更小，问题更严重
+- 这是一个 input 问题，不是 provider 可用性问题</p>
+<h3 id="134-billing">13.4 Billing 的特殊处理</h3>
+<ul>
+<li>Billing 失败通常不是暂时性的 (用户需要充值)</li>
+<li>但保留恢复路径: 单 provider 设置中, primary candidate 可在节流间隔内探测</li>
+<li>通过 <code>billingBackoffHoursByProvider</code> 支持 per-provider 定制</li>
+</ul>
+<h3 id="135">13.5 与其他系统的对比</h3>
+<table>
+<thead>
+<tr>
+<th>特性</th>
+<th>OpenClaw</th>
+<th>典型 LLM Gateway</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>容错层级</td>
+<td>两层 (auth -&gt; model)</td>
+<td>通常单层</td>
+</tr>
+<tr>
+<td>Profile 轮转</td>
+<td>OAuth 优先 + round-robin + session sticky</td>
+<td>简单 round-robin</td>
+</tr>
+<tr>
+<td>冷却维度</td>
+<td>Profile 级 + 模型级</td>
+<td>通常仅 provider 级</td>
+</tr>
+<tr>
+<td>错误分类</td>
+<td>10 种 FailoverReason + 模式匹配</td>
+<td>通常仅 HTTP status</td>
+</tr>
+<tr>
+<td>计费处理</td>
+<td>独立长退避通道 (5h-24h)</td>
+<td>通常与限流等同</td>
+</tr>
+<tr>
+<td>主动探测</td>
+<td>WHAM probe, cooldown probe</td>
+<td>通常无</td>
+</tr>
+<tr>
+<td>缓存友好</td>
+<td>Session sticky, cache boundary</td>
+<td>通常无考虑</td>
+</tr>
+<tr>
+<td>Provider 插件化</td>
+<td>完整 hook 体系 (40+ hooks)</td>
+<td>通常固定 adapter</td>
+</tr>
+</tbody>
+</table>
+<h3 id="136">13.6 通用退避公式</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kr">type</span> <span class="nx">BackoffPolicy</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="nx">initialMs</span>: <span class="kt">number</span><span class="p">;</span>
+    <span class="nx">maxMs</span>: <span class="kt">number</span><span class="p">;</span>
+    <span class="nx">factor</span>: <span class="kt">number</span><span class="p">;</span>
+    <span class="nx">jitter</span>: <span class="kt">number</span><span class="p">;</span>
+<span class="p">};</span>
+
+<span class="k">export</span> <span class="kd">function</span> <span class="nx">computeBackoff</span><span class="p">(</span><span class="nx">policy</span>: <span class="kt">BackoffPolicy</span><span class="p">,</span> <span class="nx">attempt</span>: <span class="kt">number</span><span class="p">)</span> <span class="p">{</span>
+    <span class="kd">const</span> <span class="nx">base</span> <span class="o">=</span> <span class="nx">policy</span><span class="p">.</span><span class="nx">initialMs</span> <span class="o">*</span> <span class="nx">policy</span><span class="p">.</span><span class="nx">factor</span> <span class="o">**</span> <span class="nb">Math</span><span class="p">.</span><span class="nx">max</span><span class="p">(</span><span class="nx">attempt</span> <span class="o">-</span> <span class="mf">1</span><span class="p">,</span> <span class="mf">0</span><span class="p">);</span>
+    <span class="kd">const</span> <span class="nx">jitter</span> <span class="o">=</span> <span class="nx">base</span> <span class="o">*</span> <span class="nx">policy</span><span class="p">.</span><span class="nx">jitter</span> <span class="o">*</span> <span class="nb">Math</span><span class="p">.</span><span class="nx">random</span><span class="p">();</span>
+    <span class="k">return</span> <span class="nb">Math</span><span class="p">.</span><span class="nx">min</span><span class="p">(</span><span class="nx">policy</span><span class="p">.</span><span class="nx">maxMs</span><span class="p">,</span> <span class="nb">Math</span><span class="p">.</span><span class="nx">round</span><span class="p">(</span><span class="nx">base</span> <span class="o">+</span> <span class="nx">jitter</span><span class="p">));</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<hr />
+<h2 id="14">14. 关键文件路径索引</h2>
+<table>
+<thead>
+<tr>
+<th>模块</th>
+<th>文件路径</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Fallback 主循环</td>
+<td><code>src/agents/model-fallback.ts</code></td>
+</tr>
+<tr>
+<td>Fallback 类型</td>
+<td><code>src/agents/model-fallback.types.ts</code></td>
+</tr>
+<tr>
+<td>Failover 错误</td>
+<td><code>src/agents/failover-error.ts</code></td>
+</tr>
+<tr>
+<td>Runner Failover 策略</td>
+<td><code>src/agents/pi-embedded-runner/run/failover-policy.ts</code></td>
+</tr>
+<tr>
+<td>错误模式匹配</td>
+<td><code>src/agents/pi-embedded-helpers/failover-matches.ts</code></td>
+</tr>
+<tr>
+<td>错误分类</td>
+<td><code>src/agents/pi-embedded-helpers/errors.ts</code></td>
+</tr>
+<tr>
+<td>FailoverReason 类型</td>
+<td><code>src/agents/pi-embedded-helpers/types.ts</code></td>
+</tr>
+<tr>
+<td>Auth Profile 排序</td>
+<td><code>src/agents/auth-profiles/order.ts</code></td>
+</tr>
+<tr>
+<td>Auth Profile 使用/冷却</td>
+<td><code>src/agents/auth-profiles/usage.ts</code></td>
+</tr>
+<tr>
+<td>Auth Profile 类型</td>
+<td><code>src/agents/auth-profiles/types.ts</code></td>
+</tr>
+<tr>
+<td>Agent Runner 执行</td>
+<td><code>src/auto-reply/reply/agent-runner-execution.ts</code></td>
+</tr>
+<tr>
+<td>退避策略</td>
+<td><code>src/infra/backoff.ts</code></td>
+</tr>
+<tr>
+<td>Provider Plugin SDK</td>
+<td><code>src/plugin-sdk/provider-entry.ts</code></td>
+</tr>
+<tr>
+<td>Provider Auth SDK</td>
+<td><code>src/plugin-sdk/provider-auth.ts</code></td>
+</tr>
+<tr>
+<td>模型目录</td>
+<td><code>src/agents/model-catalog.ts</code></td>
+</tr>
+<tr>
+<td>模型定义类型</td>
+<td><code>src/config/types.models.ts</code></td>
+</tr>
+<tr>
+<td>文档: Model Failover</td>
+<td><code>docs/concepts/model-failover.md</code></td>
+</tr>
+<tr>
+<td>文档: Model Providers</td>
+<td><code>docs/concepts/model-providers.md</code></td>
+</tr>
+<tr>
+<td>文档: Retry</td>
+<td><code>docs/concepts/retry.md</code></td>
+</tr>
+<tr>
+<td>文档: Prompt Caching</td>
+<td><code>docs/reference/prompt-caching.md</code></td>
+</tr>
+</tbody>
+</table>
+</body>
+</html>

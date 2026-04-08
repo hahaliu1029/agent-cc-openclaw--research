@@ -26,8 +26,8 @@
 </head>
 <body>
 <nav><a href="00-index.html">← 索引</a></nav>
-<h1 id="openclaw-上下文编排方案详细分析">OpenClaw 上下文编排方案详细分析</h1>
-<h2 id="目录">目录</h2>
+<h1 id="openclaw">OpenClaw 上下文编排方案详细分析</h1>
+<h2 id="_1">目录</h2>
 <ol>
 <li><a href="#1-架构总览">架构总览</a></li>
 <li><a href="#2-context-engine-插件化接口">Context Engine 插件化接口</a></li>
@@ -50,9 +50,21 @@
 <li><a href="#19-完整数据流图">完整数据流图</a></li>
 <li><a href="#20-关键设计模式总结">关键设计模式总结</a></li>
 <li><a href="#附录-a-插件加载与-sdk-安全改进2026-03-18-后新增">附录 A. 插件加载与 SDK 安全改进</a></li>
+<li><a href="#附录-b-转录重写与-session-截断大版本更新后新增">附录 B. 转录重写与 Session 截断</a></li>
+<li><a href="#附录-c-memory-prompt-helper-与-context-engine-委托2026-04-后新增">附录 C. Memory Prompt Helper 与 Context Engine 委托</a></li>
+<li><a href="#附录-d-compaction-checkpoints2026-04-后新增">附录 D. Compaction Checkpoints</a></li>
+<li><a href="#附录-e-可配置上下文可见性-context-visibility2026-04-后新增">附录 E. 可配置上下文可见性 (Context Visibility)</a></li>
+<li><a href="#附录-f-provider-系统提示词贡献2026-04-后新增">附录 F. Provider 系统提示词贡献</a></li>
+<li><a href="#附录-g-视频生成工具与后台任务2026-04-后新增">附录 G. 视频生成工具与后台任务</a></li>
+<li><a href="#附录-h-mcp-传输层演进-httpsseplugin-tools-server2026-04-后新增">附录 H. MCP 传输层演进 (HTTP/SSE/Plugin Tools Server)</a></li>
+<li><a href="#附录-i-入站提及策略集中化-mention-policy2026-04-后新增">附录 I. 入站提及策略集中化 (Mention Policy)</a></li>
+<li><a href="#附录-j-继承式-agent-技能白名单2026-04-后新增">附录 J. 继承式 Agent 技能白名单</a></li>
+<li><a href="#附录-k-system-prompt-override-与-heartbeat-控制2026-04-后新增">附录 K. System Prompt Override 与 Heartbeat 控制</a></li>
+<li><a href="#附录-l-infer-cli-推理命令2026-04-后新增">附录 L. Infer CLI 推理命令</a></li>
+<li><a href="#附录-m-cli-可靠性守卫-watchdog2026-04-后新增">附录 M. CLI 可靠性守卫 (Watchdog)</a></li>
 </ol>
 <hr />
-<h2 id="1-架构总览">1. 架构总览</h2>
+<h2 id="1">1. 架构总览</h2>
 <p>OpenClaw 的上下文编排系统是一个分层、可插拔的架构，核心职责：</p>
 <ul>
 <li><strong>上下文组装</strong>：在 token 预算内组装有序的消息序列 + 系统提示词</li>
@@ -61,83 +73,103 @@
 <li><strong>路由分发</strong>：根据 channel/peer/guild 等多维度路由到正确的 Agent 和 Session</li>
 <li><strong>多 Agent 协调</strong>：父-子 Agent 的上下文继承、生命周期管理</li>
 <li><strong>插件拦截</strong>：通过 Hook 体系在上下文生命周期各阶段注入自定义逻辑</li>
+<li><strong>上下文可见性</strong>：可配置的补充上下文（引用、转发、历史）过滤策略（2026-04 新增）</li>
+<li><strong>Provider 提示词贡献</strong>：Provider 插件可注入缓存稳定的系统提示词片段（2026-04 新增）</li>
+<li><strong>Compaction Checkpoints</strong>：压缩前后快照，支持回滚和恢复（2026-04 新增）</li>
 </ul>
-<h3 id="架构分层">架构分层</h3>
-<pre><code>┌─────────────────────────────────────────────────────────────┐
-│  Application Layer (Routing, Channels, Auto-Reply)          │
+<h3 id="_2">架构分层</h3>
+<div class="codehilite"><pre><span></span><code>┌─────────────────────────────────────────────────────────────┐
+│  <span class="nv">Application</span> <span class="nv">Layer</span> <span class="ss">(</span><span class="nv">Routing</span>, <span class="nv">Channels</span>, <span class="nv">Auto</span><span class="o">-</span><span class="nv">Reply</span><span class="ss">)</span>          │
 ├─────────────────────────────────────────────────────────────┤
-│  Plugin Layer (Hooks, Tools, Commands, Providers)           │
+│  <span class="nv">Plugin</span> <span class="nv">Layer</span> <span class="ss">(</span><span class="nv">Hooks</span>, <span class="nv">Tools</span>, <span class="nv">Commands</span>, <span class="nv">Providers</span><span class="ss">)</span>           │
 ├─────────────────────────────────────────────────────────────┤
-│  Agent Execution (Run Loop, Attempt, System Prompt)         │
+│  <span class="nv">Agent</span> <span class="nv">Execution</span> <span class="ss">(</span><span class="nv">Run</span> <span class="k">Loop</span>, <span class="nv">Attempt</span>, <span class="nv">System</span> <span class="nv">Prompt</span><span class="ss">)</span>         │
+│  ┌──────────────────────────────────────────────────┐       │
+│  │ <span class="nv">Provider</span> <span class="nv">Prompt</span> <span class="nv">Contributions</span> <span class="ss">(</span><span class="nv">stable</span><span class="o">/</span><span class="nv">dynamic</span><span class="ss">)</span>   │       │
+│  └──────────────────────────────────────────────────┘       │
 ├─────────────────────────────────────────────────────────────┤
-│  Context Engine Layer (Pluggable Interface)                 │
+│  <span class="nv">Context</span> <span class="nv">Engine</span> <span class="nv">Layer</span> <span class="ss">(</span><span class="nv">Pluggable</span> <span class="nv">Interface</span><span class="ss">)</span>                 │
 │  ┌──────────────────────┬──────────────────────────────────┐│
-│  │ LegacyContextEngine  │ Custom Engines (via plugins)     ││
+│  │ <span class="nv">LegacyContextEngine</span>  │ <span class="nv">Custom</span> <span class="nv">Engines</span> <span class="ss">(</span><span class="nv">via</span> <span class="nv">plugins</span><span class="ss">)</span>     ││
+│  │                      │ <span class="o">+</span> <span class="nv">Memory</span> <span class="nv">Prompt</span> <span class="nv">Helper</span>            ││
+│  │                      │ <span class="o">+</span> <span class="nv">Compaction</span> <span class="nv">Delegation</span>           ││
 │  └──────────────────────┴──────────────────────────────────┘│
 ├─────────────────────────────────────────────────────────────┤
-│  Compaction &amp; Pruning (Embedded Pi Session)                 │
+│  <span class="nv">Compaction</span> <span class="o">&amp;</span> <span class="nv">Pruning</span> <span class="ss">(</span><span class="nv">Embedded</span> <span class="nv">Pi</span> <span class="nv">Session</span><span class="ss">)</span>                 │
+│  ┌──────────────────────────────────────────────────┐       │
+│  │ <span class="nv">Compaction</span> <span class="nv">Checkpoints</span> <span class="ss">(</span><span class="nv">snapshot</span><span class="o">/</span><span class="nv">restore</span><span class="o">/</span><span class="nv">branch</span><span class="ss">)</span> │       │
+│  └──────────────────────────────────────────────────┘       │
 ├─────────────────────────────────────────────────────────────┤
-│  Session Persistence (SessionManager, Lock Management)      │
+│  <span class="nv">Context</span> <span class="nv">Visibility</span> <span class="ss">(</span><span class="nv">allowlist</span><span class="o">/</span><span class="nv">quote</span> <span class="nv">filtering</span><span class="ss">)</span>             │
+├─────────────────────────────────────────────────────────────┤
+│  <span class="nv">Session</span> <span class="nv">Persistence</span> <span class="ss">(</span><span class="nv">SessionManager</span>, <span class="nv">Lock</span> <span class="nv">Management</span><span class="ss">)</span>      │
 └─────────────────────────────────────────────────────────────┘
-</code></pre>
+</code></pre></div>
+
 <hr />
-<h2 id="2-context-engine-插件化接口">2. Context Engine 插件化接口</h2>
-<p><strong>文件</strong>: <code>src/context-engine/types.ts</code> (232 行)</p>
+<h2 id="2-context-engine">2. Context Engine 插件化接口</h2>
+<p><strong>文件</strong>: <code>src/context-engine/types.ts</code> (237 行)</p>
 <p>Context Engine 是上下文管理的核心抽象，定义了一套完整的生命周期接口：</p>
-<h3 id="核心接口-contextengine">核心接口 <code>ContextEngine</code></h3>
-<pre><code class="language-typescript">interface ContextEngine {
-  readonly info: ContextEngineInfo;
+<h3 id="contextengine">核心接口 <code>ContextEngine</code></h3>
+<div class="codehilite"><pre><span></span><code><span class="kd">interface</span> <span class="nx">ContextEngine</span> <span class="p">{</span>
+  <span class="k">readonly</span> <span class="nx">info</span>: <span class="kt">ContextEngineInfo</span><span class="p">;</span>
 
-  // 初始化 session 上下文
-  bootstrap?(params: { sessionId: string; sessionKey?: string; sessionFile: string }): Promise&lt;BootstrapResult&gt;;
+  <span class="c1">// 初始化 session 上下文</span>
+  <span class="nx">bootstrap</span><span class="o">?</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span> <span class="nx">sessionId</span>: <span class="kt">string</span><span class="p">;</span> <span class="nx">sessionKey?</span>: <span class="kt">string</span><span class="p">;</span> <span class="nx">sessionFile</span>: <span class="kt">string</span> <span class="p">})</span><span class="o">:</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="nx">BootstrapResult</span><span class="o">&gt;</span><span class="p">;</span>
 
-  // 单条消息摄入
-  ingest(params: { sessionId: string; message: AgentMessage; isHeartbeat?: boolean }): Promise&lt;IngestResult&gt;;
+  <span class="c1">// 单条消息摄入</span>
+  <span class="nx">ingest</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span> <span class="nx">sessionId</span>: <span class="kt">string</span><span class="p">;</span> <span class="nx">message</span>: <span class="kt">AgentMessage</span><span class="p">;</span> <span class="nx">isHeartbeat?</span>: <span class="kt">boolean</span> <span class="p">})</span><span class="o">:</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="nx">IngestResult</span><span class="o">&gt;</span><span class="p">;</span>
 
-  // 批量消息摄入
-  ingestBatch?(messages): Promise&lt;IngestBatchResult&gt;;
+  <span class="c1">// 批量消息摄入</span>
+  <span class="nx">ingestBatch</span><span class="o">?</span><span class="p">(</span><span class="nx">messages</span><span class="p">)</span><span class="o">:</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="nx">IngestBatchResult</span><span class="o">&gt;</span><span class="p">;</span>
 
-  // 每轮对话后的生命周期钩子（持久化、自动压缩触发等）
-  afterTurn?(params: {
-    sessionId; sessionKey?; sessionFile; messages; prePromptMessageCount;
-    autoCompactionSummary?; isHeartbeat?; tokenBudget?; runtimeContext?;
-  }): Promise&lt;void&gt;;
+  <span class="c1">// 每轮对话后的生命周期钩子（持久化、自动压缩触发等）</span>
+  <span class="nx">afterTurn</span><span class="o">?</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span>
+    <span class="nx">sessionId</span><span class="p">;</span> <span class="nx">sessionKey</span><span class="o">?</span><span class="p">;</span> <span class="nx">sessionFile</span><span class="p">;</span> <span class="nx">messages</span><span class="p">;</span> <span class="nx">prePromptMessageCount</span><span class="p">;</span>
+    <span class="nx">autoCompactionSummary</span><span class="o">?</span><span class="p">;</span> <span class="nx">isHeartbeat</span><span class="o">?</span><span class="p">;</span> <span class="nx">tokenBudget</span><span class="o">?</span><span class="p">;</span> <span class="nx">runtimeContext</span><span class="o">?</span><span class="p">;</span>
+  <span class="p">})</span><span class="o">:</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="ow">void</span><span class="o">&gt;</span><span class="p">;</span>
 
-  // 核心方法：在 token 预算内组装上下文
-  assemble(params: {
-    sessionId: string;
-    sessionKey?: string;
-    messages: AgentMessage[];
-    tokenBudget?: number;
-    model?: string;   // 新增：模型 ID (如 &quot;claude-opus-4&quot;, &quot;gpt-4o&quot;)
-    prompt?: string;  // 新增：用户输入 prompt，用于检索增强
-  }): Promise&lt;AssembleResult&gt;;
+  <span class="c1">// 核心方法：在 token 预算内组装上下文</span>
+  <span class="nx">assemble</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span>
+    <span class="nx">sessionId</span>: <span class="kt">string</span><span class="p">;</span>
+    <span class="nx">sessionKey?</span>: <span class="kt">string</span><span class="p">;</span>
+    <span class="nx">messages</span>: <span class="kt">AgentMessage</span><span class="p">[];</span>
+    <span class="nx">tokenBudget?</span>: <span class="kt">number</span><span class="p">;</span>
+    <span class="nx">availableTools?</span>: <span class="kt">Set</span><span class="o">&lt;</span><span class="kt">string</span><span class="o">&gt;</span><span class="p">;</span>    <span class="c1">// 2026-04 新增：可用工具名集合</span>
+    <span class="nx">citationsMode?</span>: <span class="kt">MemoryCitationsMode</span><span class="p">;</span> <span class="c1">// 2026-04 新增：记忆引用模式</span>
+    <span class="nx">model?</span>: <span class="kt">string</span><span class="p">;</span>   <span class="c1">// 模型 ID (如 &quot;claude-opus-4&quot;, &quot;gpt-4o&quot;)</span>
+    <span class="nx">prompt?</span>: <span class="kt">string</span><span class="p">;</span>  <span class="c1">// 用户输入 prompt，用于检索增强</span>
+  <span class="p">})</span><span class="o">:</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="nx">AssembleResult</span><span class="o">&gt;</span><span class="p">;</span>
 
-  // 压缩旧消息，减少 token 占用
-  compact(params: {
-    sessionId: string; sessionKey?: string; sessionFile: string;
-    tokenBudget?; force?; currentTokenCount?;
-    compactionTarget?: &quot;budget&quot; | &quot;threshold&quot;;
-    customInstructions?; runtimeContext?: ContextEngineRuntimeContext;
-  }): Promise&lt;CompactResult&gt;;
+  <span class="c1">// 压缩旧消息，减少 token 占用</span>
+  <span class="nx">compact</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span>
+    <span class="nx">sessionId</span>: <span class="kt">string</span><span class="p">;</span> <span class="nx">sessionKey?</span>: <span class="kt">string</span><span class="p">;</span> <span class="nx">sessionFile</span>: <span class="kt">string</span><span class="p">;</span>
+    <span class="nx">tokenBudget</span><span class="o">?</span><span class="p">;</span> <span class="nx">force</span><span class="o">?</span><span class="p">;</span> <span class="nx">currentTokenCount</span><span class="o">?</span><span class="p">;</span>
+    <span class="nx">compactionTarget</span><span class="o">?:</span> <span class="s2">&quot;budget&quot;</span> <span class="o">|</span> <span class="s2">&quot;threshold&quot;</span><span class="p">;</span>
+    <span class="nx">customInstructions</span><span class="o">?</span><span class="p">;</span> <span class="nx">runtimeContext?</span>: <span class="kt">ContextEngineRuntimeContext</span><span class="p">;</span>
+  <span class="p">})</span><span class="o">:</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="nx">CompactResult</span><span class="o">&gt;</span><span class="p">;</span>
 
-  // 转录维护（压缩后清理/重写）— 新增
-  maintain?(params: {
-    sessionId: string; sessionKey?: string; sessionFile: string;
-    runtimeContext?: ContextEngineRuntimeContext;
-  }): Promise&lt;ContextEngineMaintenanceResult&gt;;
+  <span class="c1">// 转录维护（压缩后清理/重写）</span>
+  <span class="nx">maintain</span><span class="o">?</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span>
+    <span class="nx">sessionId</span>: <span class="kt">string</span><span class="p">;</span> <span class="nx">sessionKey?</span>: <span class="kt">string</span><span class="p">;</span> <span class="nx">sessionFile</span>: <span class="kt">string</span><span class="p">;</span>
+    <span class="nx">runtimeContext?</span>: <span class="kt">ContextEngineRuntimeContext</span><span class="p">;</span>
+  <span class="p">})</span><span class="o">:</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="nx">ContextEngineMaintenanceResult</span><span class="o">&gt;</span><span class="p">;</span>
 
-  // 子 Agent 生成前的准备工作（支持回滚）
-  prepareSubagentSpawn?(): Promise&lt;SubagentSpawnPreparation&gt;;
+  <span class="c1">// 子 Agent 管理</span>
+  <span class="nx">prepareSubagentSpawn</span><span class="o">?</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span>
+    <span class="nx">parentSessionKey</span>: <span class="kt">string</span><span class="p">;</span>
+    <span class="nx">childSessionKey</span>: <span class="kt">string</span><span class="p">;</span>
+    <span class="nx">ttlMs?</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="p">})</span><span class="o">:</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="nx">SubagentSpawnPreparation</span> <span class="o">|</span> <span class="kc">undefined</span><span class="o">&gt;</span><span class="p">;</span>
 
-  // 子 Agent 结束后的清理通知
-  onSubagentEnded?(reason: SubagentEndReason): Promise&lt;void&gt;;
+  <span class="nx">onSubagentEnded</span><span class="o">?</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span> <span class="nx">childSessionKey</span>: <span class="kt">string</span><span class="p">;</span> <span class="nx">reason</span>: <span class="kt">SubagentEndReason</span> <span class="p">})</span><span class="o">:</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="ow">void</span><span class="o">&gt;</span><span class="p">;</span>
 
-  // 资源释放
-  dispose?(): Promise&lt;void&gt;;
-}
-</code></pre>
-<h3 id="关键类型定义">关键类型定义</h3>
+  <span class="c1">// 资源释放</span>
+  <span class="nx">dispose</span><span class="o">?</span><span class="p">()</span><span class="o">:</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="ow">void</span><span class="o">&gt;</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="_3">关键类型定义</h3>
 <table>
 <thead>
 <tr>
@@ -160,12 +192,12 @@
 <tr>
 <td><code>ContextEngineMaintenanceResult</code></td>
 <td>维护操作结果</td>
-<td><strong>新增</strong>：转录维护结果</td>
+<td>转录维护结果</td>
 </tr>
 <tr>
 <td><code>TranscriptRewriteRequest</code> / <code>TranscriptRewriteResult</code></td>
 <td>转录重写请求/结果</td>
-<td><strong>新增</strong>：通过 <code>runtimeContext.rewriteTranscriptEntries()</code> 触发</td>
+<td>通过 <code>runtimeContext.rewriteTranscriptEntries()</code> 触发</td>
 </tr>
 <tr>
 <td><code>IngestResult</code> / <code>IngestBatchResult</code></td>
@@ -179,7 +211,7 @@
 </tr>
 <tr>
 <td><code>ContextEngineInfo</code></td>
-<td>引擎元数据和能力描述</td>
+<td>引擎元数据和能力描述（含 <code>ownsCompaction?</code>）</td>
 <td>引擎信息</td>
 </tr>
 <tr>
@@ -194,15 +226,18 @@
 </tr>
 </tbody>
 </table>
+<h3 id="2026-04-assemble">2026-04 新增：<code>assemble()</code> 扩展参数</h3>
+<p><code>assemble()</code> 方法新增 <code>availableTools</code> 和 <code>citationsMode</code> 参数，允许第三方 Context Engine 根据当前运行可用的工具集和记忆引用模式调整上下文组装策略。这使得自定义引擎能够像 legacy 引擎一样在 system prompt 中包含记忆指引段落。</p>
 <hr />
-<h2 id="3-context-engine-注册与解析">3. Context Engine 注册与解析</h2>
+<h2 id="3-context-engine">3. Context Engine 注册与解析</h2>
 <p><strong>文件</strong>: <code>src/context-engine/registry.ts</code> (144 行)</p>
-<h3 id="注册机制">注册机制</h3>
+<h3 id="_4">注册机制</h3>
 <p>使用全局 Symbol 实现跨模块、跨 chunk 的单例注册：</p>
-<pre><code class="language-typescript">// 进程级全局注册表
-Symbol.for(&quot;openclaw.contextEngineRegistryState&quot;)
-</code></pre>
-<h3 id="核心-api">核心 API</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// 进程级全局注册表</span>
+<span class="nb">Symbol</span><span class="p">.</span><span class="k">for</span><span class="p">(</span><span class="s2">&quot;openclaw.contextEngineRegistryState&quot;</span><span class="p">)</span>
+</code></pre></div>
+
+<h3 id="api">核心 API</h3>
 <table>
 <thead>
 <tr>
@@ -229,11 +264,12 @@ Symbol.for(&quot;openclaw.contextEngineRegistryState&quot;)
 </tr>
 </tbody>
 </table>
-<h3 id="解析优先级">解析优先级</h3>
-<pre><code>1. config.plugins.slots.contextEngine  (配置指定)
-2. defaultSlotIdForKey(&quot;contextEngine&quot;) (默认 slot)
-3. 抛出异常（未注册）
-</code></pre>
+<h3 id="_5">解析优先级</h3>
+<div class="codehilite"><pre><span></span><code><span class="mf">1.</span><span class="w"> </span><span class="n">config</span><span class="mf">.</span><span class="n">plugins</span><span class="mf">.</span><span class="n">slots</span><span class="mf">.</span><span class="kr">cont</span><span class="n">extEngine</span><span class="w">  </span><span class="p">(</span><span class="n">配置指定</span><span class="p">)</span><span class="w"></span>
+<span class="mf">2.</span><span class="w"> </span><span class="kd">def</span><span class="n">aultSlotIdForKey</span><span class="p">(</span><span class="s">&quot;contextEngine&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">(</span><span class="n">默认</span><span class="w"> </span><span class="n">slot</span><span class="p">)</span><span class="w"></span>
+<span class="mf">3.</span><span class="w"> </span><span class="n">抛出异常</span><span class="err">（</span><span class="n">未注册</span><span class="err">）</span><span class="w"></span>
+</code></pre></div>
+
 <p>默认回退到 <code>"legacy"</code> 引擎。</p>
 <hr />
 <h2 id="4-legacy-context-engine">4. Legacy Context Engine</h2>
@@ -256,7 +292,7 @@ Symbol.for(&quot;openclaw.contextEngineRegistryState&quot;)
 <tr>
 <td><code>assemble()</code></td>
 <td>Pass-through</td>
-<td><code>attempt.ts</code> 中的 sanitize→validate→limit 管线处理</td>
+<td><code>attempt.ts</code> 中的 sanitize-&gt;validate-&gt;limit 管线处理</td>
 </tr>
 <tr>
 <td><code>afterTurn()</code></td>
@@ -276,15 +312,39 @@ Symbol.for(&quot;openclaw.contextEngineRegistryState&quot;)
 </tbody>
 </table>
 <p><strong>设计要点</strong>: 通过 <code>.runtime.js</code> 边界动态导入 compaction 逻辑，保持 lazy-loading 有效性。</p>
+<h3 id="2026-04-context-engine">2026-04 新增：Context Engine 委托层</h3>
+<p><strong>文件</strong>: <code>src/context-engine/delegate.ts</code> (87 行)</p>
+<p>新增共享委托模块，为第三方 Context Engine 提供两个关键复用路径：</p>
+<h4 id="delegatecompactiontoruntime"><code>delegateCompactionToRuntime()</code></h4>
+<p>允许第三方引擎在不自实现压缩算法的情况下，复用 OpenClaw 内置的运行时压缩路径：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">async</span> <span class="kd">function</span> <span class="nx">delegateCompactionToRuntime</span><span class="p">(</span>
+  <span class="nx">params</span>: <span class="kt">Parameters</span><span class="o">&lt;</span><span class="nx">ContextEngine</span><span class="p">[</span><span class="s2">&quot;compact&quot;</span><span class="p">]</span><span class="o">&gt;</span><span class="p">[</span><span class="mf">0</span><span class="p">],</span>
+<span class="p">)</span><span class="o">:</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="nx">CompactResult</span><span class="o">&gt;</span>
+</code></pre></div>
+
+<p><strong>设计</strong>：通过专用 <code>.runtime.js</code> 边界导入 <code>compactEmbeddedPiSessionDirect</code>，确保 lazy-loading 边界有效。<code>runtimeContext</code> 携带完整的 <code>CompactEmbeddedPiSessionParams</code> 字段集，由运行时调用方设置。</p>
+<h4 id="buildmemorysystempromptaddition"><code>buildMemorySystemPromptAddition()</code></h4>
+<p>允许非 legacy 引擎显式选择加入 memory/wiki 指引，无需重新实现记忆提示词格式化：</p>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">buildMemorySystemPromptAddition</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">availableTools</span>: <span class="kt">Set</span><span class="o">&lt;</span><span class="kt">string</span><span class="o">&gt;</span><span class="p">;</span>
+  <span class="nx">citationsMode?</span>: <span class="kt">MemoryCitationsMode</span><span class="p">;</span>
+<span class="p">})</span><span class="o">:</span> <span class="kt">string</span> <span class="o">|</span> <span class="kc">undefined</span>
+</code></pre></div>
+
+<p><strong>工作流程</strong>：
+1. 调用 <code>buildMemoryPromptSection()</code> 获取记忆提示段落
+2. 通过 <code>normalizeStructuredPromptSection()</code> 归一化以保持 prompt cache 稳定性
+3. 返回可直接用于 <code>AssembleResult.systemPromptAddition</code> 的字符串</p>
 <hr />
-<h2 id="5-上下文窗口管理">5. 上下文窗口管理</h2>
-<h3 id="模型上下文窗口发现-srcagentscontextts-442-行">模型上下文窗口发现 (<code>src/agents/context.ts</code>, 442 行)</h3>
-<h4 id="关键常量">关键常量</h4>
-<pre><code class="language-typescript">ANTHROPIC_1M_MODEL_PREFIXES = [&quot;claude-opus-4&quot;, &quot;claude-sonnet-4&quot;]
-ANTHROPIC_CONTEXT_1M_TOKENS = 1_048_576
-CONFIG_LOAD_RETRY_POLICY: 指数退避 (1s → 60s)
-</code></pre>
-<h4 id="核心函数">核心函数</h4>
+<h2 id="5">5. 上下文窗口管理</h2>
+<h3 id="srcagentscontextts-442">模型上下文窗口发现 (<code>src/agents/context.ts</code>, 442 行)</h3>
+<h4 id="_6">关键常量</h4>
+<div class="codehilite"><pre><span></span><code><span class="nx">ANTHROPIC_1M_MODEL_PREFIXES</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;claude-opus-4&quot;</span><span class="p">,</span> <span class="s2">&quot;claude-sonnet-4&quot;</span><span class="p">]</span>
+<span class="nx">ANTHROPIC_CONTEXT_1M_TOKENS</span> <span class="o">=</span> <span class="mf">1</span><span class="nx">_048_576</span>
+<span class="nx">CONFIG_LOAD_RETRY_POLICY</span>: <span class="kt">指数退避</span> <span class="p">(</span><span class="mf">1</span><span class="nx">s</span> <span class="o">-&gt;</span> <span class="mf">60</span><span class="nx">s</span><span class="p">)</span>
+</code></pre></div>
+
+<h4 id="_7">核心函数</h4>
 <table>
 <thead>
 <tr>
@@ -311,47 +371,51 @@ CONFIG_LOAD_RETRY_POLICY: 指数退避 (1s → 60s)
 </tr>
 </tbody>
 </table>
-<h4 id="启动路径懒加载控制2026-03-18-后新增">启动路径懒加载控制（2026-03-18 后新增）</h4>
+<h4 id="2026-03-18">启动路径懒加载控制（2026-03-18 后新增）</h4>
 <p><code>lookupContextTokens</code> 和 <code>resolveContextTokensForModel</code> 新增 <code>allowAsyncLoad?: boolean</code> 选项，控制是否在查找时触发异步缓存加载：</p>
-<pre><code class="language-typescript">// 完整签名
-function lookupContextTokens(
-  modelId?: string,
-  options?: { allowAsyncLoad?: boolean },
-): number | undefined
+<div class="codehilite"><pre><span></span><code><span class="c1">// 完整签名</span>
+<span class="kd">function</span> <span class="nx">lookupContextTokens</span><span class="p">(</span>
+  <span class="nx">modelId?</span>: <span class="kt">string</span><span class="p">,</span>
+  <span class="nx">options</span><span class="o">?:</span> <span class="p">{</span> <span class="nx">allowAsyncLoad?</span>: <span class="kt">boolean</span> <span class="p">},</span>
+<span class="p">)</span><span class="o">:</span> <span class="kt">number</span> <span class="o">|</span> <span class="kc">undefined</span>
 
-function resolveContextTokensForModel(params: {
-  cfg?: OpenClawConfig;
-  provider?: string;
-  model?: string;
-  contextTokensOverride?: number;
-  fallbackContextTokens?: number;
-  allowAsyncLoad?: boolean;  // 新增：控制是否触发异步缓存预热
-}): number | undefined
-</code></pre>
+<span class="kd">function</span> <span class="nx">resolveContextTokensForModel</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">cfg?</span>: <span class="kt">OpenClawConfig</span><span class="p">;</span>
+  <span class="nx">provider?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">model?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">contextTokensOverride?</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="nx">fallbackContextTokens?</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="nx">allowAsyncLoad?</span>: <span class="kt">boolean</span><span class="p">;</span>  <span class="c1">// 控制是否触发异步缓存预热</span>
+<span class="p">})</span><span class="o">:</span> <span class="kt">number</span> <span class="o">|</span> <span class="kc">undefined</span>
+</code></pre></div>
+
 <p><strong>设计目标</strong>：在 <code>status --json</code> 等快速路径中避免触发插件 SDK 库导入和上下文窗口缓存预热，防止不必要的启动副作用。通过 <code>allowAsyncLoad: false</code> 跳过 <code>ensureContextWindowCacheLoaded()</code> 的异步调用。</p>
-<h4 id="智能去重">智能去重</h4>
+<h4 id="_8">智能去重</h4>
 <p>当多个 provider 暴露同一模型时，<strong>优先选择较小的窗口</strong>（fail-safe 策略）。使用 provider 限定的缓存 key，回退到裸 key 以保证健壮的模型查找。</p>
-<h3 id="上下文窗口守卫-srcagentscontext-window-guardts-75-行">上下文窗口守卫 (<code>src/agents/context-window-guard.ts</code>, 75 行)</h3>
-<h4 id="常量">常量</h4>
-<pre><code class="language-typescript">CONTEXT_WINDOW_HARD_MIN_TOKENS = 16_000  // 低于此值阻止运行
-CONTEXT_WINDOW_WARN_BELOW_TOKENS = 32_000 // 低于此值发出警告
-</code></pre>
-<h4 id="层级解析">层级解析</h4>
-<pre><code>modelsConfig → model → default → agentContextTokens (作为上限 cap，而非 fallback 层级)
-</code></pre>
-<h4 id="返回类型">返回类型</h4>
-<pre><code class="language-typescript">ContextWindowGuardResult {
-  source: &quot;model&quot; | &quot;modelsConfig&quot; | &quot;agentContextTokens&quot; | &quot;default&quot;
-  tokens: number
-  shouldWarn: boolean   // &lt; 32K
-  shouldBlock: boolean  // &lt; 16K
-}
-</code></pre>
+<h3 id="srcagentscontext-window-guardts-75">上下文窗口守卫 (<code>src/agents/context-window-guard.ts</code>, 75 行)</h3>
+<h4 id="_9">常量</h4>
+<div class="codehilite"><pre><span></span><code><span class="nx">CONTEXT_WINDOW_HARD_MIN_TOKENS</span> <span class="o">=</span> <span class="mf">16</span><span class="nx">_000</span>  <span class="c1">// 低于此值阻止运行</span>
+<span class="nx">CONTEXT_WINDOW_WARN_BELOW_TOKENS</span> <span class="o">=</span> <span class="mf">32</span><span class="nx">_000</span> <span class="c1">// 低于此值发出警告</span>
+</code></pre></div>
+
+<h4 id="_10">层级解析</h4>
+<div class="codehilite"><pre><span></span><code><span class="n">modelsConfig</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">model</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">default</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">agentContextTokens</span><span class="w"> </span><span class="p">(</span><span class="err">作为上限</span><span class="w"> </span><span class="n">cap</span><span class="err">，而非</span><span class="w"> </span><span class="n">fallback</span><span class="w"> </span><span class="err">层级</span><span class="p">)</span><span class="w"></span>
+</code></pre></div>
+
+<h4 id="_11">返回类型</h4>
+<div class="codehilite"><pre><span></span><code><span class="nx">ContextWindowGuardResult</span> <span class="p">{</span>
+  <span class="nx">source</span><span class="o">:</span> <span class="s2">&quot;model&quot;</span> <span class="o">|</span> <span class="s2">&quot;modelsConfig&quot;</span> <span class="o">|</span> <span class="s2">&quot;agentContextTokens&quot;</span> <span class="o">|</span> <span class="s2">&quot;default&quot;</span>
+  <span class="nx">tokens</span>: <span class="kt">number</span>
+  <span class="nx">shouldWarn</span>: <span class="kt">boolean</span>   <span class="c1">// &lt; 32K</span>
+  <span class="nx">shouldBlock</span>: <span class="kt">boolean</span>  <span class="c1">// &lt; 16K</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <hr />
-<h2 id="6-system-prompt-组装">6. System Prompt 组装</h2>
-<h3 id="核心组装-srcagentssystem-promptts-728-行">核心组装 (<code>src/agents/system-prompt.ts</code>, 728 行)</h3>
+<h2 id="6-system-prompt">6. System Prompt 组装</h2>
+<h3 id="srcagentssystem-promptts-728">核心组装 (<code>src/agents/system-prompt.ts</code>, 728 行)</h3>
 <p>System Prompt 由多个段落拼接而成，每个段落对应一个功能域：</p>
-<h4 id="组装段落按顺序">组装段落（按顺序）</h4>
+<h4 id="_12">组装段落（按顺序）</h4>
 <table>
 <thead>
 <tr>
@@ -365,6 +429,11 @@ CONTEXT_WINDOW_WARN_BELOW_TOKENS = 32_000 // 低于此值发出警告
 <td><strong>Identity</strong></td>
 <td>模型名称、provider、agent 信息</td>
 <td>始终包含</td>
+</tr>
+<tr>
+<td><strong>Provider Contribution (stable)</strong></td>
+<td>Provider 缓存稳定指引（2026-04 新增）</td>
+<td>有贡献且在 cache boundary 之前</td>
 </tr>
 <tr>
 <td><strong>Skills</strong></td>
@@ -436,9 +505,36 @@ CONTEXT_WINDOW_WARN_BELOW_TOKENS = 32_000 // 低于此值发出警告
 <td>表情反应级别指南</td>
 <td>Channel 支持时</td>
 </tr>
+<tr>
+<td><strong>Provider Contribution (dynamic)</strong></td>
+<td>Provider 动态指引（2026-04 新增）</td>
+<td>有贡献且在 cache boundary 之后</td>
+</tr>
 </tbody>
 </table>
-<h4 id="提示模式-promptmode">提示模式 (<code>PromptMode</code>)</h4>
+<h4 id="provider-2026-04">Provider 系统提示词贡献（2026-04 新增）</h4>
+<p><strong>文件</strong>: <code>src/agents/system-prompt-contribution.ts</code> (29 行)</p>
+<p>Provider 插件可以通过 <code>resolveSystemPromptContribution()</code> 钩子注入缓存感知的提示词片段：</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">ProviderSystemPromptSectionId</span> <span class="o">=</span>
+  <span class="o">|</span> <span class="s2">&quot;interaction_style&quot;</span>
+  <span class="o">|</span> <span class="s2">&quot;tool_call_style&quot;</span>
+  <span class="o">|</span> <span class="s2">&quot;execution_bias&quot;</span><span class="p">;</span>
+
+<span class="kr">type</span> <span class="nx">ProviderSystemPromptContribution</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="c1">// 缓存稳定前缀：插入到 system-prompt cache boundary 之前，保持 KV cache 复用</span>
+  <span class="nx">stablePrefix?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="c1">// 动态后缀：插入到 cache boundary 之后，用于真正随会话变化的文本</span>
+  <span class="nx">dynamicSuffix?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="c1">// 段落级覆盖：可替换核心 prompt 的特定段落</span>
+  <span class="nx">sectionOverrides?</span>: <span class="kt">Partial</span><span class="o">&lt;</span><span class="nx">Record</span><span class="o">&lt;</span><span class="nx">ProviderSystemPromptSectionId</span><span class="p">,</span> <span class="kt">string</span><span class="o">&gt;&gt;</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p><strong>关键设计</strong>：
+- <code>stablePrefix</code> 放置在 cache boundary 之前，跨 turn 保持字节一致，最大化 prompt cache 命中率
+- <code>dynamicSuffix</code> 放置在 cache boundary 之后，用于真正动态变化的 provider 指引
+- <code>sectionOverrides</code> 支持对 <code>interaction_style</code>、<code>tool_call_style</code>、<code>execution_bias</code> 三个段落的完整替换</p>
+<h4 id="promptmode">提示模式 (<code>PromptMode</code>)</h4>
 <table>
 <thead>
 <tr>
@@ -465,35 +561,46 @@ CONTEXT_WINDOW_WARN_BELOW_TOKENS = 32_000 // 低于此值发出警告
 </tr>
 </tbody>
 </table>
-<h3 id="嵌入式-prompt-构建-srcagentspi-embedded-runnersystem-promptts-108-行">嵌入式 Prompt 构建 (<code>src/agents/pi-embedded-runner/system-prompt.ts</code>, 108 行)</h3>
+<h3 id="prompt-srcagentspi-embedded-runnersystem-promptts-108">嵌入式 Prompt 构建 (<code>src/agents/pi-embedded-runner/system-prompt.ts</code>, 108 行)</h3>
 <p>封装层，将嵌入式参数映射到通用参数：</p>
-<pre><code class="language-typescript">buildEmbeddedSystemPrompt() {
-  // 提取工具名称/摘要
-  // 构建模型别名行
-  // 委托给核心 buildAgentSystemPrompt()
-}
-</code></pre>
-<h4 id="system-prompt-覆盖机制">System Prompt 覆盖机制</h4>
-<pre><code class="language-typescript">createSystemPromptOverride(systemPrompt: string)      // 创建覆盖函数
-applySystemPromptOverrideToSession(session, override)  // 应用到 session
-</code></pre>
-<p>插件和配置可通过此机制完全替换默认 System Prompt。</p>
+<div class="codehilite"><pre><span></span><code><span class="nx">buildEmbeddedSystemPrompt</span><span class="p">()</span> <span class="p">{</span>
+  <span class="c1">// 提取工具名称/摘要</span>
+  <span class="c1">// 构建模型别名行</span>
+  <span class="c1">// 委托给核心 buildAgentSystemPrompt()</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h4 id="system-prompt">System Prompt 覆盖机制</h4>
+<p><strong>文件</strong>: <code>src/agents/system-prompt-override.ts</code> (28 行)</p>
+<div class="codehilite"><pre><span></span><code><span class="c1">// 解析提示词覆盖（按优先级）</span>
+<span class="kd">function</span> <span class="nx">resolveSystemPromptOverride</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">config?</span>: <span class="kt">OpenClawConfig</span><span class="p">;</span>
+  <span class="nx">agentId?</span>: <span class="kt">string</span><span class="p">;</span>
+<span class="p">})</span><span class="o">:</span> <span class="kt">string</span> <span class="o">|</span> <span class="kc">undefined</span> <span class="p">{</span>
+  <span class="c1">// 1. 检查 agents.list[].systemPromptOverride（per-agent）</span>
+  <span class="c1">// 2. 回退到 agents.defaults.systemPromptOverride（全局默认）</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>插件和配置可通过此机制完全替换默认 System Prompt。支持 per-agent 和全局默认两个层级的覆盖。</p>
 <hr />
-<h2 id="7-agent-执行流程-attempt">7. Agent 执行流程 (Attempt)</h2>
+<h2 id="7-agent-attempt">7. Agent 执行流程 (Attempt)</h2>
 <p><strong>文件</strong>: <code>src/agents/pi-embedded-runner/run/attempt.ts</code> (2874 行)</p>
-<h3 id="执行流程">执行流程</h3>
-<pre><code>1. 加载 session (从磁盘)
-2. 修复 session 文件 (如有损坏)
-3. 创建 AgentSession (通过 SessionManager)
-4. 调用 Context Engine 的 assemble():
-   - 输入：完整消息历史
-   - 预算：context window - overhead
-   - 输出：有序消息 + token 估算 + systemPromptAddition
-5. 应用 System Prompt
-6. 添加插件/Hook 上下文
-7. 发送到模型
-</code></pre>
-<h3 id="辅助函数">辅助函数</h3>
+<h3 id="_13">执行流程</h3>
+<div class="codehilite"><pre><span></span><code><span class="mf">1.</span><span class="w"> </span><span class="n">加载</span><span class="w"> </span><span class="n">session</span><span class="w"> </span><span class="p">(</span><span class="n">从磁盘</span><span class="p">)</span><span class="w"></span>
+<span class="mf">2.</span><span class="w"> </span><span class="n">修复</span><span class="w"> </span><span class="n">session</span><span class="w"> </span><span class="n">文件</span><span class="w"> </span><span class="p">(</span><span class="n">如有损坏</span><span class="p">)</span><span class="w"></span>
+<span class="mf">3.</span><span class="w"> </span><span class="n">创建</span><span class="w"> </span><span class="n">AgentSession</span><span class="w"> </span><span class="p">(</span><span class="n">通过</span><span class="w"> </span><span class="n">SessionManager</span><span class="p">)</span><span class="w"></span>
+<span class="mf">4.</span><span class="w"> </span><span class="n">解析</span><span class="w"> </span><span class="n">Provider</span><span class="w"> </span><span class="kr">Sys</span><span class="n">tem</span><span class="w"> </span><span class="n">Prompt</span><span class="w"> </span><span class="kr">Cont</span><span class="n">ribution</span><span class="err">（</span><span class="mf">2026</span><span class="o">-</span><span class="mf">04</span><span class="w"> </span><span class="n">新增</span><span class="err">）</span><span class="w"></span>
+<span class="mf">5.</span><span class="w"> </span><span class="n">调用</span><span class="w"> </span><span class="kr">Cont</span><span class="n">ext</span><span class="w"> </span><span class="n">Engine</span><span class="w"> </span><span class="n">的</span><span class="w"> </span><span class="n">assemble</span><span class="p">():</span><span class="w"></span>
+<span class="w">   </span><span class="o">-</span><span class="w"> </span><span class="n">输入</span><span class="err">：</span><span class="n">完整消息历史</span><span class="w"></span>
+<span class="w">   </span><span class="o">-</span><span class="w"> </span><span class="n">预算</span><span class="err">：</span><span class="kr">cont</span><span class="n">ext</span><span class="w"> </span><span class="n">window</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">overhead</span><span class="w"></span>
+<span class="w">   </span><span class="o">-</span><span class="w"> </span><span class="n">输出</span><span class="err">：</span><span class="n">有序消息</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="kr">to</span><span class="n">ken</span><span class="w"> </span><span class="n">估算</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="kr">sys</span><span class="n">temPromptAddition</span><span class="w"></span>
+<span class="mf">6.</span><span class="w"> </span><span class="n">应用</span><span class="w"> </span><span class="kr">Sys</span><span class="n">tem</span><span class="w"> </span><span class="n">Prompt</span><span class="err">（</span><span class="n">含</span><span class="w"> </span><span class="n">provider</span><span class="w"> </span><span class="kr">cont</span><span class="n">ribution</span><span class="err">）</span><span class="w"></span>
+<span class="mf">7.</span><span class="w"> </span><span class="n">添加插件</span><span class="o">/</span><span class="n">Hook</span><span class="w"> </span><span class="n">上下文</span><span class="w"></span>
+<span class="mf">8.</span><span class="w"> </span><span class="n">发送到模型</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="_14">辅助函数</h3>
 <table>
 <thead>
 <tr>
@@ -528,48 +635,54 @@ applySystemPromptOverrideToSession(session, override)  // 应用到 session
 </tr>
 </tbody>
 </table>
-<h3 id="关键处理">关键处理</h3>
+<h3 id="_15">关键处理</h3>
 <ul>
+<li><strong>Provider Prompt Contribution 解析</strong>: <code>resolveProviderSystemPromptContribution()</code> 在 attempt 开始时调用（2026-04 新增）</li>
 <li><strong>插件 Hook 执行</strong>: <code>before_prompt_build</code>、<code>before_agent_start</code></li>
 <li><strong>图片检测和加载</strong>: 自动识别消息中的图片</li>
 <li><strong>工具结果上下文守卫</strong>: 防止工具结果溢出</li>
 <li><strong>缓存 TTL 追加</strong>: 为支持的 provider 添加缓存 TTL</li>
 </ul>
 <hr />
-<h2 id="8-运行循环与重试">8. 运行循环与重试</h2>
+<h2 id="8">8. 运行循环与重试</h2>
 <p><strong>文件</strong>: <code>src/agents/pi-embedded-runner/run.ts</code> (1698 行)</p>
-<h3 id="重试常量">重试常量</h3>
-<pre><code class="language-typescript">BASE_RUN_RETRY_ITERATIONS = 24                    // 基础重试次数
-RUN_RETRY_ITERATIONS_PER_PROFILE = 8              // 每个 auth profile 额外重试
-OVERLOAD_FAILOVER_BACKOFF_POLICY = 250ms → 1.5s   // 过载退避，0.2 jitter
-ANTHROPIC_MAGIC_STRING_TRIGGER_REFUSAL             // 投毒防护清洗
-</code></pre>
-<h3 id="usage-累计逻辑">Usage 累计逻辑</h3>
-<pre><code class="language-typescript">// TypeScript type + factory function createUsageAccumulator()
-// 跟踪 input、output、cache read/write（跨重试累计）
+<h3 id="_16">重试常量</h3>
+<p><strong>注意</strong>: <code>BASE_RUN_RETRY_ITERATIONS</code>、<code>RUN_RETRY_ITERATIONS_PER_PROFILE</code> 等重试相关常量定义在 <code>src/agents/pi-embedded-runner/run/helpers.ts</code> 中，而非直接在 <code>run.ts</code> 中。</p>
+<div class="codehilite"><pre><span></span><code><span class="nx">BASE_RUN_RETRY_ITERATIONS</span> <span class="o">=</span> <span class="mf">24</span>                    <span class="c1">// 基础重试次数</span>
+<span class="nx">RUN_RETRY_ITERATIONS_PER_PROFILE</span> <span class="o">=</span> <span class="mf">8</span>              <span class="c1">// 每个 auth profile 额外重试</span>
+<span class="nx">DEFAULT_OVERLOAD_FAILOVER_BACKOFF_MS</span> <span class="o">=</span> <span class="mf">0</span>           <span class="c1">// 过载退避默认值</span>
+<span class="nx">ANTHROPIC_MAGIC_STRING_TRIGGER_REFUSAL</span>             <span class="c1">// 投毒防护清洗</span>
+</code></pre></div>
 
-mergeUsageIntoAccumulator()  // 合并单次 API 调用 usage
-toNormalizedUsage()          // 归一化（使用最后一次调用的 cache 字段）
-</code></pre>
-<p><strong>关键设计</strong>: 使用<strong>最后一次</strong> API 调用的 cache 字段（而非累计值），避免多轮工具调用时 <code>N × context_size</code> 的膨胀。</p>
+<h3 id="usage">Usage 累计逻辑</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// TypeScript type + factory function createUsageAccumulator()</span>
+<span class="c1">// 跟踪 input、output、cache read/write（跨重试累计）</span>
+
+<span class="nx">mergeUsageIntoAccumulator</span><span class="p">()</span>  <span class="c1">// 合并单次 API 调用 usage</span>
+<span class="nx">toNormalizedUsage</span><span class="p">()</span>          <span class="c1">// 归一化（使用最后一次调用的 cache 字段）</span>
+</code></pre></div>
+
+<p><strong>关键设计</strong>: 使用<strong>最后一次</strong> API 调用的 cache 字段（而非累计值），避免多轮工具调用时 <code>N x context_size</code> 的膨胀。</p>
 <hr />
-<h2 id="9-上下文压缩-compaction">9. 上下文压缩 (Compaction)</h2>
+<h2 id="9-compaction">9. 上下文压缩 (Compaction)</h2>
 <p><strong>文件</strong>: <code>src/agents/compaction.ts</code> (464 行)</p>
-<h3 id="算法常量">算法常量</h3>
-<pre><code class="language-typescript">BASE_CHUNK_RATIO = 0.4           // 40% 上下文大小作为 chunk 尺寸
-MIN_CHUNK_RATIO = 0.15           // chunk 最小不低于 15%
-SAFETY_MARGIN = 1.2              // 20% 安全余量（补偿 token 估算不准确）
-SUMMARIZATION_OVERHEAD_TOKENS = 4_096  // 摘要提示词预留 token
-MAX_COMPACTION_SUMMARY_CHARS = 16_000  // 新增：摘要字符上限
-MAX_FILE_OPS_SECTION_CHARS = 2_000     // 新增：文件操作段字符上限
-</code></pre>
-<h3 id="核心函数-1">核心函数</h3>
-<h4 id="token-估算">Token 估算</h4>
-<pre><code class="language-typescript">estimateMessagesTokens(messages)
-// 安全处理：剥离 toolResult.details（不可信的冗长载荷）
-// 对剩余内容求和估算 token
-</code></pre>
-<h4 id="消息分块">消息分块</h4>
+<h3 id="_17">算法常量</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">BASE_CHUNK_RATIO</span> <span class="o">=</span> <span class="mf">0.4</span>           <span class="c1">// 40% 上下文大小作为 chunk 尺寸</span>
+<span class="nx">MIN_CHUNK_RATIO</span> <span class="o">=</span> <span class="mf">0.15</span>           <span class="c1">// chunk 最小不低于 15%</span>
+<span class="nx">SAFETY_MARGIN</span> <span class="o">=</span> <span class="mf">1.2</span>              <span class="c1">// 20% 安全余量（补偿 token 估算不准确）</span>
+<span class="nx">SUMMARIZATION_OVERHEAD_TOKENS</span> <span class="o">=</span> <span class="mf">4</span><span class="nx">_096</span>  <span class="c1">// 摘要提示词预留 token</span>
+<span class="nx">MAX_COMPACTION_SUMMARY_CHARS</span> <span class="o">=</span> <span class="mf">16</span><span class="nx">_000</span>  <span class="c1">// 摘要字符上限</span>
+<span class="nx">MAX_FILE_OPS_SECTION_CHARS</span> <span class="o">=</span> <span class="mf">2</span><span class="nx">_000</span>     <span class="c1">// 文件操作段字符上限</span>
+</code></pre></div>
+
+<h3 id="_18">核心函数</h3>
+<h4 id="token">Token 估算</h4>
+<div class="codehilite"><pre><span></span><code><span class="nx">estimateMessagesTokens</span><span class="p">(</span><span class="nx">messages</span><span class="p">)</span>
+<span class="c1">// 安全处理：剥离 toolResult.details（不可信的冗长载荷）</span>
+<span class="c1">// 对剩余内容求和估算 token</span>
+</code></pre></div>
+
+<h4 id="_19">消息分块</h4>
 <table>
 <thead>
 <tr>
@@ -592,23 +705,25 @@ MAX_FILE_OPS_SECTION_CHARS = 2_000     // 新增：文件操作段字符上限
 </tr>
 </tbody>
 </table>
-<h4 id="摘要生成渐进降级">摘要生成（渐进降级）</h4>
-<pre><code class="language-typescript">summarizeWithFallback(messages) {
-  // 1. 完整摘要 → 尝试对全部消息生成摘要
-  // 2. 部分摘要 → 截取部分消息生成摘要
-  // 3. 文本回退 → 仅记录消息数量的简短文本
-}
+<h4 id="_20">摘要生成（渐进降级）</h4>
+<div class="codehilite"><pre><span></span><code><span class="nx">summarizeWithFallback</span><span class="p">(</span><span class="nx">messages</span><span class="p">)</span> <span class="p">{</span>
+  <span class="c1">// 1. 完整摘要 -&gt; 尝试对全部消息生成摘要</span>
+  <span class="c1">// 2. 部分摘要 -&gt; 截取部分消息生成摘要</span>
+  <span class="c1">// 3. 文本回退 -&gt; 仅记录消息数量的简短文本</span>
+<span class="p">}</span>
 
-summarizeInStages(messages) {
-  // 多阶段摘要：分块摘要后合并
-}
-</code></pre>
-<h4 id="历史裁剪">历史裁剪</h4>
-<pre><code class="language-typescript">pruneHistoryForContextShare(messages, budget) {
-  // 丢弃最旧的 chunk 直到符合预算
-}
-</code></pre>
-<h3 id="标识符保留策略">标识符保留策略</h3>
+<span class="nx">summarizeInStages</span><span class="p">(</span><span class="nx">messages</span><span class="p">)</span> <span class="p">{</span>
+  <span class="c1">// 多阶段摘要：分块摘要后合并</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h4 id="_21">历史裁剪</h4>
+<div class="codehilite"><pre><span></span><code><span class="nx">pruneHistoryForContextShare</span><span class="p">(</span><span class="nx">messages</span><span class="p">,</span> <span class="nx">budget</span><span class="p">)</span> <span class="p">{</span>
+  <span class="c1">// 丢弃最旧的 chunk 直到符合预算</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="_22">标识符保留策略</h3>
 <p>压缩时严格保留的标识符类型：
 - UUID
 - 哈希值
@@ -618,72 +733,77 @@ summarizeInStages(messages) {
 - 主机名</p>
 <p>策略可配置：<code>"strict"</code> | <code>"off"</code> | <code>"custom"</code></p>
 <hr />
-<h2 id="10-嵌入式-compaction-入口">10. 嵌入式 Compaction 入口</h2>
+<h2 id="10-compaction">10. 嵌入式 Compaction 入口</h2>
 <p><strong>文件</strong>: <code>src/agents/pi-embedded-runner/compact.ts</code> (1200 行)</p>
-<h3 id="参数类型-compactembeddedpisessionparams35-个字段">参数类型 <code>CompactEmbeddedPiSessionParams</code>（35 个字段）</h3>
+<h3 id="compactembeddedpisessionparams35">参数类型 <code>CompactEmbeddedPiSessionParams</code>（35 个字段）</h3>
 <p>涵盖：Session/Run 标识、模型和认证覆盖、预算和触发配置、工作空间和技能配置。</p>
-<h3 id="执行阶段">执行阶段</h3>
-<pre><code>Phase 1: 模型解析 (279-328行)
-  → 支持独立的 compaction 模型覆盖（与运行时模型分离）
+<h3 id="_23">执行阶段</h3>
+<div class="codehilite"><pre><span></span><code><span class="n">Phase</span><span class="w"> </span><span class="mi">1</span><span class="o">:</span><span class="w"> </span><span class="err">模型解析</span><span class="w"> </span><span class="p">(</span><span class="mi">279</span><span class="o">-</span><span class="mi">328</span><span class="err">行</span><span class="p">)</span><span class="w"></span>
+<span class="w">  </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">支持独立的</span><span class="w"> </span><span class="n">compaction</span><span class="w"> </span><span class="err">模型覆盖（与运行时模型分离）</span><span class="w"></span>
 
-Phase 2: 工作空间和认证设置 (357-375行)
-  → 初始化沙箱，确保 session header
+<span class="n">Phase</span><span class="w"> </span><span class="mi">2</span><span class="o">:</span><span class="w"> </span><span class="err">工作空间和认证设置</span><span class="w"> </span><span class="p">(</span><span class="mi">357</span><span class="o">-</span><span class="mi">375</span><span class="err">行</span><span class="p">)</span><span class="w"></span>
+<span class="w">  </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">初始化沙箱，确保</span><span class="w"> </span><span class="n">session</span><span class="w"> </span><span class="kr">header</span><span class="w"></span>
 
-Phase 3: 工具和 Channel 解析 (424-514行)
-  → 清理 Google 兼容性，收集 allowlist，解析能力
+<span class="n">Phase</span><span class="w"> </span><span class="mi">3</span><span class="o">:</span><span class="w"> </span><span class="err">工具和</span><span class="w"> </span><span class="n">Channel</span><span class="w"> </span><span class="err">解析</span><span class="w"> </span><span class="p">(</span><span class="mi">424</span><span class="o">-</span><span class="mi">514</span><span class="err">行</span><span class="p">)</span><span class="w"></span>
+<span class="w">  </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">清理</span><span class="w"> </span><span class="n">Google</span><span class="w"> </span><span class="err">兼容性，收集</span><span class="w"> </span><span class="n">allowlist</span><span class="err">，解析能力</span><span class="w"></span>
 
-Phase 4: System Prompt 组装 (549-577行)
-  → 完整嵌入式提示词 + skills + docs + reactions
+<span class="n">Phase</span><span class="w"> </span><span class="mi">4</span><span class="o">:</span><span class="w"> </span><span class="n">System</span><span class="w"> </span><span class="n">Prompt</span><span class="w"> </span><span class="err">组装</span><span class="w"> </span><span class="p">(</span><span class="mi">549</span><span class="o">-</span><span class="mi">577</span><span class="err">行</span><span class="p">)</span><span class="w"></span>
+<span class="w">  </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">完整嵌入式提示词</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">skills</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">docs</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">reactions</span><span class="w"></span>
+<span class="w">  </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">含</span><span class="w"> </span><span class="n">Provider</span><span class="w"> </span><span class="n">System</span><span class="w"> </span><span class="n">Prompt</span><span class="w"> </span><span class="n">Contribution</span><span class="w"> </span><span class="err">解析（</span><span class="mi">2026</span><span class="o">-</span><span class="mo">04</span><span class="w"> </span><span class="err">新增）</span><span class="w"></span>
 
-Phase 5: Session 锁和修复 (580-603行)
-  → 获取锁，修复损坏的 session，预热缓存
+<span class="n">Phase</span><span class="w"> </span><span class="mi">5</span><span class="o">:</span><span class="w"> </span><span class="n">Session</span><span class="w"> </span><span class="err">锁和修复</span><span class="w"> </span><span class="p">(</span><span class="mi">580</span><span class="o">-</span><span class="mi">603</span><span class="err">行</span><span class="p">)</span><span class="w"></span>
+<span class="w">  </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">获取锁，修复损坏的</span><span class="w"> </span><span class="n">session</span><span class="err">，预热缓存</span><span class="w"></span>
 
-Phase 6: 转录清理 (664-700行)
-  → 验证、限制历史、修复工具配对
+<span class="n">Phase</span><span class="w"> </span><span class="mi">6</span><span class="o">:</span><span class="w"> </span><span class="err">转录清理</span><span class="w"> </span><span class="p">(</span><span class="mi">664</span><span class="o">-</span><span class="mi">700</span><span class="err">行</span><span class="p">)</span><span class="w"></span>
+<span class="w">  </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">验证、限制历史、修复工具配对</span><span class="w"></span>
 
-Phase 7: Pre-Compaction Hooks (727-763行)
-  → 发射内部/插件 hooks
+<span class="n">Phase</span><span class="w"> </span><span class="mi">7</span><span class="o">:</span><span class="w"> </span><span class="n">Pre</span><span class="o">-</span><span class="n">Compaction</span><span class="w"> </span><span class="n">Hooks</span><span class="w"> </span><span class="p">(</span><span class="mi">727</span><span class="o">-</span><span class="mi">763</span><span class="err">行</span><span class="p">)</span><span class="w"></span>
+<span class="w">  </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">发射内部</span><span class="o">/</span><span class="err">插件</span><span class="w"> </span><span class="n">hooks</span><span class="w"></span>
 
-Phase 8: 核心压缩 (790-827行)
-  → 调用 session.compact()，估算 token
+<span class="n">Phase</span><span class="w"> </span><span class="mi">8</span><span class="o">:</span><span class="w"> </span><span class="err">核心压缩</span><span class="w"> </span><span class="p">(</span><span class="mi">790</span><span class="o">-</span><span class="mi">827</span><span class="err">行</span><span class="p">)</span><span class="w"></span>
+<span class="w">  </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">调用</span><span class="w"> </span><span class="n">session</span><span class="p">.</span><span class="n">compact</span><span class="p">()</span><span class="err">，估算</span><span class="w"> </span><span class="kt">token</span><span class="w"></span>
 
-Phase 9: Post-Compaction Hooks (831-872行)
-  → 发射完成 hooks
+<span class="n">Phase</span><span class="w"> </span><span class="mi">9</span><span class="o">:</span><span class="w"> </span><span class="n">Post</span><span class="o">-</span><span class="n">Compaction</span><span class="w"> </span><span class="n">Hooks</span><span class="w"> </span><span class="p">(</span><span class="mi">831</span><span class="o">-</span><span class="mi">872</span><span class="err">行</span><span class="p">)</span><span class="w"></span>
+<span class="w">  </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">发射完成</span><span class="w"> </span><span class="n">hooks</span><span class="w"></span>
 
-Phase 10: 清理 (885-901行)
-  → 刷新待处理的工具结果，释放 session
-</code></pre>
-<h3 id="指标收集">指标收集</h3>
+<span class="n">Phase</span><span class="w"> </span><span class="mi">10</span><span class="o">:</span><span class="w"> </span><span class="err">清理</span><span class="w"> </span><span class="p">(</span><span class="mi">885</span><span class="o">-</span><span class="mi">901</span><span class="err">行</span><span class="p">)</span><span class="w"></span>
+<span class="w">  </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">刷新待处理的工具结果，释放</span><span class="w"> </span><span class="n">session</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="_24">指标收集</h3>
 <ul>
 <li>消息计数：原始、限制前、压缩后</li>
 <li>字符/token 计数：历史、工具结果、估算值</li>
 <li>Top 3 贡献角色/工具</li>
 </ul>
 <hr />
-<h2 id="11-上下文裁剪扩展-context-pruning">11. 上下文裁剪扩展 (Context Pruning)</h2>
-<h3 id="扩展入口-srcagentspi-extensionscontext-pruningextensionts-41-行">扩展入口 (<code>src/agents/pi-extensions/context-pruning/extension.ts</code>, 41 行)</h3>
+<h2 id="11-context-pruning">11. 上下文裁剪扩展 (Context Pruning)</h2>
+<h3 id="srcagentspi-hookscontext-pruningextensionts-41">扩展入口 (<code>src/agents/pi-hooks/context-pruning/extension.ts</code>, 41 行)</h3>
 <p>作为 Pi Extension 运行，监听 <code>"context"</code> 事件：</p>
-<pre><code class="language-typescript">// 事件处理逻辑
-onContextEvent() {
-  if (&quot;cache-ttl&quot; mode &amp;&amp; !expired) return  // TTL 模式下未过期则跳过
-  pruneContextMessages(messages)          // 执行裁剪
-  updateLastTouch()                       // 更新触摸时间
-}
-</code></pre>
-<h3 id="裁剪算法-srcagentspi-extensionscontext-pruningprunerts-360-行">裁剪算法 (<code>src/agents/pi-extensions/context-pruning/pruner.ts</code>, 360 行)</h3>
-<h4 id="常量-1">常量</h4>
-<pre><code class="language-typescript">CHARS_PER_TOKEN_ESTIMATE = 4     // 字符到 token 的估算比率
-IMAGE_CHAR_ESTIMATE = 8_000      // 图片的字符估算值
-</code></pre>
-<h4 id="核心算法-prunecontextmessages">核心算法 <code>pruneContextMessages()</code></h4>
-<pre><code>1. 从 context tokens 计算字符窗口
-2. 找到 assistant 消息截断点（保护最后 N 个 assistant 消息）
-3. 保护 bootstrap 阶段（保留第一个 user 消息之前的所有消息）
-4. 软裁剪超大 tool results（保留首尾 N 字符 + 说明）
-5. 如果仍超预算，丢弃可裁剪的 tool 消息
-6. 返回裁剪后的数组（无变更则返回原数组）
-</code></pre>
-<h4 id="消息估算">消息估算</h4>
+<div class="codehilite"><pre><span></span><code><span class="c1">// 事件处理逻辑</span>
+<span class="nx">onContextEvent</span><span class="p">()</span> <span class="p">{</span>
+  <span class="k">if</span> <span class="p">(</span><span class="s2">&quot;cache-ttl&quot;</span> <span class="nx">mode</span> <span class="o">&amp;&amp;</span> <span class="o">!</span><span class="nx">expired</span><span class="p">)</span> <span class="k">return</span>  <span class="c1">// TTL 模式下未过期则跳过</span>
+  <span class="nx">pruneContextMessages</span><span class="p">(</span><span class="nx">messages</span><span class="p">)</span>          <span class="c1">// 执行裁剪</span>
+  <span class="nx">updateLastTouch</span><span class="p">()</span>                       <span class="c1">// 更新触摸时间</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="srcagentspi-hookscontext-pruningprunerts-360">裁剪算法 (<code>src/agents/pi-hooks/context-pruning/pruner.ts</code>, 360 行)</h3>
+<h4 id="_25">常量</h4>
+<div class="codehilite"><pre><span></span><code><span class="nx">CHARS_PER_TOKEN_ESTIMATE</span> <span class="o">=</span> <span class="mf">4</span>     <span class="c1">// 字符到 token 的估算比率</span>
+<span class="nx">IMAGE_CHAR_ESTIMATE</span> <span class="o">=</span> <span class="mf">8</span><span class="nx">_000</span>      <span class="c1">// 图片的字符估算值</span>
+</code></pre></div>
+
+<h4 id="prunecontextmessages">核心算法 <code>pruneContextMessages()</code></h4>
+<div class="codehilite"><pre><span></span><code><span class="mf">1.</span><span class="w"> </span><span class="n">从</span><span class="w"> </span><span class="kr">cont</span><span class="n">ext</span><span class="w"> </span><span class="kr">to</span><span class="n">kens</span><span class="w"> </span><span class="n">计算字符窗口</span><span class="w"></span>
+<span class="mf">2.</span><span class="w"> </span><span class="n">找到</span><span class="w"> </span><span class="n">assistant</span><span class="w"> </span><span class="n">消息截断点</span><span class="err">（</span><span class="n">保护最后</span><span class="w"> </span><span class="n">N</span><span class="w"> </span><span class="n">个</span><span class="w"> </span><span class="n">assistant</span><span class="w"> </span><span class="n">消息</span><span class="err">）</span><span class="w"></span>
+<span class="mf">3.</span><span class="w"> </span><span class="n">保护</span><span class="w"> </span><span class="n">bootstrap</span><span class="w"> </span><span class="n">阶段</span><span class="err">（</span><span class="n">保留第一个</span><span class="w"> </span><span class="n">user</span><span class="w"> </span><span class="n">消息之前的所有消息</span><span class="err">）</span><span class="w"></span>
+<span class="mf">4.</span><span class="w"> </span><span class="n">软裁剪超大</span><span class="w"> </span><span class="kr">to</span><span class="n">ol</span><span class="w"> </span><span class="n">results</span><span class="err">（</span><span class="n">保留首尾</span><span class="w"> </span><span class="n">N</span><span class="w"> </span><span class="n">字符</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">说明</span><span class="err">）</span><span class="w"></span>
+<span class="mf">5.</span><span class="w"> </span><span class="n">如果仍超预算</span><span class="err">，</span><span class="n">丢弃可裁剪的</span><span class="w"> </span><span class="kr">to</span><span class="n">ol</span><span class="w"> </span><span class="n">消息</span><span class="w"></span>
+<span class="mf">6.</span><span class="w"> </span><span class="n">返回裁剪后的数组</span><span class="err">（</span><span class="n">无变更则返回原数组</span><span class="err">）</span><span class="w"></span>
+</code></pre></div>
+
+<h4 id="_26">消息估算</h4>
 <p>按角色区分：
 - <strong>user</strong>: text + image 估算
 - <strong>assistant</strong>: text + thinking + toolCall args
@@ -691,42 +811,46 @@ IMAGE_CHAR_ESTIMATE = 8_000      // 图片的字符估算值
 - 其他角色：text 估算</p>
 <p><strong>特征</strong>: 只影响当前请求的内存中上下文，<strong>不重写历史记录</strong>。</p>
 <hr />
-<h2 id="12-路由系统">12. 路由系统</h2>
+<h2 id="12">12. 路由系统</h2>
 <p><strong>文件</strong>: <code>src/routing/resolve-route.ts</code> (804 行)</p>
-<h3 id="输入类型">输入类型</h3>
-<pre><code class="language-typescript">ResolveAgentRouteInput {
-  cfg: OpenClawConfig            // required
-  channel: string
-  accountId?: string | null
-  peer?: RoutePeer | null
-  parentPeer?: RoutePeer | null
-  guildId?: string
-  teamId?: string
-  memberRoleIds?: string[]
-}
-</code></pre>
-<h3 id="输出类型">输出类型</h3>
-<pre><code class="language-typescript">ResolvedAgentRoute {
-  agentId: string
-  channel: string
-  accountId: string
-  sessionKey: string
-  mainSessionKey: string
-  lastRoutePolicy: &quot;main&quot; | &quot;session&quot;
-  matchedBy: string  // binding 类型或 &quot;default&quot;
-}
-</code></pre>
-<h3 id="多层绑定匹配按优先级">多层绑定匹配（按优先级）</h3>
-<pre><code>1. binding.peer           → 直接线程/DM 匹配
-2. binding.peer.parent    → 线程父级继承
-3. binding.guild + roles  → Discord 角色匹配
-4. binding.guild          → Discord 服务器匹配
-5. binding.team           → Teams 租户匹配
-6. binding.account        → 账号模式匹配
-7. binding.channel        → Channel 回退
-8. default agent          → 默认代理
-</code></pre>
-<h3 id="缓存策略">缓存策略</h3>
+<h3 id="_27">输入类型</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">ResolveAgentRouteInput</span> <span class="p">{</span>
+  <span class="nx">cfg</span>: <span class="kt">OpenClawConfig</span>            <span class="c1">// required</span>
+  <span class="nx">channel</span>: <span class="kt">string</span>
+  <span class="nx">accountId?</span>: <span class="kt">string</span> <span class="o">|</span> <span class="kc">null</span>
+  <span class="nx">peer?</span>: <span class="kt">RoutePeer</span> <span class="o">|</span> <span class="kc">null</span>
+  <span class="nx">parentPeer?</span>: <span class="kt">RoutePeer</span> <span class="o">|</span> <span class="kc">null</span>
+  <span class="nx">guildId?</span>: <span class="kt">string</span>
+  <span class="nx">teamId?</span>: <span class="kt">string</span>
+  <span class="nx">memberRoleIds?</span>: <span class="kt">string</span><span class="p">[]</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="_28">输出类型</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">ResolvedAgentRoute</span> <span class="p">{</span>
+  <span class="nx">agentId</span>: <span class="kt">string</span>
+  <span class="nx">channel</span>: <span class="kt">string</span>
+  <span class="nx">accountId</span>: <span class="kt">string</span>
+  <span class="nx">sessionKey</span>: <span class="kt">string</span>
+  <span class="nx">mainSessionKey</span>: <span class="kt">string</span>
+  <span class="nx">lastRoutePolicy</span><span class="o">:</span> <span class="s2">&quot;main&quot;</span> <span class="o">|</span> <span class="s2">&quot;session&quot;</span>
+  <span class="nx">matchedBy</span><span class="o">:</span> <span class="s2">&quot;binding.peer&quot;</span> <span class="o">|</span> <span class="s2">&quot;binding.peer.parent&quot;</span> <span class="o">|</span> <span class="s2">&quot;binding.peer.wildcard&quot;</span> <span class="o">|</span> <span class="s2">&quot;binding.guild+roles&quot;</span> <span class="o">|</span> <span class="s2">&quot;binding.guild&quot;</span> <span class="o">|</span> <span class="s2">&quot;binding.team&quot;</span> <span class="o">|</span> <span class="s2">&quot;binding.account&quot;</span> <span class="o">|</span> <span class="s2">&quot;binding.channel&quot;</span> <span class="o">|</span> <span class="s2">&quot;default&quot;</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="_29">多层绑定匹配（按优先级）</h3>
+<div class="codehilite"><pre><span></span><code><span class="mf">1.</span><span class="w"> </span><span class="n">binding</span><span class="mf">.</span><span class="n">peer</span><span class="w">           </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">直接线程</span><span class="o">/</span><span class="n">DM</span><span class="w"> </span><span class="n">匹配</span><span class="w"></span>
+<span class="mf">2.</span><span class="w"> </span><span class="n">binding</span><span class="mf">.</span><span class="n">peer</span><span class="mf">.</span><span class="n">parent</span><span class="w">    </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">线程父级继承</span><span class="w"></span>
+<span class="mf">3.</span><span class="w"> </span><span class="n">binding</span><span class="mf">.</span><span class="n">peer</span><span class="mf">.</span><span class="n">wildcard</span><span class="w">  </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">Peer</span><span class="w"> </span><span class="n">通配符匹配</span><span class="w"></span>
+<span class="mf">4.</span><span class="w"> </span><span class="n">binding</span><span class="mf">.</span><span class="n">guild</span><span class="o">+</span><span class="n">roles</span><span class="w">    </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">Discord</span><span class="w"> </span><span class="n">角色匹配</span><span class="w"></span>
+<span class="mf">5.</span><span class="w"> </span><span class="n">binding</span><span class="mf">.</span><span class="n">guild</span><span class="w">          </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">Discord</span><span class="w"> </span><span class="n">服务器匹配</span><span class="w"></span>
+<span class="mf">6.</span><span class="w"> </span><span class="n">binding</span><span class="mf">.</span><span class="n">team</span><span class="w">           </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">Teams</span><span class="w"> </span><span class="n">租户匹配</span><span class="w"></span>
+<span class="mf">7.</span><span class="w"> </span><span class="n">binding</span><span class="mf">.</span><span class="n">account</span><span class="w">        </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">账号模式匹配</span><span class="w"></span>
+<span class="mf">8.</span><span class="w"> </span><span class="n">binding</span><span class="mf">.</span><span class="n">channel</span><span class="w">        </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">Channel</span><span class="w"> </span><span class="n">回退</span><span class="w"></span>
+<span class="mf">9.</span><span class="w"> </span><span class="kd">def</span><span class="n">ault</span><span class="w">                </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">默认代理</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="_30">缓存策略</h3>
 <table>
 <thead>
 <tr>
@@ -748,7 +872,7 @@ IMAGE_CHAR_ESTIMATE = 8_000      // 图片的字符估算值
 </tr>
 </tbody>
 </table>
-<h3 id="绑定索引">绑定索引</h3>
+<h3 id="_31">绑定索引</h3>
 <p>按以下维度建立索引以加速查找：
 - peer
 - guild + roles
@@ -757,18 +881,20 @@ IMAGE_CHAR_ESTIMATE = 8_000      // 图片的字符估算值
 - account
 - channel</p>
 <hr />
-<h2 id="13-session-key-构建">13. Session Key 构建</h2>
+<h2 id="13-session-key">13. Session Key 构建</h2>
 <p><strong>文件</strong>: <code>src/routing/session-key.ts</code> (253 行)</p>
-<h3 id="常量-2">常量</h3>
-<pre><code class="language-typescript">DEFAULT_AGENT_ID = &quot;main&quot;
-DEFAULT_MAIN_KEY = &quot;main&quot;
-VALID_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i
-</code></pre>
-<h3 id="session-key-格式">Session Key 格式</h3>
-<pre><code>agent:agentId:channel:accountId:peer:dmScope:peerId
-</code></pre>
+<h3 id="_32">常量</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">DEFAULT_AGENT_ID</span> <span class="o">=</span> <span class="s2">&quot;main&quot;</span>
+<span class="nx">DEFAULT_MAIN_KEY</span> <span class="o">=</span> <span class="s2">&quot;main&quot;</span>
+<span class="nx">VALID_ID_RE</span> <span class="o">=</span> <span class="sr">/^[a-z0-9][a-z0-9_-]{0,63}$/i</span>
+</code></pre></div>
+
+<h3 id="session-key">Session Key 格式</h3>
+<div class="codehilite"><pre><span></span><code><span class="n">agent</span><span class="o">:</span><span class="n">agentId</span><span class="o">:</span><span class="n">channel</span><span class="o">:</span><span class="n">accountId</span><span class="o">:</span><span class="n">peer</span><span class="o">:</span><span class="n">dmScope</span><span class="o">:</span><span class="n">peerId</span><span class="w"></span>
+</code></pre></div>
+
 <p>注意：Session Key 以 <code>agent:</code> 前缀开头，具体格式根据 dmScope 的不同而有所变化。</p>
-<h3 id="构建函数">构建函数</h3>
+<h3 id="_33">构建函数</h3>
 <table>
 <thead>
 <tr>
@@ -799,7 +925,7 @@ VALID_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i
 </tr>
 </tbody>
 </table>
-<h3 id="dm-作用域选项">DM 作用域选项</h3>
+<h3 id="dm">DM 作用域选项</h3>
 <table>
 <thead>
 <tr>
@@ -827,22 +953,24 @@ VALID_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i
 </tbody>
 </table>
 <hr />
-<h2 id="14-子-agent-注册表">14. 子 Agent 注册表</h2>
+<h2 id="14-agent">14. 子 Agent 注册表</h2>
 <p><strong>文件</strong>: <code>src/agents/subagent-registry.ts</code> (44KB)</p>
-<h3 id="数据结构">数据结构</h3>
-<pre><code class="language-typescript">subagentRuns: Map&lt;runId, SubagentRunRecord&gt;           // 活跃运行
-sweeper: NodeJS.Timeout | null                         // 清理定时器
-pendingLifecycleErrorByRunId: Map&lt;string, { timer: NodeJS.Timeout; error?: string; endedAt: number }&gt;  // 延迟错误
-resumedRuns: Set&lt;string&gt;                               // 已恢复运行
-</code></pre>
-<h3 id="生命周期常量">生命周期常量</h3>
-<pre><code class="language-typescript">SUBAGENT_ANNOUNCE_TIMEOUT_MS = 120_000  // 最大通告等待 120s
-MAX_ANNOUNCE_RETRY_COUNT = 3           // 防止无限循环
-ANNOUNCE_EXPIRY_MS = 5 * 60_000        // 非完成超时 5min
-ANNOUNCE_COMPLETION_HARD_EXPIRY_MS = 30 * 60_000  // 完成最大等待 30min
-LIFECYCLE_ERROR_RETRY_GRACE_MS = 15_000  // 终端错误前的宽限期 15s
-</code></pre>
-<h3 id="关键操作">关键操作</h3>
+<h3 id="_34">数据结构</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">subagentRuns</span>: <span class="kt">Map</span><span class="o">&lt;</span><span class="nx">runId</span><span class="p">,</span> <span class="nx">SubagentRunRecord</span><span class="o">&gt;</span>           <span class="c1">// 活跃运行</span>
+<span class="nx">sweeper</span>: <span class="kt">NodeJS.Timeout</span> <span class="o">|</span> <span class="kc">null</span>                         <span class="c1">// 清理定时器</span>
+<span class="nx">pendingLifecycleErrorByRunId</span>: <span class="kt">Map</span><span class="o">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="p">{</span> <span class="nx">timer</span>: <span class="kt">NodeJS.Timeout</span><span class="p">;</span> <span class="nx">error?</span>: <span class="kt">string</span><span class="p">;</span> <span class="nx">endedAt</span>: <span class="kt">number</span> <span class="p">}</span><span class="o">&gt;</span>  <span class="c1">// 延迟错误</span>
+<span class="nx">resumedRuns</span>: <span class="kt">Set</span><span class="o">&lt;</span><span class="kt">string</span><span class="o">&gt;</span>                               <span class="c1">// 已恢复运行</span>
+</code></pre></div>
+
+<h3 id="_35">生命周期常量</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">SUBAGENT_ANNOUNCE_TIMEOUT_MS</span> <span class="o">=</span> <span class="mf">120</span><span class="nx">_000</span>  <span class="c1">// 最大通告等待 120s</span>
+<span class="nx">MAX_ANNOUNCE_RETRY_COUNT</span> <span class="o">=</span> <span class="mf">3</span>           <span class="c1">// 防止无限循环</span>
+<span class="nx">ANNOUNCE_EXPIRY_MS</span> <span class="o">=</span> <span class="mf">5</span> <span class="o">*</span> <span class="mf">60</span><span class="nx">_000</span>        <span class="c1">// 非完成超时 5min</span>
+<span class="nx">ANNOUNCE_COMPLETION_HARD_EXPIRY_MS</span> <span class="o">=</span> <span class="mf">30</span> <span class="o">*</span> <span class="mf">60</span><span class="nx">_000</span>  <span class="c1">// 完成最大等待 30min</span>
+<span class="nx">LIFECYCLE_ERROR_RETRY_GRACE_MS</span> <span class="o">=</span> <span class="mf">15</span><span class="nx">_000</span>  <span class="c1">// 终端错误前的宽限期 15s</span>
+</code></pre></div>
+
+<h3 id="_36">关键操作</h3>
 <table>
 <thead>
 <tr>
@@ -870,9 +998,9 @@ LIFECYCLE_ERROR_RETRY_GRACE_MS = 15_000  // 终端错误前的宽限期 15s
 </tbody>
 </table>
 <hr />
-<h2 id="15-子-agent-控制工具">15. 子 Agent 控制工具</h2>
+<h2 id="15-agent">15. 子 Agent 控制工具</h2>
 <p><strong>文件</strong>: <code>src/agents/tools/subagents-tool.ts</code> (182 行)</p>
-<h3 id="操作">操作</h3>
+<h3 id="_37">操作</h3>
 <table>
 <thead>
 <tr>
@@ -896,23 +1024,24 @@ LIFECYCLE_ERROR_RETRY_GRACE_MS = 15_000  // 终端错误前的宽限期 15s
 </tbody>
 </table>
 <h3 id="schema">Schema</h3>
-<pre><code class="language-typescript">SubagentsToolSchema {
-  action?: &quot;list&quot; | &quot;kill&quot; | &quot;steer&quot;  // 可选，默认 &quot;list&quot;
-  target?: string       // 目标 Agent ID
-  message?: string      // 指令消息
-  recentMinutes?: number // 时间过滤
-}
-</code></pre>
-<h3 id="编排逻辑">编排逻辑</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">SubagentsToolSchema</span> <span class="p">{</span>
+  <span class="nx">action</span><span class="o">?:</span> <span class="s2">&quot;list&quot;</span> <span class="o">|</span> <span class="s2">&quot;kill&quot;</span> <span class="o">|</span> <span class="s2">&quot;steer&quot;</span>  <span class="c1">// 可选，默认 &quot;list&quot;</span>
+  <span class="nx">target?</span>: <span class="kt">string</span>       <span class="c1">// 目标 Agent ID</span>
+  <span class="nx">message?</span>: <span class="kt">string</span>      <span class="c1">// 指令消息</span>
+  <span class="nx">recentMinutes?</span>: <span class="kt">number</span> <span class="c1">// 时间过滤</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="_38">编排逻辑</h3>
 <ul>
 <li><strong>叶子 Agent</strong> 看到的是父级的子代（兄弟节点）</li>
 <li><strong>编排者 Agent</strong> 看到的是自己的直接子代</li>
 <li><code>cascadeKillChildren()</code> 递归终止所有后代</li>
 </ul>
 <hr />
-<h2 id="16-插件-hook-体系">16. 插件 Hook 体系</h2>
+<h2 id="16-hook">16. 插件 Hook 体系</h2>
 <p><strong>文件</strong>: <code>src/plugins/hooks.ts</code> (962 行) 和 <code>src/plugins/types.ts</code> (1638 行)</p>
-<h3 id="hook-类型总览">Hook 类型总览</h3>
+<h3 id="hook">Hook 类型总览</h3>
 <table>
 <thead>
 <tr>
@@ -1049,7 +1178,7 @@ LIFECYCLE_ERROR_RETRY_GRACE_MS = 15_000  // 终端错误前的宽限期 15s
 </tr>
 </tbody>
 </table>
-<h3 id="执行模式">执行模式</h3>
+<h3 id="_39">执行模式</h3>
 <table>
 <thead>
 <tr>
@@ -1071,7 +1200,7 @@ LIFECYCLE_ERROR_RETRY_GRACE_MS = 15_000  // 终端错误前的宽限期 15s
 </tr>
 </tbody>
 </table>
-<h3 id="合并策略">合并策略</h3>
+<h3 id="_40">合并策略</h3>
 <table>
 <thead>
 <tr>
@@ -1102,63 +1231,82 @@ LIFECYCLE_ERROR_RETRY_GRACE_MS = 15_000  // 终端错误前的宽限期 15s
 </tr>
 </tbody>
 </table>
-<h3 id="插件-api">插件 API</h3>
-<pre><code class="language-typescript">PluginKind = &quot;memory&quot; | &quot;context-engine&quot;
+<h3 id="api_1">插件 API</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">PluginKind</span> <span class="o">=</span> <span class="s2">&quot;memory&quot;</span> <span class="o">|</span> <span class="s2">&quot;context-engine&quot;</span>
 
-// 注册方法
-registerTool, registerHook, registerHttpRoute, registerChannel
-registerGatewayMethod, registerCli, registerService, registerProvider
-registerCommand, registerContextEngine (独占 slot)
-</code></pre>
+<span class="c1">// 注册方法</span>
+<span class="nx">registerTool</span><span class="p">,</span> <span class="nx">registerHook</span><span class="p">,</span> <span class="nx">registerHttpRoute</span><span class="p">,</span> <span class="nx">registerChannel</span>
+<span class="nx">registerGatewayMethod</span><span class="p">,</span> <span class="nx">registerCli</span><span class="p">,</span> <span class="nx">registerService</span><span class="p">,</span> <span class="nx">registerProvider</span>
+<span class="nx">registerCommand</span><span class="p">,</span> <span class="nx">registerContextEngine</span> <span class="p">(</span><span class="nx">独占</span> <span class="nx">slot</span><span class="p">)</span>
+</code></pre></div>
+
+<h3 id="provider-2026-04_1">Provider 插件扩展（2026-04 新增）</h3>
+<p>Provider 插件新增 <code>resolveSystemPromptContribution</code> 钩子，允许注入缓存感知的系统提示词片段：</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">ProviderPlugin</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="c1">// ... 其他钩子</span>
+  <span class="nx">resolveSystemPromptContribution</span><span class="o">?:</span> <span class="p">(</span>
+    <span class="nx">ctx</span>: <span class="kt">ProviderSystemPromptContributionContext</span><span class="p">,</span>
+  <span class="p">)</span> <span class="p">=&gt;</span> <span class="nx">ProviderSystemPromptContribution</span> <span class="o">|</span> <span class="kc">null</span> <span class="o">|</span> <span class="kc">undefined</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p>上下文参数包括 <code>provider</code>、<code>modelId</code>、<code>promptMode</code>、<code>runtimeChannel</code>、<code>runtimeCapabilities</code>、<code>agentId</code> 等。</p>
 <hr />
-<h2 id="17-acp-协议翻译层">17. ACP 协议翻译层</h2>
+<h2 id="17-acp">17. ACP 协议翻译层</h2>
 <p><strong>文件</strong>: <code>src/acp/translator.ts</code> (1100 行)</p>
-<h3 id="安全常量">安全常量</h3>
-<pre><code class="language-typescript">MAX_PROMPT_BYTES = 2 * 1024 * 1024    // 2 MiB = 2,097,152 bytes DoS 防护 (CWE-400)
-ACP_LOAD_SESSION_REPLAY_LIMIT = 1_000_000  // 防 DoS 重放限制
-SESSION_CREATE_RATE_LIMIT_DEFAULT_MAX_REQUESTS = 120  // 每窗口最大请求数
-SESSION_CREATE_RATE_LIMIT_DEFAULT_WINDOW_MS = 10_000  // 窗口时长 10s
-</code></pre>
-<h3 id="配置-id">配置 ID</h3>
-<pre><code class="language-typescript">thought_level     // 思考级别
-verbose_level     // 详细级别
-reasoning_level   // 推理级别
-response_usage    // 响应用量
-elevated_level    // 提升级别
-</code></pre>
-<h3 id="翻译流程">翻译流程</h3>
-<pre><code class="language-typescript">// ACP PromptRequest → Agent 运行参数
-translatePromptRequest(request) {
-  validatePromptSize()         // DoS 防护
-  resolveSessionMode()         // sandbox/chat/reasoning
-  extractAttachments()         // 提取附件
-  extractToolCalls()           // 提取工具调用
-  extractDirectives()          // 提取指令
-  return normalizedRunParams
-}
-</code></pre>
-<h3 id="session-展示构建">Session 展示构建</h3>
-<pre><code class="language-typescript">buildSessionPresentation()     // 配置选项 + 模式状态
-buildSessionMetadata()         // 标题、更新时间
-buildSessionUsageSnapshot()    // token 用量 (size/used)
-</code></pre>
-<h3 id="思考级别格式化">思考级别格式化</h3>
-<pre><code>xhigh → &quot;Extra High&quot;
-adaptive → &quot;Adaptive&quot;
-</code></pre>
+<h3 id="_41">安全常量</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">MAX_PROMPT_BYTES</span> <span class="o">=</span> <span class="mf">2</span> <span class="o">*</span> <span class="mf">1024</span> <span class="o">*</span> <span class="mf">1024</span>    <span class="c1">// 2 MiB = 2,097,152 bytes DoS 防护 (CWE-400)</span>
+<span class="nx">ACP_LOAD_SESSION_REPLAY_LIMIT</span> <span class="o">=</span> <span class="mf">1</span><span class="nx">_000_000</span>  <span class="c1">// 防 DoS 重放限制</span>
+<span class="nx">SESSION_CREATE_RATE_LIMIT_DEFAULT_MAX_REQUESTS</span> <span class="o">=</span> <span class="mf">120</span>  <span class="c1">// 每窗口最大请求数</span>
+<span class="nx">SESSION_CREATE_RATE_LIMIT_DEFAULT_WINDOW_MS</span> <span class="o">=</span> <span class="mf">10</span><span class="nx">_000</span>  <span class="c1">// 窗口时长 10s</span>
+</code></pre></div>
+
+<h3 id="id">配置 ID</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">thought_level</span>     <span class="c1">// 思考级别</span>
+<span class="nx">verbose_level</span>     <span class="c1">// 详细级别</span>
+<span class="nx">reasoning_level</span>   <span class="c1">// 推理级别</span>
+<span class="nx">response_usage</span>    <span class="c1">// 响应用量</span>
+<span class="nx">elevated_level</span>    <span class="c1">// 提升级别</span>
+</code></pre></div>
+
+<h3 id="_42">翻译流程</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// ACP PromptRequest -&gt; Agent 运行参数</span>
+<span class="nx">translatePromptRequest</span><span class="p">(</span><span class="nx">request</span><span class="p">)</span> <span class="p">{</span>
+  <span class="nx">validatePromptSize</span><span class="p">()</span>         <span class="c1">// DoS 防护</span>
+  <span class="nx">resolveSessionMode</span><span class="p">()</span>         <span class="c1">// sandbox/chat/reasoning</span>
+  <span class="nx">extractAttachments</span><span class="p">()</span>         <span class="c1">// 提取附件</span>
+  <span class="nx">extractToolCalls</span><span class="p">()</span>           <span class="c1">// 提取工具调用</span>
+  <span class="nx">extractDirectives</span><span class="p">()</span>          <span class="c1">// 提取指令</span>
+  <span class="k">return</span> <span class="nx">normalizedRunParams</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="session">Session 展示构建</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">buildSessionPresentation</span><span class="p">()</span>     <span class="c1">// 配置选项 + 模式状态</span>
+<span class="nx">buildSessionMetadata</span><span class="p">()</span>         <span class="c1">// 标题、更新时间</span>
+<span class="nx">buildSessionUsageSnapshot</span><span class="p">()</span>    <span class="c1">// token 用量 (size/used)</span>
+</code></pre></div>
+
+<h3 id="_43">思考级别格式化</h3>
+<div class="codehilite"><pre><span></span><code><span class="n">xhigh</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">&quot;Extra High&quot;</span><span class="w"></span>
+<span class="n">adaptive</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">&quot;Adaptive&quot;</span><span class="w"></span>
+</code></pre></div>
+
 <hr />
-<h2 id="18-channel-状态机">18. Channel 状态机</h2>
+<h2 id="18-channel">18. Channel 状态机</h2>
 <p><strong>文件</strong>: <code>src/channels/run-state-machine.ts</code> (99 行)</p>
-<h3 id="状态追踪">状态追踪</h3>
+<h3 id="_44">状态追踪</h3>
 <p>状态变量为闭包局部变量（在 <code>createRunStateMachine</code> 内部），而非类属性：</p>
-<pre><code class="language-typescript">activeRuns: number                       // 活跃运行计数器
-runActivityHeartbeat: ReturnType&lt;typeof setInterval&gt; | null  // 心跳定时器
-lifecycleActive: boolean                 // 生命周期标志
-</code></pre>
-<h3 id="常量-3">常量</h3>
-<pre><code class="language-typescript">DEFAULT_RUN_ACTIVITY_HEARTBEAT_MS = 60_000  // 60s 心跳间隔
-</code></pre>
-<h3 id="api">API</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">activeRuns</span>: <span class="kt">number</span>                       <span class="c1">// 活跃运行计数器</span>
+<span class="nx">runActivityHeartbeat</span>: <span class="kt">ReturnType</span><span class="o">&lt;</span><span class="ow">typeof</span> <span class="nx">setInterval</span><span class="o">&gt;</span> <span class="o">|</span> <span class="kc">null</span>  <span class="c1">// 心跳定时器</span>
+<span class="nx">lifecycleActive</span>: <span class="kt">boolean</span>                 <span class="c1">// 生命周期标志</span>
+</code></pre></div>
+
+<h3 id="_45">常量</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">DEFAULT_RUN_ACTIVITY_HEARTBEAT_MS</span> <span class="o">=</span> <span class="mf">60</span><span class="nx">_000</span>  <span class="c1">// 60s 心跳间隔</span>
+</code></pre></div>
+
+<h3 id="api_2">API</h3>
 <table>
 <thead>
 <tr>
@@ -1187,105 +1335,131 @@ lifecycleActive: boolean                 // 生命周期标志
 </table>
 <p><strong>模式</strong>: 在心跳间隔发布状态更新，首次运行时惰性启动心跳。</p>
 <hr />
-<h2 id="19-完整数据流图">19. 完整数据流图</h2>
-<pre><code>┌─────────────────────────────────────────────────────────────────────┐
-│ INBOUND: Channel (Telegram/Discord/Slack/etc.) → MsgContext        │
-└────────────────────────┬────────────────────────────────────────────┘
-                         │
-                         ▼
-        ┌────────────────────────────────────┐
-        │ Routing: resolveAgentRoute()        │
-        │ 多层绑定匹配（peer→guild→team→...） │
-        │ → agentId, sessionKey, accountId    │
-        └────────────┬───────────────────────┘
-                     │
-                     ▼
-        ┌────────────────────────────────────┐
-        │ Session 管理                        │
-        │ - 加载/创建 session                 │
-        │ - 检查 reset 触发器                 │
-        │ - 应用 session hooks                │
-        └────────────┬───────────────────────┘
-                     │
-                     ▼
-    ┌────────────────────────────────────────┐
-    │ Plugin Hooks: before_agent_start()     │
-    │ → 模型/提示词覆盖                      │
-    └────────────┬──────────────────────────┘
-                 │
-                 ▼
-  ┌──────────────────────────────────────────┐
-  │ Context Engine: assemble()               │
-  │ - 从 session 加载消息                     │
-  │ - 在 token 预算内组装                     │
-  │ - 返回 messages + systemPromptAddition   │
-  └────────────┬─────────────────────────────┘
-               │
-               ▼
-  ┌──────────────────────────────────────────┐
-  │ 构建 System Prompt                       │
-  │ - 合并 engine addition                   │
-  │ - 应用 plugins (before_prompt_build)     │
-  │ - Channel capabilities, skills, etc.     │
-  └────────────┬─────────────────────────────┘
-               │
-               ▼
-  ┌──────────────────────────────────────────┐
-  │ Run Agent (Attempt)                      │
-  │ - 流式发送到模型                          │
-  │ - 执行工具调用                            │
-  │ - 检查溢出条件                            │
-  │ - 重试逻辑 (24次基础 + 8次/profile)       │
-  └────────────┬─────────────────────────────┘
-               │
-        ┌──────▼──────────┐
-        │  OVERFLOW?      │
-        └──────┬──────────┘
-               │
-           ┌───┴────────────────────────────┐
-           │                                │
-         NO                                YES
-           │                                │
-           │                ┌───────────────▼────────────┐
-           │                │ Compaction 触发             │
-           │                │ - 自适应分块                │
-           │                │ - 渐进降级摘要              │
-           │                │ - 保留标识符                │
-           │                │ - 替换历史消息              │
-           │                │ - 重试运行                  │
-           │                └────────────────┬──────────┘
-           │                                 │
-           │    ┌────────────────────────────┘
-           │    │
-           ▼    ▼
-  ┌──────────────────────────────────────────┐
-  │ Context Engine: afterTurn()              │
-  │ - 持久化上下文                            │
-  │ - 触发后台压缩                            │
-  └────────────┬─────────────────────────────┘
-               │
-               ▼
-  ┌──────────────────────────────────────────┐
-  │ 格式化回复                                │
-  │ - 提取指令 (think, reasoning)            │
-  │ - 剥离 reply tags                        │
-  │ - 应用 channel 格式化                     │
-  └────────────┬─────────────────────────────┘
-               │
-               ▼
-  ┌──────────────────────────────────────────┐
-  │ Plugin Hooks: message_sending()          │
-  │ → 最终回复修改                            │
-  └────────────┬─────────────────────────────┘
-               │
-               ▼
-┌─────────────────────────────────────────────────────┐
-│ OUTBOUND: 路由到 channel，交付回复                    │
-│ (message 工具, channel action, 跨 session)           │
-└─────────────────────────────────────────────────────┘
-</code></pre>
+<h2 id="19">19. 完整数据流图</h2>
+<div class="codehilite"><pre><span></span><code><span class="err">┌─────────────────────────────────────────────────────────────────────┐</span><span class="w"></span>
+<span class="err">│</span><span class="w"> </span><span class="n">INBOUND</span><span class="o">:</span><span class="w"> </span><span class="n">Channel</span><span class="w"> </span><span class="p">(</span><span class="n">Telegram</span><span class="o">/</span><span class="n">Discord</span><span class="o">/</span><span class="n">Slack</span><span class="o">/</span><span class="n">etc</span><span class="p">.)</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">MsgContext</span><span class="w">        </span><span class="err">│</span><span class="w"></span>
+<span class="err">└────────────────────────┬────────────────────────────────────────────┘</span><span class="w"></span>
+<span class="w">                         </span><span class="err">│</span><span class="w"></span>
+<span class="w">                         </span><span class="err">▼</span><span class="w"></span>
+<span class="w">        </span><span class="err">┌─────────────────────────────────────────┐</span><span class="w"></span>
+<span class="w">        </span><span class="err">│</span><span class="w"> </span><span class="n">Context</span><span class="w"> </span><span class="n">Visibility</span><span class="w"> </span><span class="n">Filter</span><span class="w"> </span><span class="p">(</span><span class="mi">2026</span><span class="o">-</span><span class="mo">04</span><span class="w"> </span><span class="err">新增</span><span class="p">)</span><span class="w"> </span><span class="err">│</span><span class="w"></span>
+<span class="w">        </span><span class="err">│</span><span class="w"> </span><span class="n">mode</span><span class="o">:</span><span class="w"> </span><span class="kr">all</span><span class="w"> </span><span class="o">|</span><span class="w"> </span><span class="n">allowlist</span><span class="w"> </span><span class="o">|</span><span class="w"> </span><span class="n">allowlist_quote</span><span class="w">  </span><span class="err">│</span><span class="w"></span>
+<span class="w">        </span><span class="err">│</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">过滤补充上下文（引用</span><span class="o">/</span><span class="err">转发</span><span class="o">/</span><span class="err">历史）</span><span class="w">       </span><span class="err">│</span><span class="w"></span>
+<span class="w">        </span><span class="err">└────────────────────┬────────────────────┘</span><span class="w"></span>
+<span class="w">                             </span><span class="err">│</span><span class="w"></span>
+<span class="w">                             </span><span class="err">▼</span><span class="w"></span>
+<span class="w">        </span><span class="err">┌────────────────────────────────────────┐</span><span class="w"></span>
+<span class="w">        </span><span class="err">│</span><span class="w"> </span><span class="n">Mention</span><span class="w"> </span><span class="n">Policy</span><span class="w"> </span><span class="p">(</span><span class="err">集中化</span><span class="w"> </span><span class="mi">2026</span><span class="o">-</span><span class="mo">04</span><span class="p">)</span><span class="w">         </span><span class="err">│</span><span class="w"></span>
+<span class="w">        </span><span class="err">│</span><span class="w"> </span><span class="n">resolveInboundMentionDecision</span><span class="p">()</span><span class="w">         </span><span class="err">│</span><span class="w"></span>
+<span class="w">        </span><span class="err">│</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">facts</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">policy</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">是否跳过</span><span class="w">           </span><span class="err">│</span><span class="w"></span>
+<span class="w">        </span><span class="err">└────────────────────┬───────────────────┘</span><span class="w"></span>
+<span class="w">                             </span><span class="err">│</span><span class="w"></span>
+<span class="w">                             </span><span class="err">▼</span><span class="w"></span>
+<span class="w">        </span><span class="err">┌────────────────────────────────────────┐</span><span class="w"></span>
+<span class="w">        </span><span class="err">│</span><span class="w"> </span><span class="n">Routing</span><span class="o">:</span><span class="w"> </span><span class="n">resolveAgentRoute</span><span class="p">()</span><span class="w">            </span><span class="err">│</span><span class="w"></span>
+<span class="w">        </span><span class="err">│</span><span class="w"> </span><span class="err">多层绑定匹配（</span><span class="n">peer</span><span class="o">-&gt;</span><span class="n">guild</span><span class="o">-&gt;</span><span class="n">team</span><span class="o">-&gt;</span><span class="p">...</span><span class="err">）</span><span class="w">  </span><span class="err">│</span><span class="w"></span>
+<span class="w">        </span><span class="err">│</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">agentId</span><span class="p">,</span><span class="w"> </span><span class="n">sessionKey</span><span class="p">,</span><span class="w"> </span><span class="n">accountId</span><span class="w">       </span><span class="err">│</span><span class="w"></span>
+<span class="w">        </span><span class="err">└────────────────┬───────────────────────┘</span><span class="w"></span>
+<span class="w">                         </span><span class="err">│</span><span class="w"></span>
+<span class="w">                         </span><span class="err">▼</span><span class="w"></span>
+<span class="w">        </span><span class="err">┌────────────────────────────────────────┐</span><span class="w"></span>
+<span class="w">        </span><span class="err">│</span><span class="w"> </span><span class="n">Session</span><span class="w"> </span><span class="err">管理</span><span class="w">                            </span><span class="err">│</span><span class="w"></span>
+<span class="w">        </span><span class="err">│</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="err">加载</span><span class="o">/</span><span class="err">创建</span><span class="w"> </span><span class="n">session</span><span class="w">                     </span><span class="err">│</span><span class="w"></span>
+<span class="w">        </span><span class="err">│</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="err">检查</span><span class="w"> </span><span class="n">reset</span><span class="w"> </span><span class="err">触发器</span><span class="w">                     </span><span class="err">│</span><span class="w"></span>
+<span class="w">        </span><span class="err">│</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="err">应用</span><span class="w"> </span><span class="n">session</span><span class="w"> </span><span class="n">hooks</span><span class="w">                    </span><span class="err">│</span><span class="w"></span>
+<span class="w">        </span><span class="err">└────────────────┬───────────────────────┘</span><span class="w"></span>
+<span class="w">                         </span><span class="err">│</span><span class="w"></span>
+<span class="w">                         </span><span class="err">▼</span><span class="w"></span>
+<span class="w">    </span><span class="err">┌────────────────────────────────────────────┐</span><span class="w"></span>
+<span class="w">    </span><span class="err">│</span><span class="w"> </span><span class="n">Plugin</span><span class="w"> </span><span class="n">Hooks</span><span class="o">:</span><span class="w"> </span><span class="n">before_agent_start</span><span class="p">()</span><span class="w">         </span><span class="err">│</span><span class="w"></span>
+<span class="w">    </span><span class="err">│</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">模型</span><span class="o">/</span><span class="err">提示词覆盖</span><span class="w">                          </span><span class="err">│</span><span class="w"></span>
+<span class="w">    </span><span class="err">└────────────┬──────────────────────────────┘</span><span class="w"></span>
+<span class="w">                 </span><span class="err">│</span><span class="w"></span>
+<span class="w">                 </span><span class="err">▼</span><span class="w"></span>
+<span class="w">  </span><span class="err">┌──────────────────────────────────────────────┐</span><span class="w"></span>
+<span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="n">Provider</span><span class="w"> </span><span class="n">Prompt</span><span class="w"> </span><span class="n">Contribution</span><span class="w"> </span><span class="p">(</span><span class="mi">2026</span><span class="o">-</span><span class="mo">04</span><span class="w"> </span><span class="err">新增</span><span class="p">)</span><span class="w">   </span><span class="err">│</span><span class="w"></span>
+<span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">stablePrefix</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">dynamicSuffix</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">overrides</span><span class="w">  </span><span class="err">│</span><span class="w"></span>
+<span class="w">  </span><span class="err">└────────────┬─────────────────────────────────┘</span><span class="w"></span>
+<span class="w">               </span><span class="err">│</span><span class="w"></span>
+<span class="w">               </span><span class="err">▼</span><span class="w"></span>
+<span class="w">  </span><span class="err">┌──────────────────────────────────────────────┐</span><span class="w"></span>
+<span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="n">Context</span><span class="w"> </span><span class="n">Engine</span><span class="o">:</span><span class="w"> </span><span class="n">assemble</span><span class="p">()</span><span class="w">                   </span><span class="err">│</span><span class="w"></span>
+<span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="err">从</span><span class="w"> </span><span class="n">session</span><span class="w"> </span><span class="err">加载消息</span><span class="w">                         </span><span class="err">│</span><span class="w"></span>
+<span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="err">在</span><span class="w"> </span><span class="kt">token</span><span class="w"> </span><span class="err">预算内组装</span><span class="w">                         </span><span class="err">│</span><span class="w"></span>
+<span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">availableTools</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">citationsMode</span><span class="w"> </span><span class="p">(</span><span class="err">新增</span><span class="p">)</span><span class="w">       </span><span class="err">│</span><span class="w"></span>
+<span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="err">返回</span><span class="w"> </span><span class="n">messages</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">systemPromptAddition</span><span class="w">       </span><span class="err">│</span><span class="w"></span>
+<span class="w">  </span><span class="err">└────────────┬─────────────────────────────────┘</span><span class="w"></span>
+<span class="w">               </span><span class="err">│</span><span class="w"></span>
+<span class="w">               </span><span class="err">▼</span><span class="w"></span>
+<span class="w">  </span><span class="err">┌──────────────────────────────────────────────┐</span><span class="w"></span>
+<span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="err">构建</span><span class="w"> </span><span class="n">System</span><span class="w"> </span><span class="n">Prompt</span><span class="w">                           </span><span class="err">│</span><span class="w"></span>
+<span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="err">合并</span><span class="w"> </span><span class="n">engine</span><span class="w"> </span><span class="n">addition</span><span class="w">                       </span><span class="err">│</span><span class="w"></span>
+<span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="err">合并</span><span class="w"> </span><span class="n">provider</span><span class="w"> </span><span class="n">contribution</span><span class="w">                 </span><span class="err">│</span><span class="w"></span>
+<span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="err">应用</span><span class="w"> </span><span class="n">plugins</span><span class="w"> </span><span class="p">(</span><span class="n">before_prompt_build</span><span class="p">)</span><span class="w">         </span><span class="err">│</span><span class="w"></span>
+<span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">Channel</span><span class="w"> </span><span class="n">capabilities</span><span class="p">,</span><span class="w"> </span><span class="n">skills</span><span class="p">,</span><span class="w"> </span><span class="n">etc</span><span class="p">.</span><span class="w">         </span><span class="err">│</span><span class="w"></span>
+<span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="err">应用</span><span class="w"> </span><span class="n">systemPromptOverride</span><span class="w"> </span><span class="err">若有</span><span class="w">             </span><span class="err">│</span><span class="w"></span>
+<span class="w">  </span><span class="err">└────────────┬─────────────────────────────────┘</span><span class="w"></span>
+<span class="w">               </span><span class="err">│</span><span class="w"></span>
+<span class="w">               </span><span class="err">▼</span><span class="w"></span>
+<span class="w">  </span><span class="err">┌──────────────────────────────────────────────┐</span><span class="w"></span>
+<span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="n">Run</span><span class="w"> </span><span class="n">Agent</span><span class="w"> </span><span class="p">(</span><span class="n">Attempt</span><span class="p">)</span><span class="w">                          </span><span class="err">│</span><span class="w"></span>
+<span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="err">流式发送到模型</span><span class="w">                              </span><span class="err">│</span><span class="w"></span>
+<span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="err">执行工具调用</span><span class="w">                                </span><span class="err">│</span><span class="w"></span>
+<span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="err">检查溢出条件</span><span class="w">                                </span><span class="err">│</span><span class="w"></span>
+<span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="err">重试逻辑</span><span class="w"> </span><span class="p">(</span><span class="mi">24</span><span class="err">次基础</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="mi">8</span><span class="err">次</span><span class="o">/</span><span class="n">profile</span><span class="p">)</span><span class="w">           </span><span class="err">│</span><span class="w"></span>
+<span class="w">  </span><span class="err">└────────────┬─────────────────────────────────┘</span><span class="w"></span>
+<span class="w">               </span><span class="err">│</span><span class="w"></span>
+<span class="w">        </span><span class="err">┌──────▼──────────┐</span><span class="w"></span>
+<span class="w">        </span><span class="err">│</span><span class="w">  </span><span class="n">OVERFLOW</span><span class="o">?</span><span class="w">      </span><span class="err">│</span><span class="w"></span>
+<span class="w">        </span><span class="err">└──────┬──────────┘</span><span class="w"></span>
+<span class="w">               </span><span class="err">│</span><span class="w"></span>
+<span class="w">           </span><span class="err">┌───┴────────────────────────────┐</span><span class="w"></span>
+<span class="w">           </span><span class="err">│</span><span class="w">                                </span><span class="err">│</span><span class="w"></span>
+<span class="w">         </span><span class="n">NO</span><span class="w">                                </span><span class="n">YES</span><span class="w"></span>
+<span class="w">           </span><span class="err">│</span><span class="w">                                </span><span class="err">│</span><span class="w"></span>
+<span class="w">           </span><span class="err">│</span><span class="w">                </span><span class="err">┌───────────────▼────────────┐</span><span class="w"></span>
+<span class="w">           </span><span class="err">│</span><span class="w">                </span><span class="err">│</span><span class="w"> </span><span class="n">Compaction</span><span class="w"> </span><span class="err">触发</span><span class="w">             </span><span class="err">│</span><span class="w"></span>
+<span class="w">           </span><span class="err">│</span><span class="w">                </span><span class="err">│</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="kr">Checkpoint</span><span class="w"> </span><span class="err">快照</span><span class="w"> </span><span class="p">(</span><span class="err">新增</span><span class="p">)</span><span class="w">    </span><span class="err">│</span><span class="w"></span>
+<span class="w">           </span><span class="err">│</span><span class="w">                </span><span class="err">│</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="err">自适应分块</span><span class="w">                </span><span class="err">│</span><span class="w"></span>
+<span class="w">           </span><span class="err">│</span><span class="w">                </span><span class="err">│</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="err">渐进降级摘要</span><span class="w">              </span><span class="err">│</span><span class="w"></span>
+<span class="w">           </span><span class="err">│</span><span class="w">                </span><span class="err">│</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="err">保留标识符</span><span class="w">                </span><span class="err">│</span><span class="w"></span>
+<span class="w">           </span><span class="err">│</span><span class="w">                </span><span class="err">│</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="err">替换历史消息</span><span class="w">              </span><span class="err">│</span><span class="w"></span>
+<span class="w">           </span><span class="err">│</span><span class="w">                </span><span class="err">│</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="kr">Checkpoint</span><span class="w"> </span><span class="err">持久化</span><span class="w"> </span><span class="p">(</span><span class="err">新增</span><span class="p">)</span><span class="w">  </span><span class="err">│</span><span class="w"></span>
+<span class="w">           </span><span class="err">│</span><span class="w">                </span><span class="err">│</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="err">重试运行</span><span class="w">                  </span><span class="err">│</span><span class="w"></span>
+<span class="w">           </span><span class="err">│</span><span class="w">                </span><span class="err">└────────────────┬──────────┘</span><span class="w"></span>
+<span class="w">           </span><span class="err">│</span><span class="w">                                 </span><span class="err">│</span><span class="w"></span>
+<span class="w">           </span><span class="err">│</span><span class="w">    </span><span class="err">┌────────────────────────────┘</span><span class="w"></span>
+<span class="w">           </span><span class="err">│</span><span class="w">    </span><span class="err">│</span><span class="w"></span>
+<span class="w">           </span><span class="err">▼</span><span class="w">    </span><span class="err">▼</span><span class="w"></span>
+<span class="w">  </span><span class="err">┌──────────────────────────────────────────┐</span><span class="w"></span>
+<span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="n">Context</span><span class="w"> </span><span class="n">Engine</span><span class="o">:</span><span class="w"> </span><span class="n">afterTurn</span><span class="p">()</span><span class="w">              </span><span class="err">│</span><span class="w"></span>
+<span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="err">持久化上下文</span><span class="w">                            </span><span class="err">│</span><span class="w"></span>
+<span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="err">触发后台压缩</span><span class="w">                            </span><span class="err">│</span><span class="w"></span>
+<span class="w">  </span><span class="err">└────────────┬─────────────────────────────┘</span><span class="w"></span>
+<span class="w">               </span><span class="err">│</span><span class="w"></span>
+<span class="w">               </span><span class="err">▼</span><span class="w"></span>
+<span class="w">  </span><span class="err">┌──────────────────────────────────────────┐</span><span class="w"></span>
+<span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="err">格式化回复</span><span class="w">                                </span><span class="err">│</span><span class="w"></span>
+<span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="err">提取指令</span><span class="w"> </span><span class="p">(</span><span class="n">think</span><span class="p">,</span><span class="w"> </span><span class="n">reasoning</span><span class="p">)</span><span class="w">            </span><span class="err">│</span><span class="w"></span>
+<span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="err">剥离</span><span class="w"> </span><span class="n">reply</span><span class="w"> </span><span class="n">tags</span><span class="w">                        </span><span class="err">│</span><span class="w"></span>
+<span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="err">应用</span><span class="w"> </span><span class="n">channel</span><span class="w"> </span><span class="err">格式化</span><span class="w">                     </span><span class="err">│</span><span class="w"></span>
+<span class="w">  </span><span class="err">└────────────┬─────────────────────────────┘</span><span class="w"></span>
+<span class="w">               </span><span class="err">│</span><span class="w"></span>
+<span class="w">               </span><span class="err">▼</span><span class="w"></span>
+<span class="w">  </span><span class="err">┌──────────────────────────────────────────┐</span><span class="w"></span>
+<span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="n">Plugin</span><span class="w"> </span><span class="n">Hooks</span><span class="o">:</span><span class="w"> </span><span class="n">message_sending</span><span class="p">()</span><span class="w">          </span><span class="err">│</span><span class="w"></span>
+<span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">最终回复修改</span><span class="w">                            </span><span class="err">│</span><span class="w"></span>
+<span class="w">  </span><span class="err">└────────────┬─────────────────────────────┘</span><span class="w"></span>
+<span class="w">               </span><span class="err">│</span><span class="w"></span>
+<span class="w">               </span><span class="err">▼</span><span class="w"></span>
+<span class="err">┌─────────────────────────────────────────────────────┐</span><span class="w"></span>
+<span class="err">│</span><span class="w"> </span><span class="n">OUTBOUND</span><span class="o">:</span><span class="w"> </span><span class="err">路由到</span><span class="w"> </span><span class="n">channel</span><span class="err">，交付回复</span><span class="w">                    </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w"> </span><span class="p">(</span><span class="n">message</span><span class="w"> </span><span class="err">工具</span><span class="p">,</span><span class="w"> </span><span class="n">channel</span><span class="w"> </span><span class="n">action</span><span class="p">,</span><span class="w"> </span><span class="err">跨</span><span class="w"> </span><span class="n">session</span><span class="p">)</span><span class="w">           </span><span class="err">│</span><span class="w"></span>
+<span class="err">└─────────────────────────────────────────────────────┘</span><span class="w"></span>
+</code></pre></div>
+
 <hr />
-<h2 id="20-关键设计模式总结">20. 关键设计模式总结</h2>
+<h2 id="20">20. 关键设计模式总结</h2>
 <table>
 <thead>
 <tr>
@@ -1302,7 +1476,7 @@ lifecycleActive: boolean                 // 生命周期标志
 </tr>
 <tr>
 <td><strong>Token 安全余量</strong></td>
-<td>1.2× 乘数</td>
+<td>1.2x 乘数</td>
 <td>补偿 token 估算不准确性</td>
 </tr>
 <tr>
@@ -1312,7 +1486,7 @@ lifecycleActive: boolean                 // 生命周期标志
 </tr>
 <tr>
 <td><strong>渐进降级</strong></td>
-<td>完整摘要 → 部分 → 文本回退</td>
+<td>完整摘要 -&gt; 部分 -&gt; 文本回退</td>
 <td><code>summarizeWithFallback()</code></td>
 </tr>
 <tr>
@@ -1370,137 +1544,841 @@ lifecycleActive: boolean                 // 生命周期标志
 <td><code>buildPluginLoaderAliasMap(modulePath)</code></td>
 <td>防止跨插件别名污染</td>
 </tr>
+<tr>
+<td><strong>缓存感知提示词</strong></td>
+<td>stablePrefix / dynamicSuffix</td>
+<td>Provider contribution 最大化 KV cache 命中（2026-04 新增）</td>
+</tr>
+<tr>
+<td><strong>Compaction Checkpoint</strong></td>
+<td>压缩前快照 + 后持久化</td>
+<td>支持回滚和历史审计（2026-04 新增）</td>
+</tr>
+<tr>
+<td><strong>多维可见性过滤</strong></td>
+<td>mode + kind + senderAllowed</td>
+<td>上下文可见性决策（2026-04 新增）</td>
+</tr>
+<tr>
+<td><strong>Facts/Policy 分离</strong></td>
+<td>InboundMentionFacts + InboundMentionPolicy</td>
+<td>提及决策关注点分离（2026-04 新增）</td>
+</tr>
+<tr>
+<td><strong>继承式允许列表</strong></td>
+<td>agent.skills 覆盖 defaults.skills</td>
+<td>技能白名单无合并语义（2026-04 新增）</td>
+</tr>
 </tbody>
 </table>
 <hr />
-<h2 id="附录-a-插件加载与-sdk-安全改进2026-03-18-后新增">附录 A. 插件加载与 SDK 安全改进（2026-03-18 后新增）</h2>
-<h3 id="插件加载错误处理强化">插件加载错误处理强化</h3>
+<h2 id="a-sdk-2026-03-18">附录 A. 插件加载与 SDK 安全改进（2026-03-18 后新增）</h2>
+<h3 id="_46">插件加载错误处理强化</h3>
 <p><strong>文件</strong>: <code>src/plugins/loader.ts</code> (1303 行)</p>
 <p>新增 <code>PluginLoadFailureError</code> 类和 <code>throwOnLoadError</code> 选项，允许关键路径在插件加载失败时立即抛出异常而非静默降级：</p>
-<pre><code class="language-typescript">class PluginLoadFailureError extends Error {
-  readonly pluginIds: string[];
-  readonly registry: PluginRegistry;
-}
+<div class="codehilite"><pre><span></span><code><span class="kd">class</span> <span class="nx">PluginLoadFailureError</span> <span class="k">extends</span> <span class="ne">Error</span> <span class="p">{</span>
+  <span class="k">readonly</span> <span class="nx">pluginIds</span>: <span class="kt">string</span><span class="p">[];</span>
+  <span class="k">readonly</span> <span class="nx">registry</span>: <span class="kt">PluginRegistry</span><span class="p">;</span>
+<span class="p">}</span>
 
-type PluginLoadOptions = {
-  // ... 其他选项
-  throwOnLoadError?: boolean;  // 新增：为 true 时，加载失败直接抛出异常
-}
-</code></pre>
-<h3 id="sdk-别名作用域隔离">SDK 别名作用域隔离</h3>
+<span class="kr">type</span> <span class="nx">PluginLoadOptions</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="c1">// ... 其他选项</span>
+  <span class="nx">throwOnLoadError?</span>: <span class="kt">boolean</span><span class="p">;</span>  <span class="c1">// 新增：为 true 时，加载失败直接抛出异常</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="sdk">SDK 别名作用域隔离</h3>
 <p><strong>文件</strong>: <code>src/plugins/loader.ts</code></p>
 <p>新增 <code>buildPluginLoaderAliasMap(modulePath)</code> 函数，为每个插件模块路径构建独立的 SDK 别名映射，防止跨插件的别名污染：</p>
-<pre><code class="language-typescript">function buildPluginLoaderAliasMap(modulePath: string): Record&lt;string, string&gt;
-// 返回: { &quot;openclaw/plugin-sdk&quot;: sdkAlias路径, ...scopedAliases }
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">buildPluginLoaderAliasMap</span><span class="p">(</span><span class="kr">module</span><span class="nx">Path</span><span class="o">:</span> <span class="kt">string</span><span class="p">)</span><span class="o">:</span> <span class="nx">Record</span><span class="o">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="kt">string</span><span class="o">&gt;</span>
+<span class="c1">// 返回: { &quot;openclaw/plugin-sdk&quot;: sdkAlias路径, ...scopedAliases }</span>
+</code></pre></div>
+
 <p>Jiti loader 缓存现使用基于 <code>tryNative</code> 和别名映射的缓存 key，插件注册表缓存使用 LRU 驱逐策略（最大 128 条目）。</p>
-<h3 id="plugin-sdk-根别名懒解析守卫">Plugin SDK 根别名懒解析守卫</h3>
+<h3 id="plugin-sdk">Plugin SDK 根别名懒解析守卫</h3>
 <p><strong>文件</strong>: <code>src/plugin-sdk/root-alias.cjs</code> (219 行)</p>
 <p>新增 <code>shouldResolveMonolithic()</code> 函数，防止 Plugin SDK Proxy 被误认为 Promise-like 对象：</p>
-<pre><code class="language-typescript">function shouldResolveMonolithic(prop: string | symbol): boolean {
-  if (typeof prop !== &quot;string&quot;) return false;
-  return prop !== &quot;then&quot;;  // 排除 &quot;then&quot; 以防止 Promise 行为
-}
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">shouldResolveMonolithic</span><span class="p">(</span><span class="nx">prop</span>: <span class="kt">string</span> <span class="o">|</span> <span class="nx">symbol</span><span class="p">)</span><span class="o">:</span> <span class="kt">boolean</span> <span class="p">{</span>
+  <span class="k">if</span> <span class="p">(</span><span class="ow">typeof</span> <span class="nx">prop</span> <span class="o">!==</span> <span class="s2">&quot;string&quot;</span><span class="p">)</span> <span class="k">return</span> <span class="kc">false</span><span class="p">;</span>
+  <span class="k">return</span> <span class="nx">prop</span> <span class="o">!==</span> <span class="s2">&quot;then&quot;</span><span class="p">;</span>  <span class="c1">// 排除 &quot;then&quot; 以防止 Promise 行为</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p>快速导出（<code>emptyPluginConfigSchema</code>、<code>resolveControlCommandGate</code>）始终可用；其余导出按需从 monolithic SDK 懒加载。</p>
-<h3 id="plugin-sdk-setup-runtime-导出">Plugin SDK Setup Runtime 导出</h3>
+<h3 id="plugin-sdk-setup-runtime">Plugin SDK Setup Runtime 导出</h3>
 <p><strong>文件</strong>: <code>src/plugin-sdk/setup-runtime.ts</code> (26 行，新文件)</p>
 <p>新增纯 barrel/re-export 文件，为插件提供设置时的运行时 API 访问，避免循环依赖：</p>
-<pre><code class="language-typescript">// 类型导出
-export type { OpenClawConfig, WizardPrompter, ChannelSetupAdapter,
-  ChannelSetupDmPolicy, ChannelSetupWizard, ChannelSetupWizardAllowFromEntry }
+<div class="codehilite"><pre><span></span><code><span class="c1">// 类型导出</span>
+<span class="k">export</span> <span class="kr">type</span> <span class="p">{</span> <span class="nx">OpenClawConfig</span><span class="p">,</span> <span class="nx">WizardPrompter</span><span class="p">,</span> <span class="nx">ChannelSetupAdapter</span><span class="p">,</span>
+  <span class="nx">ChannelSetupDmPolicy</span><span class="p">,</span> <span class="nx">ChannelSetupWizard</span><span class="p">,</span> <span class="nx">ChannelSetupWizardAllowFromEntry</span> <span class="p">}</span>
 
-// 值导出
-export { DEFAULT_ACCOUNT_ID }
-export { createEnvPatchedAccountSetupAdapter }
-export { createAccountScopedAllowFromSection, createAccountScopedGroupAccessSection,
-  createLegacyCompatChannelDmPolicy, parseMentionOrPrefixedId,
-  patchChannelConfigForAccount, promptLegacyChannelAllowFromForAccount,
-  resolveEntriesWithOptionalToken, setSetupChannelEnabled }
-export { createAllowlistSetupWizardProxy }
-</code></pre>
-<h3 id="hook-加载改进">Hook 加载改进</h3>
+<span class="c1">// 值导出</span>
+<span class="k">export</span> <span class="p">{</span> <span class="nx">DEFAULT_ACCOUNT_ID</span> <span class="p">}</span>
+<span class="k">export</span> <span class="p">{</span> <span class="nx">createEnvPatchedAccountSetupAdapter</span> <span class="p">}</span>
+<span class="k">export</span> <span class="p">{</span> <span class="nx">createAccountScopedAllowFromSection</span><span class="p">,</span> <span class="nx">createAccountScopedGroupAccessSection</span><span class="p">,</span>
+  <span class="nx">createLegacyCompatChannelDmPolicy</span><span class="p">,</span> <span class="nx">parseMentionOrPrefixedId</span><span class="p">,</span>
+  <span class="nx">patchChannelConfigForAccount</span><span class="p">,</span> <span class="nx">promptLegacyChannelAllowFromForAccount</span><span class="p">,</span>
+  <span class="nx">resolveEntriesWithOptionalToken</span><span class="p">,</span> <span class="nx">setSetupChannelEnabled</span> <span class="p">}</span>
+<span class="k">export</span> <span class="p">{</span> <span class="nx">createAllowlistSetupWizardProxy</span> <span class="p">}</span>
+</code></pre></div>
+
+<h3 id="hook_1">Hook 加载改进</h3>
 <p><strong>文件</strong>: <code>src/hooks/workspace.ts</code> (390 行)</p>
 <p><code>loadHooksFromDir()</code> 重命名为 <code>loadHookEntriesFromDir()</code>，返回类型从 <code>Hook[]</code> 改为 <code>HookEntry[]</code>，包含更丰富的元数据：</p>
-<pre><code class="language-typescript">type HookEntry = {
-  hook: Hook;
-  frontmatter: ParsedHookFrontmatter;
-  metadata: ResolvedOpenClawMetadata;
-  invocation: HookInvocationPolicy;
-}
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">HookEntry</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">hook</span>: <span class="kt">Hook</span><span class="p">;</span>
+  <span class="nx">frontmatter</span>: <span class="kt">ParsedHookFrontmatter</span><span class="p">;</span>
+  <span class="nx">metadata</span>: <span class="kt">ResolvedOpenClawMetadata</span><span class="p">;</span>
+  <span class="nx">invocation</span>: <span class="kt">HookInvocationPolicy</span><span class="p">;</span>
+<span class="p">}</span>
 
-function loadHookEntriesFromDir(params: {
-  dir: string;
-  source: HookSource;
-  pluginId?: string;
-}): HookEntry[]
-</code></pre>
+<span class="kd">function</span> <span class="nx">loadHookEntriesFromDir</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">dir</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">source</span>: <span class="kt">HookSource</span><span class="p">;</span>
+  <span class="nx">pluginId?</span>: <span class="kt">string</span><span class="p">;</span>
+<span class="p">})</span><span class="o">:</span> <span class="nx">HookEntry</span><span class="p">[]</span>
+</code></pre></div>
+
 <p><strong>改进</strong>：前置解析 frontmatter，支持 <code>package.json</code> 中的 <code>[MANIFEST_KEY].hooks</code> 多 Hook 包清单，通过 <code>isPathInsideWithRealpath()</code> 验证 Hook 路径沙箱安全。</p>
 <p>Hook 优先级（合并时）：extra dirs &lt; bundled &lt; plugin &lt; managed &lt; workspace（workspace 在名称冲突时优先）。</p>
-<h3 id="hook-策略统一模块">Hook 策略统一模块</h3>
+<h3 id="hook_2">Hook 策略统一模块</h3>
 <p><strong>文件</strong>: <code>src/hooks/policy.ts</code> (144 行，新文件)</p>
 <p>集中管理 Hook 启用/禁用策略和冲突解析：</p>
-<pre><code class="language-typescript">type HookSourcePolicy = {
-  precedence: number;             // 10=bundled, 20=plugin, 30=managed, 40=workspace
-  trustedLocalCode: boolean;
-  defaultEnableMode: &quot;default-on&quot; | &quot;explicit-opt-in&quot;;
-  canOverride: HookSource[];
-  canBeOverriddenBy: HookSource[];
-};
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">HookSourcePolicy</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">precedence</span>: <span class="kt">number</span><span class="p">;</span>             <span class="c1">// 10=bundled, 20=plugin, 30=managed, 40=workspace</span>
+  <span class="nx">trustedLocalCode</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">defaultEnableMode</span><span class="o">:</span> <span class="s2">&quot;default-on&quot;</span> <span class="o">|</span> <span class="s2">&quot;explicit-opt-in&quot;</span><span class="p">;</span>
+  <span class="nx">canOverride</span>: <span class="kt">HookSource</span><span class="p">[];</span>
+  <span class="nx">canBeOverriddenBy</span>: <span class="kt">HookSource</span><span class="p">[];</span>
+<span class="p">};</span>
 
-function resolveHookEnableState(params: {
-  entry: HookEntry; config?; hookConfig?;
-}): HookEnableState
+<span class="kd">function</span> <span class="nx">resolveHookEnableState</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">entry</span>: <span class="kt">HookEntry</span><span class="p">;</span> <span class="nx">config</span><span class="o">?</span><span class="p">;</span> <span class="nx">hookConfig</span><span class="o">?</span><span class="p">;</span>
+<span class="p">})</span><span class="o">:</span> <span class="nx">HookEnableState</span>
 
-function resolveHookEntries(entries: HookEntry[], opts?): HookEntry[]
-</code></pre>
+<span class="kd">function</span> <span class="nx">resolveHookEntries</span><span class="p">(</span><span class="nx">entries</span>: <span class="kt">HookEntry</span><span class="p">[],</span> <span class="nx">opts</span><span class="o">?</span><span class="p">)</span><span class="o">:</span> <span class="nx">HookEntry</span><span class="p">[]</span>
+</code></pre></div>
+
 <p><strong>关键规则</strong>：workspace hook 默认 <code>explicit-opt-in</code>（禁用），其余来源默认 <code>default-on</code>。冲突时高优先级来源胜出。</p>
 <hr />
-<h2 id="附录-b-转录重写与-session-截断大版本更新后新增">附录 B. 转录重写与 Session 截断（大版本更新后新增）</h2>
-<h3 id="转录重写系统">转录重写系统</h3>
+<h2 id="b-session">附录 B. 转录重写与 Session 截断（大版本更新后新增）</h2>
+<h3 id="_47">转录重写系统</h3>
 <p><strong>文件</strong>: <code>src/agents/pi-embedded-runner/transcript-rewrite.ts</code> (233 行，新文件)</p>
 <p>允许 Context Engine 通过 <code>runtimeContext.rewriteTranscriptEntries()</code> 安全地重写转录内容：</p>
-<pre><code class="language-typescript">function rewriteTranscriptEntriesInSessionManager(params: {
-  sessionManager: SessionManagerLike;
-  replacements: TranscriptRewriteReplacement[];
-}): TranscriptRewriteResult
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">rewriteTranscriptEntriesInSessionManager</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">sessionManager</span>: <span class="kt">SessionManagerLike</span><span class="p">;</span>
+  <span class="nx">replacements</span>: <span class="kt">TranscriptRewriteReplacement</span><span class="p">[];</span>
+<span class="p">})</span><span class="o">:</span> <span class="nx">TranscriptRewriteResult</span>
 
-async function rewriteTranscriptEntriesInSessionFile(params: {
-  sessionFile: string; sessionId?; sessionKey?;
-  request: TranscriptRewriteRequest;
-}): Promise&lt;TranscriptRewriteResult&gt;
-</code></pre>
+<span class="k">async</span> <span class="kd">function</span> <span class="nx">rewriteTranscriptEntriesInSessionFile</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">sessionFile</span>: <span class="kt">string</span><span class="p">;</span> <span class="nx">sessionId</span><span class="o">?</span><span class="p">;</span> <span class="nx">sessionKey</span><span class="o">?</span><span class="p">;</span>
+  <span class="nx">request</span>: <span class="kt">TranscriptRewriteRequest</span><span class="p">;</span>
+<span class="p">})</span><span class="o">:</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="nx">TranscriptRewriteResult</span><span class="o">&gt;</span>
+</code></pre></div>
+
 <p><strong>安全机制</strong>：采用 branch-and-reappend 策略——从第一个被重写消息的父级分支，然后重新追加后续条目。支持所有条目类型（message, compaction, thinking_level_change, model_change, custom, session_info, branch_summary, label）。修改时发射 <code>SessionTranscriptUpdate</code> 事件。</p>
-<h3 id="session-jsonl-截断">Session JSONL 截断</h3>
+<h3 id="session-jsonl">Session JSONL 截断</h3>
 <p><strong>文件</strong>: <code>src/agents/pi-embedded-runner/session-truncation.ts</code> (227 行，新文件)</p>
 <p>压缩后截断 JSONL 文件，防止无限增长：</p>
-<pre><code class="language-typescript">async function truncateSessionAfterCompaction(params: {
-  sessionFile: string;
-  archivePath?: string;
-}): Promise&lt;TruncationResult&gt;
+<div class="codehilite"><pre><span></span><code><span class="k">async</span> <span class="kd">function</span> <span class="nx">truncateSessionAfterCompaction</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">sessionFile</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">archivePath?</span>: <span class="kt">string</span><span class="p">;</span>
+<span class="p">})</span><span class="o">:</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="nx">TruncationResult</span><span class="o">&gt;</span>
 
-type TruncationResult = {
-  truncated: boolean;
-  entriesRemoved: number;
-  bytesBefore?: number;
-  bytesAfter?: number;
-  reason?: string;
-};
-</code></pre>
+<span class="kr">type</span> <span class="nx">TruncationResult</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">truncated</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">entriesRemoved</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="nx">bytesBefore?</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="nx">bytesAfter?</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="nx">reason?</span>: <span class="kt">string</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
 <p><strong>策略</strong>：仅移除压缩已摘要的 message 条目；保留非 message 状态（custom, model_change, session_info 等）；重新挂载条目到最近保留的祖先以维护树连通性。可选归档截断前的文件。原子写入（临时文件 + rename）。</p>
-<p>配置选项：<code>quality.sessionTruncationAfterCompaction</code>。</p>
-<h3 id="压缩安全守卫摘要预算">压缩安全守卫摘要预算</h3>
-<p><strong>文件</strong>: <code>src/agents/pi-extensions/compaction-safeguard.ts</code> (1140 行)</p>
-<p>新增摘要字符上限和必要段落校验：</p>
-<pre><code class="language-typescript">MAX_COMPACTION_SUMMARY_CHARS = 16_000    // 摘要总字符上限
-MAX_FILE_OPS_SECTION_CHARS = 2_000       // 文件操作段字符上限
-MAX_FILE_OPS_LIST_CHARS = 900            // 文件列表字符上限
-SUMMARY_TRUNCATED_MARKER = &quot;\n\n[Compaction summary truncated to fit budget]&quot;
-REQUIRED_SUMMARY_SECTIONS = [
-  &quot;## Decisions&quot;, &quot;## Open TODOs&quot;, &quot;## Constraints/Rules&quot;,
-  &quot;## Pending user asks&quot;, &quot;## Exact identifiers&quot;
-]
-</code></pre>
-<p>通过 <code>capCompactionSummary()</code> 和 <code>auditSummaryQuality()</code> 确保摘要不超预算且包含必要结构。</p>
+<p>配置选项：<code>agents.defaults.compaction.truncateAfterCompaction</code>。</p>
+<h3 id="_48">压缩安全守卫摘要预算</h3>
+<p><strong>文件</strong>: <code>src/agents/pi-hooks/compaction-safeguard.ts</code> (972 行)</p>
+<p>新增摘要字符上限：</p>
+<div class="codehilite"><pre><span></span><code><span class="nx">MAX_COMPACTION_SUMMARY_CHARS</span> <span class="o">=</span> <span class="mf">16</span><span class="nx">_000</span>    <span class="c1">// 摘要总字符上限</span>
+<span class="nx">MAX_FILE_OPS_SECTION_CHARS</span> <span class="o">=</span> <span class="mf">2</span><span class="nx">_000</span>       <span class="c1">// 文件操作段字符上限</span>
+<span class="nx">MAX_FILE_OPS_LIST_CHARS</span> <span class="o">=</span> <span class="mf">900</span>            <span class="c1">// 文件列表字符上限</span>
+<span class="nx">SUMMARY_TRUNCATED_MARKER</span> <span class="o">=</span> <span class="s2">&quot;\n\n[Compaction summary truncated to fit budget]&quot;</span>
+</code></pre></div>
+
+<p>通过 <code>capCompactionSummary()</code> 确保摘要不超预算。</p>
+<p><strong>文件</strong>: <code>src/agents/pi-hooks/compaction-safeguard-quality.ts</code></p>
+<p>必要段落校验：</p>
+<div class="codehilite"><pre><span></span><code><span class="nx">REQUIRED_SUMMARY_SECTIONS</span> <span class="o">=</span> <span class="p">[</span>
+  <span class="s2">&quot;## Decisions&quot;</span><span class="p">,</span> <span class="s2">&quot;## Open TODOs&quot;</span><span class="p">,</span> <span class="s2">&quot;## Constraints/Rules&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;## Pending user asks&quot;</span><span class="p">,</span> <span class="s2">&quot;## Exact identifiers&quot;</span>
+<span class="p">]</span>
+</code></pre></div>
+
+<p>通过 <code>auditSummaryQuality()</code> 确保摘要包含必要结构。</p>
+<hr />
+<h2 id="c-memory-prompt-helper-context-engine-2026-04">附录 C. Memory Prompt Helper 与 Context Engine 委托（2026-04 后新增）</h2>
+<h3 id="memory">Memory 插件状态系统</h3>
+<p><strong>文件</strong>: <code>src/plugins/memory-state.ts</code> (228 行)</p>
+<p>Memory 插件子系统经过重大重构，采用统一的 Capability 注册模型：</p>
+<h4 id="_49">注册模型</h4>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">MemoryPluginCapability</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">promptBuilder?</span>: <span class="kt">MemoryPromptSectionBuilder</span><span class="p">;</span>
+  <span class="nx">flushPlanResolver?</span>: <span class="kt">MemoryFlushPlanResolver</span><span class="p">;</span>
+  <span class="nx">runtime?</span>: <span class="kt">MemoryPluginRuntime</span><span class="p">;</span>
+  <span class="nx">publicArtifacts?</span>: <span class="kt">MemoryPluginPublicArtifactsProvider</span><span class="p">;</span>
+<span class="p">};</span>
+
+<span class="c1">// 新注册 API（推荐）</span>
+<span class="nx">registerMemoryCapability</span><span class="p">(</span><span class="nx">pluginId</span><span class="p">,</span> <span class="nx">capability</span><span class="p">)</span>
+
+<span class="c1">// Legacy 注册 API（仍支持）</span>
+<span class="nx">registerMemoryPromptSection</span><span class="p">(</span><span class="nx">builder</span><span class="p">)</span>       <span class="c1">// @deprecated</span>
+</code></pre></div>
+
+<h4 id="corpus-supplement">新增：Corpus Supplement 机制</h4>
+<p>允许多个插件注册语料库补充源，为记忆搜索和内容获取提供额外来源：</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">MemoryCorpusSupplement</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">search</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span> <span class="nx">query</span>: <span class="kt">string</span><span class="p">;</span> <span class="nx">maxResults?</span>: <span class="kt">number</span><span class="p">;</span> <span class="nx">agentSessionKey?</span>: <span class="kt">string</span> <span class="p">})</span><span class="o">:</span>
+    <span class="nb">Promise</span><span class="o">&lt;</span><span class="nx">MemoryCorpusSearchResult</span><span class="p">[]</span><span class="o">&gt;</span><span class="p">;</span>
+  <span class="nx">get</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span> <span class="nx">lookup</span>: <span class="kt">string</span><span class="p">;</span> <span class="nx">fromLine?</span>: <span class="kt">number</span><span class="p">;</span> <span class="nx">lineCount?</span>: <span class="kt">number</span><span class="p">;</span> <span class="nx">agentSessionKey?</span>: <span class="kt">string</span> <span class="p">})</span><span class="o">:</span>
+    <span class="nb">Promise</span><span class="o">&lt;</span><span class="nx">MemoryCorpusGetResult</span> <span class="o">|</span> <span class="kc">null</span><span class="o">&gt;</span><span class="p">;</span>
+<span class="p">};</span>
+
+<span class="nx">registerMemoryCorpusSupplement</span><span class="p">(</span><span class="nx">pluginId</span><span class="p">,</span> <span class="nx">supplement</span><span class="p">)</span>
+</code></pre></div>
+
+<h4 id="prompt-supplement">新增：Prompt Supplement 机制</h4>
+<p>多个插件可注册提示词补充构建器，输出在主记忆提示词之后按 pluginId 字母序拼接：</p>
+<div class="codehilite"><pre><span></span><code><span class="nx">registerMemoryPromptSupplement</span><span class="p">(</span><span class="nx">pluginId</span><span class="p">,</span> <span class="nx">builder</span><span class="p">)</span>
+</code></pre></div>
+
+<h4 id="buildmemorypromptsection"><code>buildMemoryPromptSection()</code> 核心流程</h4>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">buildMemoryPromptSection</span><span class="p">(</span><span class="nx">params</span><span class="p">)</span> <span class="p">{</span>
+  <span class="c1">// 1. 优先使用 capability.promptBuilder（新 API）</span>
+  <span class="c1">// 2. 回退到 legacy promptBuilder</span>
+  <span class="c1">// 3. 追加所有 prompt supplement（按 pluginId 排序，保持输出稳定）</span>
+  <span class="k">return</span> <span class="p">[...</span><span class="nx">primary</span><span class="p">,</span> <span class="p">...</span><span class="nx">supplements</span><span class="p">]</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="context-engine-delegate">Context Engine Delegate 模块</h3>
+<p><strong>文件</strong>: <code>src/context-engine/delegate.ts</code> (87 行)</p>
+<p>此模块是 legacy 引擎和第三方引擎之间的关键桥梁，提供：</p>
+<ol>
+<li><strong><code>delegateCompactionToRuntime()</code></strong> - 共享 compaction 运行时（见第 4 节详述）</li>
+<li><strong><code>buildMemorySystemPromptAddition()</code></strong> - 共享 memory prompt 构建（见第 4 节详述）</li>
+</ol>
+<p><strong>设计模式</strong>：第三方 Context Engine 可以在 <code>assemble()</code> 返回的 <code>systemPromptAddition</code> 中包含 <code>buildMemorySystemPromptAddition()</code> 的输出，使得 memory 指引对自定义引擎也可用，无需复制 legacy 引擎内部的 memory prompt 格式化逻辑。</p>
+<hr />
+<h2 id="d-compaction-checkpoints2026-04">附录 D. Compaction Checkpoints（2026-04 后新增）</h2>
+<h3 id="_50">概述</h3>
+<p><strong>文件</strong>: <code>src/gateway/session-compaction-checkpoints.ts</code> (208 行)</p>
+<p>Compaction Checkpoints 是一个在压缩前后保存 session 快照的系统，允许在压缩失败或产生不理想结果时回滚到之前的状态。</p>
+<h3 id="_51">常量</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">MAX_COMPACTION_CHECKPOINTS_PER_SESSION</span> <span class="o">=</span> <span class="mf">25</span>  <span class="c1">// 每个 session 最多保留 25 个 checkpoint</span>
+</code></pre></div>
+
+<h3 id="_52">数据模型</h3>
+<p><strong>注意</strong>: <code>SessionCompactionCheckpoint</code> 类型实际定义在 <code>src/config/sessions/types.ts</code> 中，由 <code>src/gateway/session-compaction-checkpoints.ts</code> 导入使用。</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">SessionCompactionCheckpointReason</span> <span class="o">=</span>
+  <span class="o">|</span> <span class="s2">&quot;manual&quot;</span>           <span class="c1">// 手动触发</span>
+  <span class="o">|</span> <span class="s2">&quot;auto-threshold&quot;</span>   <span class="c1">// 自动阈值触发</span>
+  <span class="o">|</span> <span class="s2">&quot;overflow-retry&quot;</span>   <span class="c1">// 溢出重试</span>
+  <span class="o">|</span> <span class="s2">&quot;timeout-retry&quot;</span><span class="p">;</span>   <span class="c1">// 超时重试</span>
+
+<span class="kr">type</span> <span class="nx">SessionCompactionCheckpoint</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">checkpointId</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">sessionKey</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">sessionId</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">createdAt</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="nx">reason</span>: <span class="kt">SessionCompactionCheckpointReason</span><span class="p">;</span>
+  <span class="nx">tokensBefore?</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="nx">tokensAfter?</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="nx">summary?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">firstKeptEntryId?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">preCompaction</span>: <span class="kt">SessionCompactionTranscriptReference</span><span class="p">;</span>  <span class="c1">// 压缩前快照引用</span>
+  <span class="nx">postCompaction</span>: <span class="kt">SessionCompactionTranscriptReference</span><span class="p">;</span> <span class="c1">// 压缩后快照引用</span>
+<span class="p">};</span>
+
+<span class="kr">type</span> <span class="nx">SessionCompactionTranscriptReference</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">sessionId</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">sessionFile?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">leafId?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">entryId?</span>: <span class="kt">string</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="api_3">核心 API</h3>
+<table>
+<thead>
+<tr>
+<th>函数</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>captureCompactionCheckpointSnapshot()</code></td>
+<td>压缩前拷贝 session 文件作为快照</td>
+</tr>
+<tr>
+<td><code>persistSessionCompactionCheckpoint()</code></td>
+<td>持久化 checkpoint 到 session store</td>
+</tr>
+<tr>
+<td><code>listSessionCompactionCheckpoints()</code></td>
+<td>列出 session 的所有 checkpoints（按时间倒序）</td>
+</tr>
+<tr>
+<td><code>getSessionCompactionCheckpoint()</code></td>
+<td>按 ID 获取特定 checkpoint</td>
+</tr>
+<tr>
+<td><code>cleanupCompactionCheckpointSnapshot()</code></td>
+<td>清理快照文件（best-effort）</td>
+</tr>
+<tr>
+<td><code>resolveSessionCompactionCheckpointReason()</code></td>
+<td>从触发参数推断 checkpoint 原因</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_53">工作流程</h3>
+<div class="codehilite"><pre><span></span><code><span class="mf">1.</span><span class="w"> </span><span class="n">压缩触发</span><span class="w"> </span><span class="p">(</span><span class="n">manual</span><span class="o">/</span><span class="n">overflow</span><span class="o">/</span><span class="n">timeout</span><span class="o">/</span><span class="n">threshold</span><span class="p">)</span><span class="w"></span>
+<span class="mf">2.</span><span class="w"> </span><span class="n">captureCompactionCheckpointSnapshot</span><span class="p">()</span><span class="w"></span>
+<span class="w">   </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">拷贝当前</span><span class="w"> </span><span class="n">session</span><span class="w"> </span><span class="n">文件</span><span class="w"></span>
+<span class="w">   </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">记录</span><span class="w"> </span><span class="n">leafId</span><span class="w"></span>
+<span class="mf">3.</span><span class="w"> </span><span class="n">执行压缩</span><span class="w"></span>
+<span class="mf">4.</span><span class="w"> </span><span class="n">persistSessionCompactionCheckpoint</span><span class="p">()</span><span class="w"></span>
+<span class="w">   </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">保存</span><span class="w"> </span><span class="n">pre</span><span class="o">/</span><span class="nb">pos</span><span class="n">t</span><span class="w"> </span><span class="n">引用</span><span class="w"></span>
+<span class="w">   </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">保存</span><span class="w"> </span><span class="kr">to</span><span class="n">ken</span><span class="w"> </span><span class="n">统计</span><span class="w"></span>
+<span class="w">   </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">裁剪到</span><span class="w"> </span><span class="n">MAX</span><span class="w"> </span><span class="mf">25</span><span class="w"> </span><span class="n">条</span><span class="w"></span>
+<span class="mf">5.</span><span class="w"> </span><span class="n">可选</span><span class="err">：</span><span class="n">通过</span><span class="w"> </span><span class="n">Gateway</span><span class="w"> </span><span class="n">API</span><span class="w"> </span><span class="n">恢复</span><span class="o">/</span><span class="n">分支</span><span class="w"></span>
+<span class="w">   </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">SessionsCompactionRestoreParams</span><span class="w"></span>
+<span class="w">   </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">SessionsCompactionBranchParams</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="gateway">Gateway 协议集成</h3>
+<p>Gateway 协议 schema 定义了三个 checkpoint 操作：</p>
+<table>
+<thead>
+<tr>
+<th>Schema</th>
+<th>参数</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>SessionsCompactionGetParams</code></td>
+<td><code>key</code>, <code>checkpointId</code></td>
+<td>获取特定 checkpoint 详情</td>
+</tr>
+<tr>
+<td><code>SessionsCompactionBranchParams</code></td>
+<td><code>key</code>, <code>checkpointId</code></td>
+<td>从 checkpoint 创建分支</td>
+</tr>
+<tr>
+<td><code>SessionsCompactionRestoreParams</code></td>
+<td><code>key</code>, <code>checkpointId</code></td>
+<td>恢复到 checkpoint 状态</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="e-context-visibility2026-04">附录 E. 可配置上下文可见性 (Context Visibility)（2026-04 后新增）</h2>
+<h3 id="_54">概述</h3>
+<p>新增的 Context Visibility 系统允许在 channel/account 层级控制补充上下文（引用消息、转发消息、历史线程等）对 Agent 的可见性。</p>
+<h3 id="_55">配置</h3>
+<p><strong>文件</strong>: <code>src/config/types.base.ts</code></p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">ContextVisibilityMode</span> <span class="o">=</span> <span class="s2">&quot;all&quot;</span> <span class="o">|</span> <span class="s2">&quot;allowlist&quot;</span> <span class="o">|</span> <span class="s2">&quot;allowlist_quote&quot;</span><span class="p">;</span>
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>"all"</code></td>
+<td>所有补充上下文对 Agent 可见</td>
+</tr>
+<tr>
+<td><code>"allowlist"</code></td>
+<td>仅 allowlist 中发送者的补充上下文可见</td>
+</tr>
+<tr>
+<td><code>"allowlist_quote"</code></td>
+<td>allowlist 发送者 + 引用消息可见（但非 allowlist 发送者的历史/转发不可见）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_56">解析层级</h3>
+<p><strong>文件</strong>: <code>src/config/context-visibility.ts</code> (46 行)</p>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">resolveChannelContextVisibilityMode</span><span class="p">(</span><span class="nx">params</span><span class="p">)</span> <span class="p">{</span>
+  <span class="c1">// 优先级：</span>
+  <span class="c1">// 1. configuredContextVisibility（显式参数）</span>
+  <span class="c1">// 2. channels.&lt;channel&gt;.accounts.&lt;accountId&gt;.contextVisibility</span>
+  <span class="c1">// 3. channels.&lt;channel&gt;.contextVisibility</span>
+  <span class="c1">// 4. channels.defaults.contextVisibility</span>
+  <span class="c1">// 5. &quot;all&quot;（默认）</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="_57">决策引擎</h3>
+<p><strong>文件</strong>: <code>src/security/context-visibility.ts</code> (59 行)</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">ContextVisibilityKind</span> <span class="o">=</span> <span class="s2">&quot;history&quot;</span> <span class="o">|</span> <span class="s2">&quot;thread&quot;</span> <span class="o">|</span> <span class="s2">&quot;quote&quot;</span> <span class="o">|</span> <span class="s2">&quot;forwarded&quot;</span><span class="p">;</span>
+
+<span class="kr">type</span> <span class="nx">ContextVisibilityDecision</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">include</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">reason</span><span class="o">:</span> <span class="s2">&quot;mode_all&quot;</span> <span class="o">|</span> <span class="s2">&quot;sender_allowed&quot;</span> <span class="o">|</span> <span class="s2">&quot;quote_override&quot;</span> <span class="o">|</span> <span class="s2">&quot;blocked&quot;</span><span class="p">;</span>
+<span class="p">};</span>
+
+<span class="kd">function</span> <span class="nx">evaluateSupplementalContextVisibility</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">mode</span>: <span class="kt">ContextVisibilityMode</span><span class="p">;</span>
+  <span class="nx">kind</span>: <span class="kt">ContextVisibilityKind</span><span class="p">;</span>
+  <span class="nx">senderAllowed</span>: <span class="kt">boolean</span><span class="p">;</span>
+<span class="p">})</span><span class="o">:</span> <span class="nx">ContextVisibilityDecision</span>
+</code></pre></div>
+
+<p>决策逻辑：
+1. <code>mode === "all"</code> -&gt; 始终包含
+2. <code>senderAllowed === true</code> -&gt; 包含（allowlist 匹配）
+3. <code>mode === "allowlist_quote" &amp;&amp; kind === "quote"</code> -&gt; 包含（引用覆盖）
+4. 否则 -&gt; 阻止</p>
+<h3 id="_58">批量过滤</h3>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">filterSupplementalContextItems</span><span class="o">&lt;</span><span class="nx">T</span><span class="o">&gt;</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">items</span>: <span class="kt">readonly</span> <span class="nx">T</span><span class="p">[];</span>
+  <span class="nx">mode</span>: <span class="kt">ContextVisibilityMode</span><span class="p">;</span>
+  <span class="nx">kind</span>: <span class="kt">ContextVisibilityKind</span><span class="p">;</span>
+  <span class="nx">isSenderAllowed</span><span class="o">:</span> <span class="p">(</span><span class="nx">item</span>: <span class="kt">T</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="kt">boolean</span><span class="p">;</span>
+<span class="p">})</span><span class="o">:</span> <span class="p">{</span> <span class="nx">items</span>: <span class="kt">T</span><span class="p">[];</span> <span class="nx">omitted</span>: <span class="kt">number</span> <span class="p">}</span>
+</code></pre></div>
+
+<p>返回过滤后的项目和被省略的计数，便于日志和调试。</p>
+<hr />
+<h2 id="f-provider-2026-04">附录 F. Provider 系统提示词贡献（2026-04 后新增）</h2>
+<h3 id="_59">动机</h3>
+<p>不同的 LLM Provider 可能需要在系统提示词中包含特定的指引（如工具调用风格、交互偏好），但不应替换整个系统提示词。Provider System Prompt Contribution 机制允许 Provider 插件以缓存友好的方式注入提示词片段。</p>
+<h3 id="_60">接口定义</h3>
+<p><strong>文件</strong>: <code>src/agents/system-prompt-contribution.ts</code></p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">ProviderSystemPromptSectionId</span> <span class="o">=</span>
+  <span class="o">|</span> <span class="s2">&quot;interaction_style&quot;</span>    <span class="c1">// 交互风格</span>
+  <span class="o">|</span> <span class="s2">&quot;tool_call_style&quot;</span>     <span class="c1">// 工具调用风格</span>
+  <span class="o">|</span> <span class="s2">&quot;execution_bias&quot;</span><span class="p">;</span>     <span class="c1">// 执行偏好</span>
+
+<span class="kr">type</span> <span class="nx">ProviderSystemPromptContribution</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">stablePrefix?</span>: <span class="kt">string</span><span class="p">;</span>    <span class="c1">// cache boundary 之前的稳定文本</span>
+  <span class="nx">dynamicSuffix?</span>: <span class="kt">string</span><span class="p">;</span>   <span class="c1">// cache boundary 之后的动态文本</span>
+  <span class="nx">sectionOverrides?</span>: <span class="kt">Partial</span><span class="o">&lt;</span><span class="nx">Record</span><span class="o">&lt;</span><span class="nx">ProviderSystemPromptSectionId</span><span class="p">,</span> <span class="kt">string</span><span class="o">&gt;&gt;</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="provider">Provider 插件钩子</h3>
+<p><strong>文件</strong>: <code>src/plugins/types.ts</code></p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">ProviderSystemPromptContributionContext</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">config?</span>: <span class="kt">OpenClawConfig</span><span class="p">;</span>
+  <span class="nx">agentDir?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">workspaceDir?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">provider</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">modelId</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">promptMode</span>: <span class="kt">PromptMode</span><span class="p">;</span>           <span class="c1">// &quot;full&quot; | &quot;minimal&quot; | &quot;none&quot;</span>
+  <span class="nx">runtimeChannel?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">runtimeCapabilities?</span>: <span class="kt">string</span><span class="p">[];</span>
+  <span class="nx">agentId?</span>: <span class="kt">string</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="_61">运行时解析</h3>
+<p><strong>文件</strong>: <code>src/plugins/provider-runtime.ts</code></p>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">resolveProviderSystemPromptContribution</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">provider</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">config?</span>: <span class="kt">OpenClawConfig</span><span class="p">;</span>
+  <span class="nx">workspaceDir?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">env?</span>: <span class="kt">NodeJS.ProcessEnv</span><span class="p">;</span>
+  <span class="nx">context</span>: <span class="kt">ProviderSystemPromptContributionContext</span><span class="p">;</span>
+<span class="p">})</span><span class="o">:</span> <span class="nx">ProviderSystemPromptContribution</span> <span class="o">|</span> <span class="kc">undefined</span>
+</code></pre></div>
+
+<p>在 <code>attempt.ts</code> 和 <code>compact.ts</code> 中调用，确保 compaction 时的系统提示词与运行时一致。</p>
+<hr />
+<h2 id="g-2026-04">附录 G. 视频生成工具与后台任务（2026-04 后新增）</h2>
+<h3 id="_62">概述</h3>
+<p>新增 <code>video_generate</code> 工具，支持文本到视频、图片到视频、视频到视频的生成。采用后台任务模式，生成完成后通过 wake 机制通知 session。</p>
+<h3 id="schema_1">工具 Schema</h3>
+<p><strong>文件</strong>: <code>src/agents/tools/video-generate-tool.ts</code></p>
+<div class="codehilite"><pre><span></span><code><span class="kd">const</span> <span class="nx">VideoGenerateToolSchema</span> <span class="o">=</span> <span class="nx">Type</span><span class="p">.</span><span class="nb">Object</span><span class="p">({</span>
+  <span class="nx">action</span>: <span class="kt">Type.Optional</span><span class="p">(</span><span class="nx">Type</span><span class="p">.</span><span class="nb">String</span><span class="p">()),</span>  <span class="c1">// &quot;generate&quot; | &quot;status&quot; | &quot;list&quot;</span>
+  <span class="nx">prompt</span>: <span class="kt">Type.Optional</span><span class="p">(</span><span class="nx">Type</span><span class="p">.</span><span class="nb">String</span><span class="p">()),</span>
+  <span class="nx">image</span>: <span class="kt">Type.Optional</span><span class="p">(</span><span class="nx">Type</span><span class="p">.</span><span class="nb">String</span><span class="p">()),</span>   <span class="c1">// 单张参考图片</span>
+  <span class="nx">images</span>: <span class="kt">Type.Optional</span><span class="p">(</span><span class="nx">Type</span><span class="p">.</span><span class="nb">Array</span><span class="p">()),</span>   <span class="c1">// 多张参考图片（最多 5 张）</span>
+  <span class="nx">video</span>: <span class="kt">Type.Optional</span><span class="p">(</span><span class="nx">Type</span><span class="p">.</span><span class="nb">String</span><span class="p">()),</span>   <span class="c1">// 单个参考视频</span>
+  <span class="c1">// ... 更多参数</span>
+<span class="p">})</span>
+</code></pre></div>
+
+<h3 id="_63">后台任务系统</h3>
+<p><strong>文件</strong>: <code>src/agents/tools/video-generate-background.ts</code></p>
+<p>基于通用的 <code>MediaGenerationTaskHandle</code> 机制：</p>
+<div class="codehilite"><pre><span></span><code><span class="nx">createVideoGenerationTaskRun</span><span class="p">()</span>     <span class="c1">// 创建任务，注册到 task registry</span>
+<span class="nx">recordVideoGenerationTaskProgress</span><span class="p">()</span> <span class="c1">// 记录进度</span>
+<span class="nx">completeVideoGenerationTaskRun</span><span class="p">()</span>    <span class="c1">// 完成任务</span>
+<span class="nx">failVideoGenerationTaskRun</span><span class="p">()</span>        <span class="c1">// 标记失败</span>
+<span class="nx">wakeVideoGenerationTaskCompletion</span><span class="p">()</span> <span class="c1">// 唤醒等待中的 session</span>
+</code></pre></div>
+
+<h3 id="_64">任务状态追踪</h3>
+<p><strong>文件</strong>: <code>src/agents/video-generation-task-status.ts</code></p>
+<div class="codehilite"><pre><span></span><code><span class="nx">VIDEO_GENERATION_TASK_KIND</span> <span class="o">=</span> <span class="s2">&quot;video_generation&quot;</span>
+
+<span class="nx">isActiveVideoGenerationTask</span><span class="p">(</span><span class="nx">task</span><span class="p">)</span>              <span class="c1">// 检查任务是否活跃</span>
+<span class="nx">findActiveVideoGenerationTaskForSession</span><span class="p">(</span><span class="nx">key</span><span class="p">)</span>   <span class="c1">// 查找 session 关联的活跃任务</span>
+<span class="nx">buildVideoGenerationTaskStatusText</span><span class="p">(</span><span class="nx">task</span><span class="p">)</span>       <span class="c1">// 构建状态文本</span>
+<span class="nx">buildActiveVideoGenerationTaskPromptContextForSession</span><span class="p">(</span><span class="nx">key</span><span class="p">)</span> <span class="c1">// 构建提示上下文</span>
+</code></pre></div>
+
+<h3 id="provider_1">Provider 体系</h3>
+<p><strong>文件</strong>: <code>src/video-generation/types.ts</code></p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">VideoGenerationMode</span> <span class="o">=</span> <span class="s2">&quot;generate&quot;</span> <span class="o">|</span> <span class="s2">&quot;imageToVideo&quot;</span> <span class="o">|</span> <span class="s2">&quot;videoToVideo&quot;</span><span class="p">;</span>
+
+<span class="kr">type</span> <span class="nx">VideoGenerationProvider</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">id</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">aliases?</span>: <span class="kt">string</span><span class="p">[];</span>
+  <span class="nx">label?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">defaultModel?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">models?</span>: <span class="kt">string</span><span class="p">[];</span>
+  <span class="nx">capabilities</span>: <span class="kt">VideoGenerationProviderCapabilities</span><span class="p">;</span>
+  <span class="nx">isConfigured</span><span class="o">?:</span> <span class="p">(</span><span class="nx">ctx</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">generateVideo</span><span class="o">:</span> <span class="p">(</span><span class="nx">req</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="nx">VideoGenerationResult</span><span class="o">&gt;</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p>支持的分辨率：<code>"480P"</code> | <code>"720P"</code> | <code>"768P"</code> | <code>"1080P"</code>
+支持的宽高比：<code>"1:1"</code>, <code>"2:3"</code>, <code>"3:2"</code>, <code>"3:4"</code>, <code>"4:3"</code>, <code>"4:5"</code>, <code>"5:4"</code>, <code>"9:16"</code>, <code>"16:9"</code>, <code>"21:9"</code></p>
+<hr />
+<h2 id="h-mcp-httpsseplugin-tools-server2026-04">附录 H. MCP 传输层演进 (HTTP/SSE/Plugin Tools Server)（2026-04 后新增）</h2>
+<h3 id="mcp">MCP 传输配置</h3>
+<p><strong>文件</strong>: <code>src/agents/mcp-transport-config.ts</code> (145 行)</p>
+<p>新增统一的 MCP 传输解析层，支持三种传输类型：</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">McpTransportType</span> <span class="o">=</span> <span class="s2">&quot;stdio&quot;</span> <span class="o">|</span> <span class="nx">HttpMcpTransportType</span><span class="p">;</span>
+<span class="kr">type</span> <span class="nx">HttpMcpTransportType</span> <span class="o">=</span> <span class="s2">&quot;sse&quot;</span> <span class="o">|</span> <span class="s2">&quot;streamable-http&quot;</span><span class="p">;</span>
+
+<span class="kr">type</span> <span class="nx">ResolvedMcpTransportConfig</span> <span class="o">=</span>
+  <span class="o">|</span> <span class="nx">ResolvedStdioMcpTransportConfig</span>    <span class="c1">// stdio: command + args + env + cwd</span>
+  <span class="o">|</span> <span class="nx">ResolvedHttpMcpTransportConfig</span><span class="p">;</span>    <span class="c1">// http: url + headers + transportType</span>
+
+<span class="kd">const</span> <span class="nx">DEFAULT_CONNECTION_TIMEOUT_MS</span> <span class="o">=</span> <span class="mf">30</span><span class="nx">_000</span><span class="p">;</span>
+</code></pre></div>
+
+<h3 id="_65">传输解析优先级</h3>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">resolveMcpTransportConfig</span><span class="p">(</span><span class="nx">serverName</span><span class="p">,</span> <span class="nx">rawServer</span><span class="p">)</span> <span class="p">{</span>
+  <span class="c1">// 1. 检查 stdio 配置（command 字段）</span>
+  <span class="c1">// 2. 检查显式 transport 字段</span>
+  <span class="c1">//    - &quot;streamable-http&quot; -&gt; StreamableHTTPClientTransport</span>
+  <span class="c1">//    - &quot;sse&quot; -&gt; SSEClientTransport</span>
+  <span class="c1">// 3. 自动检测 HTTP 配置（url 字段）-&gt; 默认 SSE</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="_66">传输实例化</h3>
+<p><strong>文件</strong>: <code>src/agents/mcp-transport.ts</code> (125 行)</p>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">resolveMcpTransport</span><span class="p">(</span><span class="nx">serverName</span><span class="p">,</span> <span class="nx">rawServer</span><span class="p">)</span><span class="o">:</span> <span class="nx">ResolvedMcpTransport</span> <span class="o">|</span> <span class="kc">null</span> <span class="p">{</span>
+  <span class="c1">// stdio -&gt; StdioClientTransport (含 stderr 日志附加)</span>
+  <span class="c1">// streamable-http -&gt; StreamableHTTPClientTransport</span>
+  <span class="c1">// sse -&gt; SSEClientTransport (含 undici fetch + header 注入)</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="gateway-mcp-loopback-server">Gateway MCP Loopback Server</h3>
+<p><strong>文件</strong>: <code>src/gateway/mcp-http.ts</code> (100+ 行)</p>
+<p>Gateway 内嵌的 MCP HTTP 服务器，允许 ACP session 通过 MCP 协议调用 OpenClaw 工具：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">async</span> <span class="kd">function</span> <span class="nx">startMcpLoopbackServer</span><span class="p">(</span><span class="nx">port</span> <span class="o">=</span> <span class="mf">0</span><span class="p">)</span><span class="o">:</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="p">{</span>
+  <span class="nx">port</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="nx">close</span><span class="o">:</span> <span class="p">()</span> <span class="p">=&gt;</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="ow">void</span><span class="o">&gt;</span><span class="p">;</span>
+<span class="p">}</span><span class="o">&gt;</span>
+</code></pre></div>
+
+<p><strong>工作流程</strong>：
+1. 启动 HTTP 服务器（绑定到 <code>127.0.0.1</code>）
+2. 生成随机认证 token
+3. 处理 JSON-RPC 请求：<code>initialize</code>、<code>tools/list</code>、<code>tools/call</code>
+4. 通过 session key 和 message provider 作用域解析工具</p>
+<p><strong>运行时状态</strong>（<code>mcp-http.loopback-runtime.ts</code>）：</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">McpLoopbackRuntime</span> <span class="o">=</span> <span class="p">{</span> <span class="nx">port</span>: <span class="kt">number</span><span class="p">;</span> <span class="nx">token</span>: <span class="kt">string</span> <span class="p">};</span>
+<span class="c1">// 全局单例管理</span>
+<span class="nx">setActiveMcpLoopbackRuntime</span><span class="p">(</span><span class="nx">runtime</span><span class="p">)</span>
+<span class="nx">getActiveMcpLoopbackRuntime</span><span class="p">()</span>
+<span class="nx">clearActiveMcpLoopbackRuntime</span><span class="p">(</span><span class="nx">token</span><span class="p">)</span>
+</code></pre></div>
+
+<p><strong>服务器配置模板</strong>（<code>createMcpLoopbackServerConfig</code>）：</p>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span>
+  <span class="nx">mcpServers</span><span class="o">:</span> <span class="p">{</span>
+    <span class="nx">openclaw</span><span class="o">:</span> <span class="p">{</span>
+      <span class="kr">type</span><span class="o">:</span> <span class="s2">&quot;http&quot;</span><span class="p">,</span>
+      <span class="nx">url</span><span class="o">:</span> <span class="sb">`http://127.0.0.1:</span><span class="si">${</span><span class="nx">port</span><span class="si">}</span><span class="sb">/mcp`</span><span class="p">,</span>
+      <span class="nx">headers</span><span class="o">:</span> <span class="p">{</span>
+        <span class="nx">Authorization</span><span class="o">:</span> <span class="s2">&quot;Bearer ${OPENCLAW_MCP_TOKEN}&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;x-session-key&quot;</span><span class="o">:</span> <span class="s2">&quot;${OPENCLAW_MCP_SESSION_KEY}&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;x-openclaw-agent-id&quot;</span><span class="o">:</span> <span class="s2">&quot;${OPENCLAW_MCP_AGENT_ID}&quot;</span><span class="p">,</span>
+        <span class="c1">// ...</span>
+      <span class="p">}</span>
+    <span class="p">}</span>
+  <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="plugin-tools-mcp-server">Plugin Tools MCP Server</h3>
+<p><strong>文件</strong>: <code>src/mcp/plugin-tools-serve.ts</code> (100+ 行)</p>
+<p>独立的 MCP 服务器，将 OpenClaw 插件注册的工具（如 memory_recall、memory_store）暴露给外部 MCP 客户端：</p>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">createPluginToolsMcpServer</span><span class="p">(</span><span class="nx">params</span><span class="o">?:</span> <span class="p">{</span>
+  <span class="nx">config?</span>: <span class="kt">OpenClawConfig</span><span class="p">;</span>
+  <span class="nx">tools?</span>: <span class="kt">AnyAgentTool</span><span class="p">[];</span>
+<span class="p">})</span><span class="o">:</span> <span class="nx">Server</span>
+</code></pre></div>
+
+<p>使用 <code>@modelcontextprotocol/sdk</code> 的 <code>StdioServerTransport</code>，支持标准的 <code>tools/list</code> 和 <code>tools/call</code> 请求处理。</p>
+<hr />
+<h2 id="i-mention-policy2026-04">附录 I. 入站提及策略集中化 (Mention Policy)（2026-04 后新增）</h2>
+<h3 id="_67">概述</h3>
+<p><strong>文件</strong>: <code>src/channels/mention-gating.ts</code> (233 行)</p>
+<p>将分散在各 channel 实现中的提及（mention）判定逻辑集中为统一的决策函数，采用 facts/policy 分离的设计模式。</p>
+<h3 id="_68">核心类型</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// 事实层：描述消息中的客观提及状态</span>
+<span class="kr">type</span> <span class="nx">InboundMentionFacts</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">canDetectMention</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">wasMentioned</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">hasAnyMention?</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">implicitMentionKinds?</span>: <span class="kt">readonly</span> <span class="nx">InboundImplicitMentionKind</span><span class="p">[];</span>
+<span class="p">};</span>
+
+<span class="c1">// 策略层：描述 channel/agent 的提及要求</span>
+<span class="kr">type</span> <span class="nx">InboundMentionPolicy</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">isGroup</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">requireMention</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">allowedImplicitMentionKinds?</span>: <span class="kt">readonly</span> <span class="nx">InboundImplicitMentionKind</span><span class="p">[];</span>
+  <span class="nx">allowTextCommands</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">hasControlCommand</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">commandAuthorized</span>: <span class="kt">boolean</span><span class="p">;</span>
+<span class="p">};</span>
+
+<span class="c1">// 隐式提及类型</span>
+<span class="kr">type</span> <span class="nx">InboundImplicitMentionKind</span> <span class="o">=</span>
+  <span class="o">|</span> <span class="s2">&quot;reply_to_bot&quot;</span>          <span class="c1">// 回复 bot 消息</span>
+  <span class="o">|</span> <span class="s2">&quot;quoted_bot&quot;</span>            <span class="c1">// 引用了 bot 消息</span>
+  <span class="o">|</span> <span class="s2">&quot;bot_thread_participant&quot;</span> <span class="c1">// bot 是线程参与者</span>
+  <span class="o">|</span> <span class="s2">&quot;native&quot;</span><span class="p">;</span>               <span class="c1">// 原生隐式提及</span>
+</code></pre></div>
+
+<h3 id="_69">决策函数</h3>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">resolveInboundMentionDecision</span><span class="p">(</span>
+  <span class="nx">params</span><span class="o">:</span> <span class="p">{</span> <span class="nx">facts</span>: <span class="kt">InboundMentionFacts</span><span class="p">;</span> <span class="nx">policy</span>: <span class="kt">InboundMentionPolicy</span> <span class="p">}</span>
+<span class="p">)</span><span class="o">:</span> <span class="nx">InboundMentionDecision</span> <span class="p">{</span>
+  <span class="c1">// 1. 检查命令绕过：群组 + requireMention + 未被提及 + 已授权命令</span>
+  <span class="c1">// 2. 解析匹配的隐式提及种类（根据 allowedImplicitMentionKinds 过滤）</span>
+  <span class="c1">// 3. effectiveWasMentioned = wasMentioned || implicitMention || shouldBypassMention</span>
+  <span class="c1">// 4. shouldSkip = requireMention &amp;&amp; canDetectMention &amp;&amp; !effectiveWasMentioned</span>
+<span class="p">}</span>
+
+<span class="kr">type</span> <span class="nx">InboundMentionDecision</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">implicitMention</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">matchedImplicitMentionKinds</span>: <span class="kt">InboundImplicitMentionKind</span><span class="p">[];</span>
+  <span class="nx">effectiveWasMentioned</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">shouldBypassMention</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">shouldSkip</span>: <span class="kt">boolean</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="plugin-sdk_1">Plugin SDK 导出</h3>
+<p><strong>文件</strong>: <code>src/plugin-sdk/channel-inbound.ts</code></p>
+<p>所有提及相关类型和函数通过 <code>openclaw/plugin-sdk/channel-inbound</code> 子路径导出，供 channel 插件使用。旧版 <code>resolveMentionGating()</code> 和 <code>resolveMentionGatingWithBypass()</code> 标记为 <code>@deprecated</code>。</p>
+<h3 id="_70">辅助函数</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// 条件式构建 implicitMentionKinds 数组</span>
+<span class="kd">function</span> <span class="nx">implicitMentionKindWhen</span><span class="p">(</span>
+  <span class="nx">kind</span>: <span class="kt">InboundImplicitMentionKind</span><span class="p">,</span>
+  <span class="nx">enabled</span>: <span class="kt">boolean</span><span class="p">,</span>
+<span class="p">)</span><span class="o">:</span> <span class="nx">InboundImplicitMentionKind</span><span class="p">[]</span>
+</code></pre></div>
+
+<hr />
+<h2 id="j-agent-2026-04">附录 J. 继承式 Agent 技能白名单（2026-04 后新增）</h2>
+<h3 id="_71">概述</h3>
+<p>新增 per-agent 技能白名单机制，支持从全局默认继承或显式覆盖。</p>
+<h3 id="_72">配置层级</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// agents.defaults.skills - 全局默认技能白名单</span>
+<span class="c1">// agents.list[].skills   - per-agent 技能白名单</span>
+
+<span class="kr">type</span> <span class="nx">AgentConfig</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="c1">// ...</span>
+  <span class="cm">/** Optional allowlist of skills for this agent;</span>
+<span class="cm">   *  omitting it inherits agents.defaults.skills when set,</span>
+<span class="cm">   *  and an explicit list replaces defaults instead of merging. */</span>
+  <span class="nx">skills?</span>: <span class="kt">string</span><span class="p">[];</span>
+<span class="p">};</span>
+
+<span class="kr">type</span> <span class="nx">AgentDefaultsConfig</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="cm">/** Optional default allowlist inherited by agents that omit skills. */</span>
+  <span class="nx">skills?</span>: <span class="kt">string</span><span class="p">[];</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="_73">解析逻辑</h3>
+<p><strong>文件</strong>: <code>src/agents/skills/agent-filter.ts</code> (25 行)</p>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">resolveEffectiveAgentSkillFilter</span><span class="p">(</span>
+  <span class="nx">cfg</span>: <span class="kt">OpenClawConfig</span> <span class="o">|</span> <span class="kc">undefined</span><span class="p">,</span>
+  <span class="nx">agentId</span>: <span class="kt">string</span> <span class="o">|</span> <span class="kc">undefined</span><span class="p">,</span>
+<span class="p">)</span><span class="o">:</span> <span class="kt">string</span><span class="p">[]</span> <span class="o">|</span> <span class="kc">undefined</span> <span class="p">{</span>
+  <span class="c1">// 1. 查找 agent 配置条目</span>
+  <span class="c1">// 2. 如果 agent 条目有 skills 字段（含空数组）-&gt; 使用该值（完全替换）</span>
+  <span class="c1">// 3. 否则 -&gt; 继承 agents.defaults.skills</span>
+  <span class="c1">// 4. 返回 undefined 表示不限制</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p><strong>关键语义</strong>：
+- <code>skills</code> 字段<strong>未设置</strong> -&gt; 继承 <code>agents.defaults.skills</code>
+- <code>skills: []</code>（显式空数组）-&gt; 该 agent 不可使用任何技能
+- <code>skills: ["foo", "bar"]</code> -&gt; 完全替换（不与默认合并）
+- <code>agents.defaults.skills</code> 也未设置 -&gt; 不限制（所有技能可用）</p>
+<hr />
+<h2 id="k-system-prompt-override-heartbeat-2026-04">附录 K. System Prompt Override 与 Heartbeat 控制（2026-04 后新增）</h2>
+<h3 id="system-prompt-override">System Prompt Override</h3>
+<p><strong>文件</strong>: <code>src/agents/system-prompt-override.ts</code> (28 行)</p>
+<p>提供两级系统提示词完全替换机制：</p>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">resolveSystemPromptOverride</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">config?</span>: <span class="kt">OpenClawConfig</span><span class="p">;</span>
+  <span class="nx">agentId?</span>: <span class="kt">string</span><span class="p">;</span>
+<span class="p">})</span><span class="o">:</span> <span class="kt">string</span> <span class="o">|</span> <span class="kc">undefined</span> <span class="p">{</span>
+  <span class="c1">// 优先级：</span>
+  <span class="c1">// 1. agents.list[].systemPromptOverride (per-agent)</span>
+  <span class="c1">// 2. agents.defaults.systemPromptOverride (全局)</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p><strong>用途</strong>：主要用于 prompt 调试和受控实验。当设置后，完全替换默认的 System Prompt 组装流程。</p>
+<h3 id="heartbeat">Heartbeat 控制</h3>
+<p><strong>文件</strong>: <code>src/config/types.agent-defaults.ts</code></p>
+<p>Agent 心跳支持丰富的 per-agent 配置：</p>
+<div class="codehilite"><pre><span></span><code><span class="nx">heartbeat</span><span class="o">?:</span> <span class="p">{</span>
+  <span class="nx">every?</span>: <span class="kt">string</span><span class="p">;</span>              <span class="c1">// 心跳间隔（duration 字符串，默认 30m）</span>
+  <span class="nx">activeHours</span><span class="o">?:</span> <span class="p">{</span>              <span class="c1">// 活跃时间窗口</span>
+    <span class="nx">start?</span>: <span class="kt">string</span><span class="p">;</span>            <span class="c1">// 开始时间（HH:MM 24h，可选）</span>
+    <span class="nx">end?</span>: <span class="kt">string</span><span class="p">;</span>              <span class="c1">// 结束时间（可选）</span>
+    <span class="nx">timezone?</span>: <span class="kt">string</span><span class="p">;</span>         <span class="c1">// 时区（例如 &quot;America/New_York&quot;）</span>
+  <span class="p">};</span>
+  <span class="nx">model?</span>: <span class="kt">string</span><span class="p">;</span>              <span class="c1">// 心跳模型覆盖</span>
+  <span class="nx">session?</span>: <span class="kt">string</span><span class="p">;</span>            <span class="c1">// session key（&quot;main&quot; 或显式 key）</span>
+  <span class="nx">target?</span>: <span class="kt">ChannelId</span><span class="p">;</span>          <span class="c1">// 交付目标（&quot;last&quot;/&quot;none&quot;/channel id）</span>
+  <span class="nx">accountId?</span>: <span class="kt">string</span><span class="p">;</span>          <span class="c1">// 多账号 channel 的 account id</span>
+  <span class="nx">prompt?</span>: <span class="kt">string</span><span class="p">;</span>             <span class="c1">// 自定义心跳提示词</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<hr />
+<h2 id="l-infer-cli-2026-04">附录 L. Infer CLI 推理命令（2026-04 后新增）</h2>
+<h3 id="_74">概述</h3>
+<p><strong>文件</strong>: <code>src/cli/program/subcli-descriptors.ts</code>, <code>src/cli/capability-cli.ts</code></p>
+<p>新增 <code>openclaw infer</code> 子命令（同时保留 <code>capability</code> 作为别名），提供 provider 支持的推理功能的统一入口：</p>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span> <span class="nx">name</span><span class="o">:</span> <span class="s2">&quot;infer&quot;</span><span class="p">,</span> <span class="nx">description</span><span class="o">:</span> <span class="s2">&quot;Run provider-backed inference commands&quot;</span><span class="p">,</span> <span class="nx">hasSubcommands</span>: <span class="kt">true</span> <span class="p">}</span>
+<span class="p">{</span> <span class="nx">name</span><span class="o">:</span> <span class="s2">&quot;capability&quot;</span><span class="p">,</span> <span class="nx">description</span><span class="o">:</span> <span class="s2">&quot;Run provider-backed inference commands (fallback alias: infer)&quot;</span> <span class="p">}</span>
+</code></pre></div>
+
+<h3 id="_75">支持的能力</h3>
+<p><code>capability-cli.ts</code> 注册了以下推理能力：</p>
+<table>
+<thead>
+<tr>
+<th>能力</th>
+<th>传输</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>image generation</td>
+<td>local/gateway</td>
+<td>图片生成</td>
+</tr>
+<tr>
+<td>video generation</td>
+<td>local/gateway</td>
+<td>视频生成（新增）</td>
+</tr>
+<tr>
+<td>speech/TTS</td>
+<td>local</td>
+<td>文本转语音</td>
+</tr>
+<tr>
+<td>web search</td>
+<td>local/gateway</td>
+<td>网络搜索</td>
+</tr>
+<tr>
+<td>web fetch</td>
+<td>local</td>
+<td>网页获取</td>
+</tr>
+<tr>
+<td>media understanding</td>
+<td>local</td>
+<td>媒体理解（图片/视频/音频）</td>
+</tr>
+<tr>
+<td>embedding</td>
+<td>local</td>
+<td>向量嵌入</td>
+</tr>
+</tbody>
+</table>
+<p><strong>设计</strong>：每个能力封装为 <code>CapabilityMetadata</code>（包含 id、描述、传输方式、标志、结果格式），通过 <code>CapabilityEnvelope</code> 统一封装执行结果。</p>
+<hr />
+<h2 id="m-cli-watchdog2026-04">附录 M. CLI 可靠性守卫 (Watchdog)（2026-04 后新增）</h2>
+<h3 id="_76">概述</h3>
+<p><strong>文件</strong>: <code>src/agents/cli-runner/reliability.ts</code> (86 行)</p>
+<p>CLI backend runner 新增 watchdog 机制，在 Agent 长时间无输出时触发系统事件和心跳唤醒。</p>
+<h3 id="_77">配置</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// Fresh session watchdog（新 session）</span>
+<span class="nx">CLI_FRESH_WATCHDOG_DEFAULTS</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">noOutputTimeoutRatio</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="nx">minMs</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="nx">maxMs</span>: <span class="kt">number</span><span class="p">;</span>
+<span class="p">}</span>
+
+<span class="c1">// Resume session watchdog（恢复 session）</span>
+<span class="nx">CLI_RESUME_WATCHDOG_DEFAULTS</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">noOutputTimeoutRatio</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="nx">minMs</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="nx">maxMs</span>: <span class="kt">number</span><span class="p">;</span>
+<span class="p">}</span>
+
+<span class="nx">CLI_WATCHDOG_MIN_TIMEOUT_MS</span>  <span class="c1">// 最低超时值下限</span>
+</code></pre></div>
+
+<h3 id="_78">超时计算</h3>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">resolveCliNoOutputTimeoutMs</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">backend</span>: <span class="kt">CliBackendConfig</span><span class="p">;</span>
+  <span class="nx">timeoutMs</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="nx">useResume</span>: <span class="kt">boolean</span><span class="p">;</span>
+<span class="p">})</span><span class="o">:</span> <span class="kt">number</span> <span class="p">{</span>
+  <span class="c1">// 1. 选择 fresh/resume profile</span>
+  <span class="c1">// 2. 如果有显式 noOutputTimeoutMs -&gt; 使用它（cap 到全局超时 - 1s）</span>
+  <span class="c1">// 3. 否则计算: timeoutMs * noOutputTimeoutRatio</span>
+  <span class="c1">// 4. 边界处理: Math.min(maxMs, Math.max(minMs, computed))</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="key">作用域 Key</h3>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">buildCliSupervisorScopeKey</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">backend</span>: <span class="kt">CliBackendConfig</span><span class="p">;</span>
+  <span class="nx">backendId</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">cliSessionId?</span>: <span class="kt">string</span><span class="p">;</span>
+<span class="p">})</span><span class="o">:</span> <span class="kt">string</span> <span class="o">|</span> <span class="kc">undefined</span>
+<span class="c1">// 格式: &quot;cli:{backendId}:{command}:{sessionId}&quot;</span>
+</code></pre></div>
 </body>
 </html>

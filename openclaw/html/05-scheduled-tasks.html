@@ -26,35 +26,38 @@
 </head>
 <body>
 <nav><a href="00-index.html">← 索引</a></nav>
-<h1 id="openclaw-定时任务系统详细分析">OpenClaw 定时任务系统详细分析</h1>
-<h2 id="目录">目录</h2>
+<h1 id="openclaw">OpenClaw 定时任务系统详细分析</h1>
+<h2 id="_1">目录</h2>
 <ol>
 <li><a href="#1-设计理念从被动应答到主动行动">设计理念：从被动应答到主动行动</a></li>
 <li><a href="#2-四大组件总览">四大组件总览</a></li>
 <li><a href="#3-heartbeat--心跳巡检系统">Heartbeat — 心跳巡检系统</a></li>
 <li><a href="#4-cron--精确定时调度系统">Cron — 精确定时调度系统</a></li>
 <li><a href="#5-hooks--内部事件钩子系统">Hooks — 内部事件钩子系统</a></li>
-<li><a href="#6-webhook--外部-http-触发系统">Webhook — 外部 HTTP 触发系统</a></li>
-<li><a href="#7-调度引擎核心实现">调度引擎核心实现</a></li>
-<li><a href="#8-存储与持久化">存储与持久化</a></li>
-<li><a href="#9-执行引擎与会话管理">执行引擎与会话管理</a></li>
-<li><a href="#10-结果投递系统">结果投递系统</a></li>
-<li><a href="#11-失败处理与重试机制">失败处理与重试机制</a></li>
-<li><a href="#12-防雷群效应stagger-机制">防雷群效应：Stagger 机制</a></li>
-<li><a href="#13-会话生命周期管理">会话生命周期管理</a></li>
-<li><a href="#14-agent-工具接口">Agent 工具接口</a></li>
-<li><a href="#15-输入规范化与数据迁移">输入规范化与数据迁移</a></li>
-<li><a href="#16-启动追赶missed-jobs">启动追赶：Missed Jobs</a></li>
-<li><a href="#17-commandlane-队列隔离">CommandLane 队列隔离</a></li>
-<li><a href="#18-运维工具">运维工具</a></li>
-<li><a href="#19-配置体系">配置体系</a></li>
-<li><a href="#20-业界方案对比">业界方案对比</a></li>
-<li><a href="#21-关键设计决策总结">关键设计决策总结</a></li>
-<li><a href="#22-四组件选型指南">四组件选型指南</a></li>
+<li><a href="#6-plugin-hooks--插件级钩子系统">Plugin Hooks — 插件级钩子系统</a></li>
+<li><a href="#7-webhook--外部-http-触发系统">Webhook — 外部 HTTP 触发系统</a></li>
+<li><a href="#8-调度引擎核心实现">调度引擎核心实现</a></li>
+<li><a href="#9-存储与持久化">存储与持久化</a></li>
+<li><a href="#10-执行引擎与会话管理">执行引擎与会话管理</a></li>
+<li><a href="#11-结果投递系统">结果投递系统</a></li>
+<li><a href="#12-失败处理与重试机制">失败处理与重试机制</a></li>
+<li><a href="#13-防雷群效应stagger-机制">防雷群效应：Stagger 机制</a></li>
+<li><a href="#14-会话生命周期管理">会话生命周期管理</a></li>
+<li><a href="#15-agent-工具接口">Agent 工具接口</a></li>
+<li><a href="#16-输入规范化与数据迁移">输入规范化与数据迁移</a></li>
+<li><a href="#17-启动追赶missed-jobs">启动追赶：Missed Jobs</a></li>
+<li><a href="#18-commandlane-队列隔离">CommandLane 队列隔离</a></li>
+<li><a href="#19-task-系统--任务账本与-taskflow">Task 系统 — 任务账本与 TaskFlow</a></li>
+<li><a href="#20-运维工具">运维工具</a></li>
+<li><a href="#21-配置体系">配置体系</a></li>
+<li><a href="#22-业界方案对比">业界方案对比</a></li>
+<li><a href="#23-关键设计决策总结">关键设计决策总结</a></li>
+<li><a href="#24-四组件选型指南">四组件选型指南</a></li>
+<li><a href="#25-测试架构seam-based-testing">测试架构：Seam-based Testing</a></li>
 <li><a href="#附录-a-关键文件索引">附录 A. 关键文件索引</a></li>
 </ol>
 <hr />
-<h2 id="1-设计理念从被动应答到主动行动">1. 设计理念：从被动应答到主动行动</h2>
+<h2 id="1">1. 设计理念：从被动应答到主动行动</h2>
 <p>传统 AI 助手的交互模式是严格的请求-响应循环：人类发消息 → AI 处理 → 人类再发 → AI 再处理。AI 永远不会主动开口，也不会在用户沉默时自发执行任何动作。</p>
 <p>OpenClaw 的定时系统从根本上改变了这个范式，让 AI 从"被动应答者"转变为"主动行动者"。其核心设计思路是：</p>
 <ul>
@@ -63,7 +66,7 @@
 <li><strong>自检巡逻</strong>：AI 应该能定期自动巡检，发现问题主动上报</li>
 <li><strong>成本可控</strong>：主动行为不应导致 API 费用失控</li>
 </ul>
-<h2 id="2-四大组件总览">2. 四大组件总览</h2>
+<h2 id="2">2. 四大组件总览</h2>
 <p>OpenClaw 通过四个组件从不同维度解决"AI 主动性"问题：</p>
 <table>
 <thead>
@@ -102,7 +105,7 @@
 </tbody>
 </table>
 <p>四个组件可独立使用，也可组合。按触发源从内到外：</p>
-<pre><code>由内向外：
+<div class="codehilite"><pre><span></span><code>由内向外：
 
   Heartbeat（自检）→ &quot;我定期看看有没有事&quot;
       ↓
@@ -111,83 +114,111 @@
   Hooks（内部事件）→ &quot;系统里有事发生了&quot;
       ↓
   Webhook（外部事件）→ &quot;外面有人叫我了&quot;
-</code></pre>
+</code></pre></div>
+
 <hr />
-<h2 id="3-heartbeat-心跳巡检系统">3. Heartbeat — 心跳巡检系统</h2>
-<h3 id="31-概述">3.1 概述</h3>
+<h2 id="3-heartbeat">3. Heartbeat — 心跳巡检系统</h2>
+<h3 id="31">3.1 概述</h3>
 <p>Heartbeat 是最直觉的组件：每隔 N 分钟，AI 自动醒来查看一遍。有事就处理，没事就回复 <code>HEARTBEAT_OK</code> 然后继续休眠——类似保安巡逻制度。</p>
-<h3 id="32-核心架构">3.2 核心架构</h3>
-<pre><code>┌──────────────────────────────────────────────────────────────────┐
-│  HeartbeatRunner                                                 │
-│  src/infra/heartbeat-runner.ts                                   │
+<h3 id="32">3.2 核心架构</h3>
+<div class="codehilite"><pre><span></span><code>┌──────────────────────────────────────────────────────────────────┐
+│  <span class="nv">HeartbeatRunner</span>                                                 │
+│  <span class="nv">src</span><span class="o">/</span><span class="nv">infra</span><span class="o">/</span><span class="nv">heartbeat</span><span class="o">-</span><span class="nv">runner</span>.<span class="nv">ts</span>                                   │
 │                                                                  │
 │  ┌──────────────┐    ┌──────────────────┐    ┌───────────────┐  │
-│  │  Config      │───▶│  HeartbeatWake   │───▶│  Agent Run    │  │
-│  │  (interval,  │    │  heartbeat-      │    │  (read        │  │
-│  │   session,   │    │  wake.ts         │    │   HEARTBEAT   │  │
-│  │   target)    │    │                  │    │   .md, exec   │  │
-│  └──────────────┘    │  - coalesce      │    │   checks)     │  │
-│                      │  - priority      │    └──────┬────────┘  │
-│  ┌──────────────┐    │  - retry logic   │           │           │
-│  │  ActiveHours │    └──────────────────┘           ▼           │
-│  │  heartbeat-  │                          ┌───────────────┐    │
-│  │  active-     │                          │  Delivery     │    │
-│  │  hours.ts    │                          │  (announce/   │    │
-│  └──────────────┘                          │   webhook)    │    │
-│                                            └───────────────┘    │
+│  │  <span class="nv">Config</span>      │───▶│  <span class="nv">HeartbeatWake</span>   │───▶│  <span class="nv">Agent</span> <span class="nv">Run</span>    │  │
+│  │  <span class="ss">(</span><span class="nv">interval</span>,  │    │  <span class="nv">heartbeat</span><span class="o">-</span>      │    │  <span class="ss">(</span><span class="nv">read</span>        │  │
+│  │   <span class="nv">session</span>,   │    │  <span class="nv">wake</span>.<span class="nv">ts</span>         │    │   <span class="nv">HEARTBEAT</span>   │  │
+│  │   <span class="nv">target</span>,    │    │                  │    │   .<span class="nv">md</span>, <span class="k">exec</span>   │  │
+│  │   <span class="nv">prompt</span><span class="ss">)</span>    │    │  <span class="o">-</span> <span class="nv">coalesce</span>      │    │   <span class="nv">checks</span><span class="ss">)</span>     │  │
+│  └──────────────┘    │  <span class="o">-</span> <span class="nv">priority</span>      │    └──────┬────────┘  │
+│                      │  <span class="o">-</span> <span class="nv">retry</span> <span class="nv">logic</span>   │           │           │
+│  ┌──────────────┐    └──────────────────┘           ▼           │
+│  │  <span class="nv">ActiveHours</span> │                          ┌───────────────┐    │
+│  │  <span class="nv">heartbeat</span><span class="o">-</span>  │                          │  <span class="nv">Delivery</span>     │    │
+│  │  <span class="nv">active</span><span class="o">-</span>     │                          │  <span class="ss">(</span><span class="nv">announce</span><span class="o">/</span>   │    │
+│  │  <span class="nv">hours</span>.<span class="nv">ts</span>    │                          │   <span class="nv">webhook</span><span class="ss">)</span>    │    │
+│  └──────────────┘                          └───────────────┘    │
 └──────────────────────────────────────────────────────────────────┘
-</code></pre>
-<h3 id="33-配置方式">3.3 配置方式</h3>
+</code></pre></div>
+
+<h3 id="33">3.3 配置方式</h3>
 <p>在 <code>openclaw.json</code> 中配置心跳间隔：</p>
-<pre><code class="language-jsonc">{
-  &quot;agents&quot;: {
-    &quot;defaults&quot;: {
-      &quot;heartbeat&quot;: {
-        &quot;every&quot;: &quot;30m&quot;,           // 间隔（支持 &quot;15m&quot;, &quot;1h&quot;, &quot;2h&quot; 等 duration 字符串）
-        &quot;session&quot;: &quot;main&quot;,        // 使用的会话（main / global / 自定义）
-        &quot;target&quot;: &quot;last&quot;,         // 回复目标
-        &quot;ackMaxChars&quot;: 500,       // HEARTBEAT_OK 时最大字符数
-        &quot;activeHours&quot;: {          // 活跃时段控制
-          &quot;start&quot;: &quot;09:00&quot;,
-          &quot;end&quot;: &quot;18:00&quot;,
-          &quot;timezone&quot;: &quot;user&quot;      // &quot;user&quot; / &quot;local&quot; / IANA 时区名
+<div class="codehilite"><pre><span></span><code>{
+  <span class="s2">&quot;</span><span class="s">agents</span><span class="s2">&quot;</span>: {
+    <span class="s2">&quot;</span><span class="s">defaults</span><span class="s2">&quot;</span>: {
+      <span class="s2">&quot;</span><span class="s">heartbeat</span><span class="s2">&quot;</span>: {
+        <span class="s2">&quot;</span><span class="s">every</span><span class="s2">&quot;</span>: <span class="s2">&quot;</span><span class="s">30m</span><span class="s2">&quot;</span>,           <span class="o">//</span> 间隔（支持 <span class="s2">&quot;</span><span class="s">15m</span><span class="s2">&quot;</span>, <span class="s2">&quot;</span><span class="s">1h</span><span class="s2">&quot;</span>, <span class="s2">&quot;</span><span class="s">2h</span><span class="s2">&quot;</span> 等 <span class="nv">duration</span> 字符串）
+        <span class="s2">&quot;</span><span class="s">session</span><span class="s2">&quot;</span>: <span class="s2">&quot;</span><span class="s">main</span><span class="s2">&quot;</span>,        <span class="o">//</span> 使用的会话（<span class="nv">main</span> <span class="o">/</span> <span class="nv">global</span> <span class="o">/</span> 自定义）
+        <span class="s2">&quot;</span><span class="s">target</span><span class="s2">&quot;</span>: <span class="s2">&quot;</span><span class="s">last</span><span class="s2">&quot;</span>,         <span class="o">//</span> 回复目标
+        <span class="s2">&quot;</span><span class="s">prompt</span><span class="s2">&quot;</span>: <span class="s2">&quot;</span><span class="s">Custom heartbeat instructions here</span><span class="s2">&quot;</span>,  <span class="o">//</span> 自定义心跳提示（可选）
+        <span class="s2">&quot;</span><span class="s">model</span><span class="s2">&quot;</span>: <span class="s2">&quot;</span><span class="s">anthropic/claude-sonnet-4-6</span><span class="s2">&quot;</span>,          <span class="o">//</span> 心跳模型覆盖（可选）
+        <span class="s2">&quot;</span><span class="s">ackMaxChars</span><span class="s2">&quot;</span>: <span class="mi">500</span>,       <span class="o">//</span> <span class="nv">HEARTBEAT_OK</span> 时最大字符数
+        <span class="s2">&quot;</span><span class="s">activeHours</span><span class="s2">&quot;</span>: {          <span class="o">//</span> 活跃时段控制
+          <span class="s2">&quot;</span><span class="s">start</span><span class="s2">&quot;</span>: <span class="s2">&quot;</span><span class="s">09:00</span><span class="s2">&quot;</span>,
+          <span class="s2">&quot;</span><span class="s">end</span><span class="s2">&quot;</span>: <span class="s2">&quot;</span><span class="s">18:00</span><span class="s2">&quot;</span>,
+          <span class="s2">&quot;</span><span class="s">timezone</span><span class="s2">&quot;</span>: <span class="s2">&quot;</span><span class="s">user</span><span class="s2">&quot;</span>      <span class="o">//</span> <span class="s2">&quot;</span><span class="s">user</span><span class="s2">&quot;</span> <span class="o">/</span> <span class="s2">&quot;</span><span class="s">local</span><span class="s2">&quot;</span> <span class="o">/</span> <span class="nv">IANA</span> 时区名
         }
       }
     }
   }
 }
-</code></pre>
-<p>关键源码：<code>src/infra/heartbeat-summary.ts:43-70</code> — 间隔解析逻辑。</p>
-<h3 id="34-巡检内容heartbeatmd">3.4 巡检内容：HEARTBEAT.md</h3>
-<p>AI 每次心跳醒来后，会读取 Agent 工作空间根目录下的 <code>HEARTBEAT.md</code> 文件。文件内容就是巡检清单：</p>
-<pre><code class="language-markdown">## 检查清单
+</code></pre></div>
 
-- 检查 /logs/error.log 最近是否有新的错误日志
-- 如果有超过 3 条 CRITICAL 级别的错误，立即通知我
-- 检查 API 服务是否正常响应（curl 健康检查接口）
-- 其他一切正常就回复 HEARTBEAT_OK
-</code></pre>
+<p>关键源码：<code>src/infra/heartbeat-summary.ts:43-70</code> — 间隔解析逻辑。</p>
+<h3 id="34-prompt-override">3.4 Prompt Override — 心跳提示覆盖（新增）</h3>
+<p>心跳系统支持通过 <code>prompt</code> 字段自定义心跳行为提示，覆盖默认的 HEARTBEAT.md 读取行为。提示解析优先级：</p>
+<ol>
+<li>Per-Agent <code>heartbeat.prompt</code> → 最高优先级</li>
+<li><code>agents.defaults.heartbeat.prompt</code> → Agent 级默认</li>
+<li>HEARTBEAT.md 文件内容 → 最终回退</li>
+</ol>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/infra/heartbeat-runner.ts:169-170</span>
+<span class="k">export</span> <span class="kd">function</span> <span class="nx">resolveHeartbeatPrompt</span><span class="p">(</span><span class="nx">cfg</span>: <span class="kt">OpenClawConfig</span><span class="p">,</span> <span class="nx">heartbeat?</span>: <span class="kt">HeartbeatConfig</span><span class="p">)</span> <span class="p">{</span>
+  <span class="k">return</span> <span class="nx">resolveHeartbeatPromptText</span><span class="p">(</span><span class="nx">heartbeat</span><span class="o">?</span><span class="p">.</span><span class="nx">prompt</span> <span class="o">??</span> <span class="nx">cfg</span><span class="p">.</span><span class="nx">agents</span><span class="o">?</span><span class="p">.</span><span class="nx">defaults</span><span class="o">?</span><span class="p">.</span><span class="nx">heartbeat</span><span class="o">?</span><span class="p">.</span><span class="nx">prompt</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>自定义 prompt 会自动检测是否包含 <code>HEARTBEAT.md</code> 路径提示。如果 prompt 中提到了 <code>heartbeat.md</code>（不区分大小写），系统会自动注入工作空间 HEARTBEAT.md 路径指引；如果没有提到，则原样返回 prompt：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/infra/heartbeat-runner.ts:504</span>
+<span class="k">if</span> <span class="p">(</span><span class="sr">/heartbeat\.md/i</span><span class="p">.</span><span class="nx">test</span><span class="p">(</span><span class="nx">prompt</span><span class="p">))</span> <span class="p">{</span>
+  <span class="c1">// 添加 HEARTBEAT.md 路径指引</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>心跳配置摘要（<code>src/infra/heartbeat-summary.ts</code>）在构造 status 输出时完整展示：prompt、target、model、every、ackMaxChars。这使得 <code>openclaw status</code> 命令能精确呈现每个 Agent 的心跳策略。</p>
+<h3 id="35-heartbeatmd">3.5 巡检内容：HEARTBEAT.md</h3>
+<p>AI 每次心跳醒来后，会读取 Agent 工作空间根目录下的 <code>HEARTBEAT.md</code> 文件。文件内容就是巡检清单：</p>
+<div class="codehilite"><pre><span></span><code><span class="gu">## 检查清单</span>
+
+<span class="k">-</span> 检查 /logs/error.log 最近是否有新的错误日志
+<span class="k">-</span> 如果有超过 3 条 CRITICAL 级别的错误，立即通知我
+<span class="k">-</span> 检查 API 服务是否正常响应（curl 健康检查接口）
+<span class="k">-</span> 其他一切正常就回复 HEARTBEAT_OK
+</code></pre></div>
+
 <p><strong>省钱机制</strong>：
 - 空 HEARTBEAT.md（仅标题或空文件）时心跳直接跳过，不产生 API 调用
 - 无异常时 AI 仅回复 <code>HEARTBEAT_OK</code>，Token 消耗极低
 - <code>activeHours</code> 可限制心跳仅在工作时间执行</p>
 <p>源码验证：<code>src/infra/heartbeat-runner.ts</code> 中导入了 <code>isHeartbeatContentEffectivelyEmpty</code> 函数进行空内容检测。</p>
-<h3 id="35-活跃时段控制">3.5 活跃时段控制</h3>
+<h3 id="36">3.6 活跃时段控制</h3>
 <p><code>src/infra/heartbeat-active-hours.ts</code> 实现了精确的时段过滤：</p>
-<pre><code class="language-typescript">// heartbeat-active-hours.ts:70-99
-export function isWithinActiveHours(
-  cfg: OpenClawConfig,
-  heartbeat?: HeartbeatConfig,
-  nowMs?: number,
-): boolean {
-  const active = heartbeat?.activeHours;
-  if (!active) { return true; }          // 未配置 → 全天活跃
-  // 解析起止时间为分钟数 → 获取当前时区分钟数 → 范围判断
-  // 支持跨午夜（start &gt; end 时取补集）
-}
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="c1">// heartbeat-active-hours.ts:70-99</span>
+<span class="k">export</span> <span class="kd">function</span> <span class="nx">isWithinActiveHours</span><span class="p">(</span>
+  <span class="nx">cfg</span>: <span class="kt">OpenClawConfig</span><span class="p">,</span>
+  <span class="nx">heartbeat?</span>: <span class="kt">HeartbeatConfig</span><span class="p">,</span>
+  <span class="nx">nowMs?</span>: <span class="kt">number</span><span class="p">,</span>
+<span class="p">)</span><span class="o">:</span> <span class="kt">boolean</span> <span class="p">{</span>
+  <span class="kd">const</span> <span class="nx">active</span> <span class="o">=</span> <span class="nx">heartbeat</span><span class="o">?</span><span class="p">.</span><span class="nx">activeHours</span><span class="p">;</span>
+  <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="nx">active</span><span class="p">)</span> <span class="p">{</span> <span class="k">return</span> <span class="kc">true</span><span class="p">;</span> <span class="p">}</span>          <span class="c1">// 未配置 → 全天活跃</span>
+  <span class="c1">// 解析起止时间为分钟数 → 获取当前时区分钟数 → 范围判断</span>
+  <span class="c1">// 支持跨午夜（start &gt; end 时取补集）</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p>时区解析支持三种模式：<code>"user"</code>（用户配置时区）、<code>"local"</code>（主机本地时区）、或 IANA 时区名。</p>
-<h3 id="36-wake-机制">3.6 Wake 机制</h3>
+<h3 id="37-wake">3.7 Wake 机制</h3>
 <p>心跳的唤醒由 <code>src/infra/heartbeat-wake.ts</code> 管理，这是一个精密的异步调度器：</p>
 <ul>
 <li><strong>Coalesce 窗口</strong>：默认 250ms，合并短时间内的多个唤醒请求</li>
@@ -196,53 +227,57 @@ export function isWithinActiveHours(
 <li><strong>并发保护</strong>：<code>running</code> 标志确保同一时刻只有一个心跳在执行</li>
 <li><strong>请求繁忙重试</strong>：当主队列繁忙（<code>requests-in-flight</code>）时，1 秒后自动重试</li>
 </ul>
-<pre><code class="language-typescript">// src/infra/heartbeat-wake.ts:46-53
-const DEFAULT_COALESCE_MS = 250;
-const DEFAULT_RETRY_MS = 1_000;
-const REASON_PRIORITY = {
-  RETRY: 0,     // 最高优先级
-  INTERVAL: 1,
-  DEFAULT: 2,
-  ACTION: 3,    // 最低优先级
-} as const;
-</code></pre>
-<h3 id="37-多-agent-心跳">3.7 多 Agent 心跳</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/infra/heartbeat-wake.ts:46-53</span>
+<span class="kd">const</span> <span class="nx">DEFAULT_COALESCE_MS</span> <span class="o">=</span> <span class="mf">250</span><span class="p">;</span>
+<span class="kd">const</span> <span class="nx">DEFAULT_RETRY_MS</span> <span class="o">=</span> <span class="mf">1</span><span class="nx">_000</span><span class="p">;</span>
+<span class="kd">const</span> <span class="nx">REASON_PRIORITY</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">RETRY</span>: <span class="kt">0</span><span class="p">,</span>     <span class="c1">// 最高优先级</span>
+  <span class="nx">INTERVAL</span>: <span class="kt">1</span><span class="p">,</span>
+  <span class="nx">DEFAULT</span>: <span class="kt">2</span><span class="p">,</span>
+  <span class="nx">ACTION</span>: <span class="kt">3</span><span class="p">,</span>    <span class="c1">// 最低优先级</span>
+<span class="p">}</span> <span class="kr">as</span> <span class="kd">const</span><span class="p">;</span>
+</code></pre></div>
+
+<h3 id="38-agent">3.8 多 Agent 心跳</h3>
 <p>支持为不同 Agent 配置独立的心跳策略。当 <code>agents.list</code> 中某个 Agent 配置了 <code>heartbeat</code> 字段，该 Agent 就拥有独立的心跳生命周期：</p>
-<pre><code class="language-typescript">// src/infra/heartbeat-runner.ts:143-156 — resolveHeartbeatAgents
-function resolveHeartbeatAgents(cfg: OpenClawConfig): HeartbeatAgent[] {
-  const list = cfg.agents?.list ?? [];
-  if (hasExplicitHeartbeatAgents(cfg)) {
-    return list
-      .filter((entry) =&gt; entry?.heartbeat)
-      .map((entry) =&gt; {
-        const id = normalizeAgentId(entry.id);
-        return { agentId: id, heartbeat: resolveHeartbeatConfig(cfg, id) };
-      })
-      .filter((entry) =&gt; entry.agentId);
-  }
-  const fallbackId = resolveDefaultAgentId(cfg);
-  return [{ agentId: fallbackId, heartbeat: resolveHeartbeatConfig(cfg, fallbackId) }];
-}
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/infra/heartbeat-runner.ts:143-156 — resolveHeartbeatAgents</span>
+<span class="kd">function</span> <span class="nx">resolveHeartbeatAgents</span><span class="p">(</span><span class="nx">cfg</span>: <span class="kt">OpenClawConfig</span><span class="p">)</span><span class="o">:</span> <span class="nx">HeartbeatAgent</span><span class="p">[]</span> <span class="p">{</span>
+  <span class="kd">const</span> <span class="nx">list</span> <span class="o">=</span> <span class="nx">cfg</span><span class="p">.</span><span class="nx">agents</span><span class="o">?</span><span class="p">.</span><span class="nx">list</span> <span class="o">??</span> <span class="p">[];</span>
+  <span class="k">if</span> <span class="p">(</span><span class="nx">hasExplicitHeartbeatAgents</span><span class="p">(</span><span class="nx">cfg</span><span class="p">))</span> <span class="p">{</span>
+    <span class="k">return</span> <span class="nx">list</span>
+      <span class="p">.</span><span class="nx">filter</span><span class="p">((</span><span class="nx">entry</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="nx">entry</span><span class="o">?</span><span class="p">.</span><span class="nx">heartbeat</span><span class="p">)</span>
+      <span class="p">.</span><span class="nx">map</span><span class="p">((</span><span class="nx">entry</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="p">{</span>
+        <span class="kd">const</span> <span class="nx">id</span> <span class="o">=</span> <span class="nx">normalizeAgentId</span><span class="p">(</span><span class="nx">entry</span><span class="p">.</span><span class="nx">id</span><span class="p">);</span>
+        <span class="k">return</span> <span class="p">{</span> <span class="nx">agentId</span>: <span class="kt">id</span><span class="p">,</span> <span class="nx">heartbeat</span>: <span class="kt">resolveHeartbeatConfig</span><span class="p">(</span><span class="nx">cfg</span><span class="p">,</span> <span class="nx">id</span><span class="p">)</span> <span class="p">};</span>
+      <span class="p">})</span>
+      <span class="p">.</span><span class="nx">filter</span><span class="p">((</span><span class="nx">entry</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="nx">entry</span><span class="p">.</span><span class="nx">agentId</span><span class="p">);</span>
+  <span class="p">}</span>
+  <span class="kd">const</span> <span class="nx">fallbackId</span> <span class="o">=</span> <span class="nx">resolveDefaultAgentId</span><span class="p">(</span><span class="nx">cfg</span><span class="p">);</span>
+  <span class="k">return</span> <span class="p">[{</span> <span class="nx">agentId</span>: <span class="kt">fallbackId</span><span class="p">,</span> <span class="nx">heartbeat</span>: <span class="kt">resolveHeartbeatConfig</span><span class="p">(</span><span class="nx">cfg</span><span class="p">,</span> <span class="nx">fallbackId</span><span class="p">)</span> <span class="p">}];</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <hr />
-<h2 id="4-cron-精确定时调度系统">4. Cron — 精确定时调度系统</h2>
-<h3 id="41-概述">4.1 概述</h3>
+<h2 id="4-cron">4. Cron — 精确定时调度系统</h2>
+<h3 id="41">4.1 概述</h3>
 <p>如果 Heartbeat 是"保安巡逻"，Cron 就是"日程表"。Cron 支持精确到秒的调度，可以在确定的时间点执行确定的任务。</p>
-<h3 id="42-三种调度模式">4.2 三种调度模式</h3>
+<h3 id="42">4.2 三种调度模式</h3>
 <p>源码定义在 <code>src/cron/types.ts:6-15</code>：</p>
-<pre><code class="language-typescript">export type CronSchedule =
-  | { kind: &quot;at&quot;; at: string }                    // 一次性：绝对时间
-  | { kind: &quot;every&quot;; everyMs: number; anchorMs?: number }  // 周期性：固定间隔
-  | {
-      kind: &quot;cron&quot;;
-      expr: string;                               // 标准 cron 表达式
-      tz?: string;                                // IANA 时区
-      staggerMs?: number;                         // 错峰窗口
-    };
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kr">type</span> <span class="nx">CronSchedule</span> <span class="o">=</span>
+  <span class="o">|</span> <span class="p">{</span> <span class="nx">kind</span><span class="o">:</span> <span class="s2">&quot;at&quot;</span><span class="p">;</span> <span class="nx">at</span>: <span class="kt">string</span> <span class="p">}</span>                    <span class="c1">// 一次性：绝对时间</span>
+  <span class="o">|</span> <span class="p">{</span> <span class="nx">kind</span><span class="o">:</span> <span class="s2">&quot;every&quot;</span><span class="p">;</span> <span class="nx">everyMs</span>: <span class="kt">number</span><span class="p">;</span> <span class="nx">anchorMs?</span>: <span class="kt">number</span> <span class="p">}</span>  <span class="c1">// 周期性：固定间隔</span>
+  <span class="o">|</span> <span class="p">{</span>
+      <span class="nx">kind</span><span class="o">:</span> <span class="s2">&quot;cron&quot;</span><span class="p">;</span>
+      <span class="nx">expr</span>: <span class="kt">string</span><span class="p">;</span>                               <span class="c1">// 标准 cron 表达式</span>
+      <span class="nx">tz?</span>: <span class="kt">string</span><span class="p">;</span>                                <span class="c1">// IANA 时区</span>
+      <span class="nx">staggerMs?</span>: <span class="kt">number</span><span class="p">;</span>                         <span class="c1">// 错峰窗口</span>
+    <span class="p">};</span>
+</code></pre></div>
+
 <p><strong>模式一：<code>at</code> — 一次性任务</strong></p>
-<pre><code>/cron at 2026-03-20T09:00:00 &quot;生成今天的晨间简报&quot;
-</code></pre>
+<div class="codehilite"><pre><span></span><code>/cron at 2026-03-20T09:00:00 &quot;生成今天的晨间简报&quot;
+</code></pre></div>
+
 <p>到达指定时间执行一次即结束。自动设置 <code>deleteAfterRun: true</code>，执行后自动从 Store 中删除。</p>
 <p>时间戳验证规则（<code>src/cron/validate-timestamp.ts</code>）：
 - 拒绝超过 1 分钟前的过去时间
@@ -253,28 +288,32 @@ function resolveHeartbeatAgents(cfg: OpenClawConfig): HeartbeatAgent[] {
 - 支持 ISO-8601 日期时间
 - 无时区时默认 UTC</p>
 <p><strong>模式二：<code>every</code> — 固定间隔</strong></p>
-<pre><code>/cron every 2h &quot;检查邮箱有没有需要紧急处理的邮件&quot;
-</code></pre>
+<div class="codehilite"><pre><span></span><code>/cron every 2h &quot;检查邮箱有没有需要紧急处理的邮件&quot;
+</code></pre></div>
+
 <p>每 2 小时重复执行。比 Heartbeat 灵活——可以指定具体任务内容，不受 HEARTBEAT.md 约束。</p>
 <p><code>every</code> 模式支持锚点（<code>anchorMs</code>），用于对齐到特定起始时间。调度算法：</p>
-<pre><code class="language-typescript">// src/cron/schedule.ts:84-98
-if (schedule.kind === &quot;every&quot;) {
-  const everyMs = Math.max(1, Math.floor(everyMsRaw));
-  const anchor = Math.max(0, Math.floor(anchorRaw ?? nowMs));
-  if (nowMs &lt; anchor) { return anchor; }
-  const elapsed = nowMs - anchor;
-  const steps = Math.max(1, Math.floor((elapsed + everyMs - 1) / everyMs));
-  return anchor + steps * everyMs;
-}
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/cron/schedule.ts:84-98</span>
+<span class="k">if</span> <span class="p">(</span><span class="nx">schedule</span><span class="p">.</span><span class="nx">kind</span> <span class="o">===</span> <span class="s2">&quot;every&quot;</span><span class="p">)</span> <span class="p">{</span>
+  <span class="kd">const</span> <span class="nx">everyMs</span> <span class="o">=</span> <span class="nb">Math</span><span class="p">.</span><span class="nx">max</span><span class="p">(</span><span class="mf">1</span><span class="p">,</span> <span class="nb">Math</span><span class="p">.</span><span class="nx">floor</span><span class="p">(</span><span class="nx">everyMsRaw</span><span class="p">));</span>
+  <span class="kd">const</span> <span class="nx">anchor</span> <span class="o">=</span> <span class="nb">Math</span><span class="p">.</span><span class="nx">max</span><span class="p">(</span><span class="mf">0</span><span class="p">,</span> <span class="nb">Math</span><span class="p">.</span><span class="nx">floor</span><span class="p">(</span><span class="nx">anchorRaw</span> <span class="o">??</span> <span class="nx">nowMs</span><span class="p">));</span>
+  <span class="k">if</span> <span class="p">(</span><span class="nx">nowMs</span> <span class="o">&lt;</span> <span class="nx">anchor</span><span class="p">)</span> <span class="p">{</span> <span class="k">return</span> <span class="nx">anchor</span><span class="p">;</span> <span class="p">}</span>
+  <span class="kd">const</span> <span class="nx">elapsed</span> <span class="o">=</span> <span class="nx">nowMs</span> <span class="o">-</span> <span class="nx">anchor</span><span class="p">;</span>
+  <span class="kd">const</span> <span class="nx">steps</span> <span class="o">=</span> <span class="nb">Math</span><span class="p">.</span><span class="nx">max</span><span class="p">(</span><span class="mf">1</span><span class="p">,</span> <span class="nb">Math</span><span class="p">.</span><span class="nx">floor</span><span class="p">((</span><span class="nx">elapsed</span> <span class="o">+</span> <span class="nx">everyMs</span> <span class="o">-</span> <span class="mf">1</span><span class="p">)</span> <span class="o">/</span> <span class="nx">everyMs</span><span class="p">));</span>
+  <span class="k">return</span> <span class="nx">anchor</span> <span class="o">+</span> <span class="nx">steps</span> <span class="o">*</span> <span class="nx">everyMs</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p><strong>模式三：<code>cron</code> — Cron 表达式</strong></p>
-<pre><code>/cron &quot;0 9 * * 1-5&quot; &quot;每个工作日早上 9 点生成日报&quot;
-</code></pre>
+<div class="codehilite"><pre><span></span><code>/cron &quot;0 9 * * 1-5&quot; &quot;每个工作日早上 9 点生成日报&quot;
+</code></pre></div>
+
 <p>支持标准 5 字段和 6 字段（含秒）cron 语法。底层使用 <strong>croner</strong> 库（<code>^10.0.1</code>）解析，零依赖，在 DST 转换和闰年场景下表现最优。</p>
-<h3 id="43-两种执行模式">4.3 两种执行模式</h3>
+<h3 id="43">4.3 两种执行模式</h3>
 <p>每个 Cron 任务可选择会话目标（<code>src/cron/types.ts:17</code>）：</p>
-<pre><code class="language-typescript">export type CronSessionTarget = &quot;main&quot; | &quot;isolated&quot; | &quot;current&quot; | `session:${string}`;
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kr">type</span> <span class="nx">CronSessionTarget</span> <span class="o">=</span> <span class="s2">&quot;main&quot;</span> <span class="o">|</span> <span class="s2">&quot;isolated&quot;</span> <span class="o">|</span> <span class="s2">&quot;current&quot;</span> <span class="o">|</span> <span class="sb">`session:</span><span class="si">${</span><span class="kt">string</span><span class="si">}</span><span class="sb">`</span><span class="p">;</span>
+</code></pre></div>
+
 <table>
 <thead>
 <tr>
@@ -307,65 +346,113 @@ if (schedule.kind === &quot;every&quot;) {
 </tbody>
 </table>
 <p>注意：<code>current</code> 在规范化阶段（<code>src/cron/normalize.ts</code>）被解析为 <code>session:&lt;实际会话key&gt;</code>。</p>
-<h3 id="44-两种-payload-类型">4.4 两种 Payload 类型</h3>
-<pre><code class="language-typescript">// src/cron/types.ts:82
-export type CronPayload =
-  | { kind: &quot;systemEvent&quot;; text: string }   // 注入系统消息到主会话
-  | CronAgentTurnPayload;                   // 隔离会话中执行 Agent 对话
-</code></pre>
+<h3 id="44-payload">4.4 两种 Payload 类型</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/cron/types.ts:82</span>
+<span class="k">export</span> <span class="kr">type</span> <span class="nx">CronPayload</span> <span class="o">=</span>
+  <span class="o">|</span> <span class="p">{</span> <span class="nx">kind</span><span class="o">:</span> <span class="s2">&quot;systemEvent&quot;</span><span class="p">;</span> <span class="nx">text</span>: <span class="kt">string</span> <span class="p">}</span>   <span class="c1">// 注入系统消息到主会话</span>
+  <span class="o">|</span> <span class="nx">CronAgentTurnPayload</span><span class="p">;</span>                   <span class="c1">// 隔离会话中执行 Agent 对话</span>
+</code></pre></div>
+
 <p><strong>systemEvent</strong>：将文本注入主会话作为系统消息，然后触发心跳处理。
 <strong>agentTurn</strong>：在隔离会话中完整运行一轮 Agent 对话，支持独立模型选择、超时控制、Fallback 配置。</p>
-<pre><code class="language-typescript">// src/cron/types.ts:86-103 — agentTurn 的完整字段
-type CronAgentTurnPayloadFields = {
-  message: string;                        // Agent 接收的提示消息
-  model?: string;                         // 模型覆盖
-  fallbacks?: string[];                   // 自定义 Fallback 模型列表
-  thinking?: string;                      // 思考模式
-  timeoutSeconds?: number;                // 超时秒数
-  allowUnsafeExternalContent?: boolean;   // 是否允许外部内容
-  externalContentSource?: HookExternalContentSource;
-  lightContext?: boolean;                 // 轻量上下文模式（减少 bootstrap 注入）
-  deliver?: boolean;                      // 是否投递结果
-  channel?: CronMessageChannel;           // 投递渠道
-  to?: string;                            // 投递目标
-  bestEffortDeliver?: boolean;            // 最佳努力投递
-};
-</code></pre>
-<h3 id="45-执行链路">4.5 执行链路</h3>
-<pre><code>CronStore (jobs.json)
-    ↓ loadCronStore()
-CronService.start()
-    ↓
-Timer tick (≤60s)         ← MAX_TIMER_DELAY_MS = 60_000
-    ↓
-locked() → ensureLoaded() → jobs.forEach(job =&gt; {
-    computeStaggeredCronNextRunAtMs(job, nowMs)
-    if (nextRunAtMs &lt;= nowMs) → executeJobCoreWithTimeout()
-})
-    ↓
-executeJobCore(job)
-    ├─ main 模式 → enqueueSystemEvent() → requestHeartbeatNow()
-    └─ isolated 模式 → runIsolatedAgentJob()
-        ↓
-    结果 → 写入 RunLog (JSONL)
-         → 投递 (announce / webhook / none)
-         → 更新 job.state
-         → persist()
-    ↓
-armTimer() → 下一次 tick
-    ↓
-sweepCronRunSessions() → 清理过期临时会话
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/cron/types.ts:88-103 — agentTurn 的完整字段</span>
+<span class="kr">type</span> <span class="nx">CronAgentTurnPayloadFields</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">message</span>: <span class="kt">string</span><span class="p">;</span>                        <span class="c1">// Agent 接收的提示消息</span>
+  <span class="nx">model?</span>: <span class="kt">string</span><span class="p">;</span>                         <span class="c1">// 模型覆盖</span>
+  <span class="nx">fallbacks?</span>: <span class="kt">string</span><span class="p">[];</span>                   <span class="c1">// 自定义 Fallback 模型列表</span>
+  <span class="nx">thinking?</span>: <span class="kt">string</span><span class="p">;</span>                      <span class="c1">// 思考模式</span>
+  <span class="nx">timeoutSeconds?</span>: <span class="kt">number</span><span class="p">;</span>                <span class="c1">// 超时秒数</span>
+  <span class="nx">allowUnsafeExternalContent?</span>: <span class="kt">boolean</span><span class="p">;</span>   <span class="c1">// 是否允许外部内容</span>
+  <span class="nx">externalContentSource?</span>: <span class="kt">HookExternalContentSource</span><span class="p">;</span>
+  <span class="nx">lightContext?</span>: <span class="kt">boolean</span><span class="p">;</span>                 <span class="c1">// 轻量上下文模式（减少 bootstrap 注入）</span>
+  <span class="nx">toolsAllow?</span>: <span class="kt">string</span><span class="p">[];</span>                  <span class="c1">// 工具白名单（新增）</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="45-per-job-tool-allow-list">4.5 Per-Job Tool Allow-List — 工具白名单（新增）</h3>
+<p>Cron 任务现在支持 <code>toolsAllow</code> 字段，用于限制隔离执行时发送给模型的工具集合。这是一个精细的安全和成本控制机制——当设置了白名单时，只有列表中的工具会被发送给模型。</p>
+<p><strong>类型定义</strong>（<code>src/cron/types.ts:101-102</code>）：</p>
+<div class="codehilite"><pre><span></span><code><span class="cm">/** Optional tool allow-list; when set, only these tools are sent to the model. */</span>
+<span class="nx">toolsAllow?</span>: <span class="kt">string</span><span class="p">[];</span>
+</code></pre></div>
+
+<p><strong>Patch 语义</strong>（<code>src/cron/types.ts:109-113</code>）：</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">CronAgentTurnPayloadPatch</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">kind</span><span class="o">:</span> <span class="s2">&quot;agentTurn&quot;</span><span class="p">;</span>
+<span class="p">}</span> <span class="o">&amp;</span> <span class="nx">Partial</span><span class="o">&lt;</span><span class="nx">Omit</span><span class="o">&lt;</span><span class="nx">CronAgentTurnPayloadFields</span><span class="p">,</span> <span class="s2">&quot;toolsAllow&quot;</span><span class="o">&gt;&gt;</span> <span class="o">&amp;</span> <span class="p">{</span>
+    <span class="nx">toolsAllow?</span>: <span class="kt">string</span><span class="p">[]</span> <span class="o">|</span> <span class="kc">null</span><span class="p">;</span>  <span class="c1">// null 表示清除白名单</span>
+  <span class="p">};</span>
+</code></pre></div>
+
+<p>注意 <code>toolsAllow</code> 在 Patch 中使用 <code>string[] | null</code> 类型——<code>null</code> 是一个特殊值，表示"清除已有的工具白名单"，恢复为发送全部工具。这与 <code>undefined</code>（不修改）语义不同。</p>
+<p><strong>规范化处理</strong>（<code>src/cron/normalize.ts</code>）：</p>
+<ul>
+<li>创建时自动修剪空白、去除空字符串</li>
+<li>支持顶层 <code>toolsAllow</code> 字段自动提升到 <code>payload.toolsAllow</code></li>
+<li>空数组 <code>[]</code> 被保留——表示"不发送任何工具"</li>
+<li><code>null</code> 表示清除白名单</li>
+</ul>
+<div class="codehilite"><pre><span></span><code><span class="c1">// normalize.ts:212-218</span>
+<span class="k">if</span> <span class="p">(</span><span class="s2">&quot;toolsAllow&quot;</span> <span class="ow">in</span> <span class="nx">next</span><span class="p">)</span> <span class="p">{</span>
+  <span class="kd">const</span> <span class="nx">toolsAllow</span> <span class="o">=</span> <span class="nx">normalizeTrimmedStringArray</span><span class="p">(</span><span class="nx">next</span><span class="p">.</span><span class="nx">toolsAllow</span><span class="p">,</span> <span class="p">{</span> <span class="nx">allowNull</span>: <span class="kt">true</span> <span class="p">});</span>
+  <span class="k">if</span> <span class="p">(</span><span class="nx">toolsAllow</span> <span class="o">!==</span> <span class="kc">undefined</span><span class="p">)</span> <span class="p">{</span>
+    <span class="nx">next</span><span class="p">.</span><span class="nx">toolsAllow</span> <span class="o">=</span> <span class="nx">toolsAllow</span><span class="p">;</span>
+  <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+    <span class="ow">delete</span> <span class="nx">next</span><span class="p">.</span><span class="nx">toolsAllow</span><span class="p">;</span>
+  <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p><strong>执行时传递</strong>（<code>src/cron/isolated-agent/run-executor.ts:161</code>）：</p>
+<div class="codehilite"><pre><span></span><code><span class="nx">toolsAllow</span>: <span class="kt">params.agentPayload?.toolsAllow</span><span class="p">,</span>
+</code></pre></div>
+
+<p>白名单最终传递到 Agent 执行引擎，在构建 LLM 请求时过滤工具列表。</p>
+<h3 id="46">4.6 执行链路</h3>
+<div class="codehilite"><pre><span></span><code><span class="n">CronStore</span><span class="w"> </span><span class="p">(</span><span class="n">jobs</span><span class="o">.</span><span class="n">json</span><span class="p">)</span><span class="w"></span>
+<span class="w">    </span><span class="err">↓</span><span class="w"> </span><span class="n">loadCronStore</span><span class="p">()</span><span class="w"></span>
+<span class="n">CronService</span><span class="o">.</span><span class="n">start</span><span class="p">()</span><span class="w"></span>
+<span class="w">    </span><span class="err">↓</span><span class="w"></span>
+<span class="n">Timer</span><span class="w"> </span><span class="n">tick</span><span class="w"> </span><span class="p">(</span><span class="err">≤</span><span class="mi">60</span><span class="n">s</span><span class="p">)</span><span class="w">         </span><span class="err">←</span><span class="w"> </span><span class="n">MAX_TIMER_DELAY_MS</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">60</span><span class="n">_000</span><span class="w"></span>
+<span class="w">    </span><span class="err">↓</span><span class="w"></span>
+<span class="n">locked</span><span class="p">()</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="n">ensureLoaded</span><span class="p">()</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="n">jobs</span><span class="o">.</span><span class="n">forEach</span><span class="p">(</span><span class="n">job</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">    </span><span class="n">computeStaggeredCronNextRunAtMs</span><span class="p">(</span><span class="n">job</span><span class="p">,</span><span class="w"> </span><span class="n">nowMs</span><span class="p">)</span><span class="w"></span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">nextRunAtMs</span><span class="w"> </span><span class="o">&lt;=</span><span class="w"> </span><span class="n">nowMs</span><span class="p">)</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="n">executeJobCoreWithTimeout</span><span class="p">()</span><span class="w"></span>
+<span class="p">})</span><span class="w"></span>
+<span class="w">    </span><span class="err">↓</span><span class="w"></span>
+<span class="n">executeJobCore</span><span class="p">(</span><span class="n">job</span><span class="p">)</span><span class="w"></span>
+<span class="w">    </span><span class="err">├─</span><span class="w"> </span><span class="n">main</span><span class="w"> </span><span class="err">模式</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="n">enqueueSystemEvent</span><span class="p">()</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="n">requestHeartbeatNow</span><span class="p">()</span><span class="w"></span>
+<span class="w">    </span><span class="err">└─</span><span class="w"> </span><span class="n">isolated</span><span class="w"> </span><span class="err">模式</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="n">runIsolatedAgentJob</span><span class="p">()</span><span class="w"></span>
+<span class="w">        </span><span class="err">↓</span><span class="w"></span>
+<span class="w">    </span><span class="err">结果</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="err">写入</span><span class="w"> </span><span class="n">RunLog</span><span class="w"> </span><span class="p">(</span><span class="n">JSONL</span><span class="p">)</span><span class="w"></span>
+<span class="w">         </span><span class="err">→</span><span class="w"> </span><span class="err">创建</span><span class="w"> </span><span class="n">Task</span><span class="w"> </span><span class="n">Ledger</span><span class="w"> </span><span class="err">记录（新增）</span><span class="w"></span>
+<span class="w">         </span><span class="err">→</span><span class="w"> </span><span class="err">投递</span><span class="w"> </span><span class="p">(</span><span class="n">announce</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">webhook</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">none</span><span class="p">)</span><span class="w"></span>
+<span class="w">         </span><span class="err">→</span><span class="w"> </span><span class="err">更新</span><span class="w"> </span><span class="n">job</span><span class="o">.</span><span class="n">state</span><span class="w"></span>
+<span class="w">         </span><span class="err">→</span><span class="w"> </span><span class="n">persist</span><span class="p">()</span><span class="w"></span>
+<span class="w">    </span><span class="err">↓</span><span class="w"></span>
+<span class="n">armTimer</span><span class="p">()</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="err">下一次</span><span class="w"> </span><span class="n">tick</span><span class="w"></span>
+<span class="w">    </span><span class="err">↓</span><span class="w"></span>
+<span class="n">sweepCronRunSessions</span><span class="p">()</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="err">清理过期临时会话</span><span class="w"></span>
+</code></pre></div>
+
+<p><strong>Task Ledger 集成</strong>（新增）：Cron 任务执行现在会自动在 Task Registry 中创建/更新记录，使其可在 <code>/tasks</code> 命令和 <code>openclaw tasks</code> CLI 中被追踪。失败时仅记录日志不阻塞调度器运行。</p>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/cron/service/timer.ts:160</span>
+<span class="s2">&quot;cron: failed to create task ledger record&quot;</span>
+<span class="c1">// src/cron/service/ops.ts:471</span>
+<span class="s2">&quot;cron: failed to create task ledger record&quot;</span>
+</code></pre></div>
+
 <hr />
-<h2 id="5-hooks-内部事件钩子系统">5. Hooks — 内部事件钩子系统</h2>
-<h3 id="51-概述">5.1 概述</h3>
+<h2 id="5-hooks">5. Hooks — 内部事件钩子系统</h2>
+<h3 id="51">5.1 概述</h3>
 <p>Hooks 是 OpenClaw 的内部事件总线。它监听系统内部发生的事件（如 Gateway 启动、命令执行、消息收发等），并自动触发注册的处理函数。与 Cron 的时间驱动不同，Hooks 是事件驱动——有事才触发，没事不打扰。</p>
 <p>核心实现：<code>src/hooks/internal-hooks.ts</code>。</p>
-<h3 id="52-事件类型">5.2 事件类型</h3>
+<h3 id="52">5.2 事件类型</h3>
 <p>五种内部事件类型：</p>
-<pre><code class="language-typescript">// src/hooks/internal-hooks.ts
-type InternalHookEventType = &quot;command&quot; | &quot;session&quot; | &quot;agent&quot; | &quot;gateway&quot; | &quot;message&quot;;
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/hooks/internal-hooks.ts</span>
+<span class="kr">type</span> <span class="nx">InternalHookEventType</span> <span class="o">=</span> <span class="s2">&quot;command&quot;</span> <span class="o">|</span> <span class="s2">&quot;session&quot;</span> <span class="o">|</span> <span class="s2">&quot;agent&quot;</span> <span class="o">|</span> <span class="s2">&quot;gateway&quot;</span> <span class="o">|</span> <span class="s2">&quot;message&quot;</span><span class="p">;</span>
+</code></pre></div>
+
 <table>
 <thead>
 <tr>
@@ -413,34 +500,36 @@ type InternalHookEventType = &quot;command&quot; | &quot;session&quot; | &quot;a
 <li><code>message:preprocessed</code> — 消息预处理完成</li>
 <li><code>agent:bootstrap</code> — Agent 引导阶段</li>
 </ul>
-<h3 id="53-hook-事件接口">5.3 Hook 事件接口</h3>
-<pre><code class="language-typescript">interface InternalHookEvent {
-  type: InternalHookEventType;
-  action: string;
-  sessionKey: string;
-  context: Record&lt;string, unknown&gt;;
-  timestamp: Date;
-  messages: string[];  // Hooks 可向此数组推入消息，由投递系统发出
-}
-</code></pre>
-<h3 id="54-注册与触发机制">5.4 注册与触发机制</h3>
-<pre><code class="language-typescript">// 注册 — 按事件键注册处理器
-registerInternalHook(&quot;gateway:startup&quot;, handler);
-registerInternalHook(&quot;message:received&quot;, handler);
+<h3 id="53-hook">5.3 Hook 事件接口</h3>
+<div class="codehilite"><pre><span></span><code><span class="kd">interface</span> <span class="nx">InternalHookEvent</span> <span class="p">{</span>
+  <span class="kr">type</span><span class="o">:</span> <span class="nx">InternalHookEventType</span><span class="p">;</span>
+  <span class="nx">action</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">sessionKey</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">context</span>: <span class="kt">Record</span><span class="o">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="nx">unknown</span><span class="o">&gt;</span><span class="p">;</span>
+  <span class="nx">timestamp</span>: <span class="kt">Date</span><span class="p">;</span>
+  <span class="nx">messages</span>: <span class="kt">string</span><span class="p">[];</span>  <span class="c1">// Hooks 可向此数组推入消息，由投递系统发出</span>
+<span class="p">}</span>
+</code></pre></div>
 
-// 触发 — 通知所有匹配的处理器
-triggerInternalHook({
-  type: &quot;gateway&quot;,
-  action: &quot;startup&quot;,
-  sessionKey: &quot;gateway:startup&quot;,
-  context: { cfg, deps, workspaceDir },
-  timestamp: new Date(),
-  messages: [],
-});
-</code></pre>
+<h3 id="54">5.4 注册与触发机制</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// 注册 — 按事件键注册处理器</span>
+<span class="nx">registerInternalHook</span><span class="p">(</span><span class="s2">&quot;gateway:startup&quot;</span><span class="p">,</span> <span class="nx">handler</span><span class="p">);</span>
+<span class="nx">registerInternalHook</span><span class="p">(</span><span class="s2">&quot;message:received&quot;</span><span class="p">,</span> <span class="nx">handler</span><span class="p">);</span>
+
+<span class="c1">// 触发 — 通知所有匹配的处理器</span>
+<span class="nx">triggerInternalHook</span><span class="p">({</span>
+  <span class="kr">type</span><span class="o">:</span> <span class="s2">&quot;gateway&quot;</span><span class="p">,</span>
+  <span class="nx">action</span><span class="o">:</span> <span class="s2">&quot;startup&quot;</span><span class="p">,</span>
+  <span class="nx">sessionKey</span><span class="o">:</span> <span class="s2">&quot;gateway:startup&quot;</span><span class="p">,</span>
+  <span class="nx">context</span><span class="o">:</span> <span class="p">{</span> <span class="nx">cfg</span><span class="p">,</span> <span class="nx">deps</span><span class="p">,</span> <span class="nx">workspaceDir</span> <span class="p">},</span>
+  <span class="nx">timestamp</span>: <span class="kt">new</span> <span class="nb">Date</span><span class="p">(),</span>
+  <span class="nx">messages</span><span class="o">:</span> <span class="p">[],</span>
+<span class="p">});</span>
+</code></pre></div>
+
 <p>处理器注册使用 <code>Symbol.for("openclaw.internalHookHandlers")</code> 存储在全局 Map 中，确保跨 bundle chunk 共享。</p>
 <p>触发时同时匹配通用键（如 <code>"command"</code>）和具体键（如 <code>"command:new"</code>），两级处理器都会被调用。</p>
-<h3 id="55-四种-hook-来源">5.5 四种 Hook 来源</h3>
+<h3 id="55-hook">5.5 四种 Hook 来源</h3>
 <table>
 <thead>
 <tr>
@@ -484,7 +573,7 @@ triggerInternalHook({
 <li>通过 <code>shouldIncludeHook()</code> 检查运行时条件（OS、依赖工具、配置路径等）</li>
 <li>按优先级去重和覆盖</li>
 </ol>
-<h3 id="56-内置-hooks">5.6 内置 Hooks</h3>
+<h3 id="56-hooks">5.6 内置 Hooks</h3>
 <p>四个默认 Hook：</p>
 <p><strong>1. <code>boot-md</code></strong>（事件：<code>gateway:startup</code>）
 - Gateway 启动时执行 <code>BOOT.md</code> 检查清单
@@ -492,32 +581,198 @@ triggerInternalHook({
 <p><strong>2. <code>bootstrap-extra-files</code></strong>（事件：<code>agent:bootstrap</code>）
 - Agent 引导时注入额外的工作空间文件（通过 glob/path 模式）</p>
 <p><strong>3. <code>command-logger</code></strong>（事件：所有 <code>command</code> 事件）
-- 将命令事件记录到 <code>~/.openclaw/state/logs/commands.log</code>（JSON Lines 格式）</p>
+- 将命令事件记录到 <code>~/.openclaw/logs/commands.log</code>（JSON Lines 格式）</p>
 <p><strong>4. <code>session-memory</code></strong>（事件：<code>command:new</code>, <code>command:reset</code>）
 - <code>/new</code> 或 <code>/reset</code> 时自动保存会话上下文到记忆系统
 - 使用 LLM 生成描述性文件名（<code>generateSlugViaLLM()</code>）</p>
-<h3 id="57-消息-hook-的异步执行">5.7 消息 Hook 的异步执行</h3>
+<h3 id="57-hook">5.7 消息 Hook 的异步执行</h3>
 <p>消息相关 Hooks 通过 <code>fireAndForgetHook()</code> 异步执行，避免阻塞消息处理主流程：</p>
-<pre><code class="language-typescript">// src/hooks/fire-and-forget.ts
-fireAndForgetHook(promise, errorMessage);
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/hooks/fire-and-forget.ts</span>
+<span class="nx">fireAndForgetHook</span><span class="p">(</span><span class="nx">promise</span><span class="p">,</span> <span class="nx">errorMessage</span><span class="p">);</span>
+</code></pre></div>
+
 <p>消息预处理流程（<code>src/auto-reply/reply/message-preprocess-hooks.ts</code>）中先后触发：
 1. <code>message:transcribed</code>（如果有语音转录）
 2. <code>message:preprocessed</code>（始终触发，在 Agent 看到消息前）</p>
-<h3 id="58-hook-配置">5.8 Hook 配置</h3>
-<pre><code class="language-typescript">// src/config/types.hooks.ts — InternalHooksConfig
-{
-  enabled?: boolean;                              // 全局开关
-  handlers?: InternalHookHandlerConfig[];          // 遗留配置方式
-  entries?: Record&lt;string, HookConfig&gt;;            // 按 hookKey 覆盖配置
-  load?: { extraDirs?: string[] };                 // 额外 Hook 加载目录
-  installs?: Record&lt;string, HookInstallRecord&gt;;    // Hook 包安装记录
-}
-</code></pre>
+<h3 id="58-hook">5.8 Hook 配置</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/config/types.hooks.ts — InternalHooksConfig</span>
+<span class="p">{</span>
+  <span class="nx">enabled?</span>: <span class="kt">boolean</span><span class="p">;</span>                              <span class="c1">// 全局开关</span>
+  <span class="nx">handlers?</span>: <span class="kt">InternalHookHandlerConfig</span><span class="p">[];</span>          <span class="c1">// 遗留配置方式</span>
+  <span class="nx">entries?</span>: <span class="kt">Record</span><span class="o">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="nx">HookConfig</span><span class="o">&gt;</span><span class="p">;</span>            <span class="c1">// 按 hookKey 覆盖配置</span>
+  <span class="nx">load</span><span class="o">?:</span> <span class="p">{</span> <span class="nx">extraDirs?</span>: <span class="kt">string</span><span class="p">[]</span> <span class="p">};</span>                 <span class="c1">// 额外 Hook 加载目录</span>
+  <span class="nx">installs?</span>: <span class="kt">Record</span><span class="o">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="nx">HookInstallRecord</span><span class="o">&gt;</span><span class="p">;</span>    <span class="c1">// Hook 包安装记录</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p>配置嵌套在 <code>config.hooks.internal</code> 下（与 HTTP Webhook 的 <code>config.hooks</code> 共用顶层命名空间）。</p>
 <hr />
-<h2 id="6-webhook-外部-http-触发系统">6. Webhook — 外部 HTTP 触发系统</h2>
-<h3 id="61-概述">6.1 概述</h3>
+<h2 id="6-plugin-hooks">6. Plugin Hooks — 插件级钩子系统（新增）</h2>
+<h3 id="61">6.1 概述</h3>
+<p>除了内置的事件 Hooks，OpenClaw 还有一套完整的 <strong>Plugin Hook</strong> 系统，允许插件在 Agent 生命周期的各关键节点进行拦截、修改或声明。这些 Hook 通过 <code>src/plugins/hooks.ts</code> 中的 HookRunner 统一管理。</p>
+<h3 id="62-29-hook">6.2 29 个 Hook 名称</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/plugins/types.ts:2275-2304</span>
+<span class="k">export</span> <span class="kr">type</span> <span class="nx">PluginHookName</span> <span class="o">=</span>
+  <span class="o">|</span> <span class="s2">&quot;before_model_resolve&quot;</span>    <span class="c1">// 模型解析前</span>
+  <span class="o">|</span> <span class="s2">&quot;before_prompt_build&quot;</span>     <span class="c1">// Prompt 构建前</span>
+  <span class="o">|</span> <span class="s2">&quot;before_agent_start&quot;</span>      <span class="c1">// Agent 启动前</span>
+  <span class="o">|</span> <span class="s2">&quot;before_agent_reply&quot;</span>      <span class="c1">// Agent 回复前（claiming 模式）</span>
+  <span class="o">|</span> <span class="s2">&quot;llm_input&quot;</span>               <span class="c1">// LLM 输入观察</span>
+  <span class="o">|</span> <span class="s2">&quot;llm_output&quot;</span>              <span class="c1">// LLM 输出观察</span>
+  <span class="o">|</span> <span class="s2">&quot;agent_end&quot;</span>               <span class="c1">// Agent 结束</span>
+  <span class="o">|</span> <span class="s2">&quot;before_compaction&quot;</span>       <span class="c1">// 压缩前</span>
+  <span class="o">|</span> <span class="s2">&quot;after_compaction&quot;</span>        <span class="c1">// 压缩后</span>
+  <span class="o">|</span> <span class="s2">&quot;before_reset&quot;</span>            <span class="c1">// 会话重置前</span>
+  <span class="o">|</span> <span class="s2">&quot;inbound_claim&quot;</span>           <span class="c1">// 入站消息声明</span>
+  <span class="o">|</span> <span class="s2">&quot;message_received&quot;</span>        <span class="c1">// 消息接收</span>
+  <span class="o">|</span> <span class="s2">&quot;message_sending&quot;</span>         <span class="c1">// 消息发送中（可修改/取消）</span>
+  <span class="o">|</span> <span class="s2">&quot;message_sent&quot;</span>            <span class="c1">// 消息已发送</span>
+  <span class="o">|</span> <span class="s2">&quot;before_tool_call&quot;</span>        <span class="c1">// 工具调用前（可阻止/审批）</span>
+  <span class="o">|</span> <span class="s2">&quot;after_tool_call&quot;</span>         <span class="c1">// 工具调用后</span>
+  <span class="o">|</span> <span class="s2">&quot;tool_result_persist&quot;</span>     <span class="c1">// 工具结果持久化</span>
+  <span class="o">|</span> <span class="s2">&quot;before_message_write&quot;</span>    <span class="c1">// 消息写入前</span>
+  <span class="o">|</span> <span class="s2">&quot;session_start&quot;</span>           <span class="c1">// 会话开始</span>
+  <span class="o">|</span> <span class="s2">&quot;session_end&quot;</span>             <span class="c1">// 会话结束</span>
+  <span class="o">|</span> <span class="s2">&quot;subagent_spawning&quot;</span>       <span class="c1">// 子 Agent 生成中</span>
+  <span class="o">|</span> <span class="s2">&quot;subagent_delivery_target&quot;</span> <span class="c1">// 子 Agent 投递目标</span>
+  <span class="o">|</span> <span class="s2">&quot;subagent_spawned&quot;</span>        <span class="c1">// 子 Agent 已生成</span>
+  <span class="o">|</span> <span class="s2">&quot;subagent_ended&quot;</span>          <span class="c1">// 子 Agent 已结束</span>
+  <span class="o">|</span> <span class="s2">&quot;gateway_start&quot;</span>           <span class="c1">// Gateway 启动</span>
+  <span class="o">|</span> <span class="s2">&quot;gateway_stop&quot;</span>            <span class="c1">// Gateway 停止</span>
+  <span class="o">|</span> <span class="s2">&quot;before_dispatch&quot;</span>         <span class="c1">// 分发前</span>
+  <span class="o">|</span> <span class="s2">&quot;reply_dispatch&quot;</span>          <span class="c1">// 回复分发（claiming 模式）</span>
+  <span class="o">|</span> <span class="s2">&quot;before_install&quot;</span><span class="p">;</span>         <span class="c1">// 安装前</span>
+</code></pre></div>
+
+<h3 id="63-hook">6.3 三种 Hook 执行模式</h3>
+<p>Plugin Hooks 根据语义分为三类执行模式：</p>
+<p><strong>1. Claiming Hook（声明模式）</strong></p>
+<p>第一个返回 <code>{ handled: true }</code> 的处理器"赢得"控制权，后续处理器不再运行。适用于互斥的拦截场景。</p>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/plugins/hooks.ts:388-403</span>
+<span class="k">async</span> <span class="kd">function</span> <span class="nx">runClaimingHook</span><span class="o">&lt;</span><span class="nx">K</span> <span class="k">extends</span> <span class="nx">PluginHookName</span><span class="p">,</span> <span class="nx">TResult</span> <span class="k">extends</span> <span class="p">{</span> <span class="nx">handled</span>: <span class="kt">boolean</span> <span class="p">}</span><span class="o">&gt;</span><span class="p">(</span>
+  <span class="nx">hookName</span>: <span class="kt">K</span><span class="p">,</span>
+  <span class="nx">event</span>: <span class="kt">...</span><span class="p">,</span>
+  <span class="nx">ctx</span>: <span class="kt">...</span><span class="p">,</span>
+<span class="p">)</span><span class="o">:</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="nx">TResult</span> <span class="o">|</span> <span class="kc">undefined</span><span class="o">&gt;</span> <span class="p">{</span>
+  <span class="c1">// 按注册顺序遍历，第一个 handled: true 立即返回</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>使用此模式的 Hook：
+- <code>before_agent_reply</code> — 插件可拦截消息并返回合成回复
+- <code>reply_dispatch</code> — 插件可接管回复分发
+- <code>inbound_claim</code> — 插件可声明入站消息所有权
+- <code>before_dispatch</code> — 插件可在分发前拦截</p>
+<p><strong>2. Modifying Hook（修改模式）</strong></p>
+<p>处理器按顺序运行，每个处理器可修改累积结果。支持 <code>shouldStop</code> 提前终止。</p>
+<p>使用此模式的 Hook：
+- <code>before_tool_call</code> — 可修改参数、阻止调用、要求审批
+- <code>message_sending</code> — 可修改内容或取消发送</p>
+<p><strong>3. Void Hook（观察模式）</strong></p>
+<p>所有处理器并行执行（fire-and-forget），不产生返回值。用于纯观察/日志场景。</p>
+<p>使用此模式的 Hook：<code>llm_input</code>, <code>llm_output</code>, <code>agent_end</code>, <code>message_received</code>, <code>message_sent</code>, <code>after_tool_call</code> 等。</p>
+<h3 id="64-before_agent_reply-claiming">6.4 before_agent_reply — Claiming 模式详解（新增）</h3>
+<p><code>before_agent_reply</code> 允许插件在 LLM 处理前拦截用户消息并直接返回合成回复，短路 Agent 执行：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/plugins/types.ts:2460-2473</span>
+<span class="k">export</span> <span class="kr">type</span> <span class="nx">PluginHookBeforeAgentReplyEvent</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">cleanedBody</span>: <span class="kt">string</span><span class="p">;</span>  <span class="c1">// 经过命令/指令处理后的最终用户消息文本</span>
+<span class="p">};</span>
+
+<span class="k">export</span> <span class="kr">type</span> <span class="nx">PluginHookBeforeAgentReplyResult</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">handled</span>: <span class="kt">boolean</span><span class="p">;</span>     <span class="c1">// 是否声明此消息</span>
+  <span class="nx">reply?</span>: <span class="kt">ReplyPayload</span><span class="p">;</span> <span class="c1">// 合成回复（当 handled=true 时）</span>
+  <span class="nx">reason?</span>: <span class="kt">string</span><span class="p">;</span>      <span class="c1">// 拦截原因（用于日志/调试）</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p><strong>典型用例</strong>：
+- FAQ 系统：匹配常见问题直接返回固定答案，不消耗 LLM Token
+- 速率限制：在高峰期拦截消息，返回"稍后再试"
+- 自动分流：根据关键词将消息路由到不同处理管道</p>
+<h3 id="65-reply_dispatch">6.5 reply_dispatch — 回复分发钩子（新增）</h3>
+<p><code>reply_dispatch</code> 允许插件接管回复分发流程，在默认的模型路径运行之前处理回复：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/plugins/types.ts:2614-2650</span>
+<span class="k">export</span> <span class="kr">type</span> <span class="nx">PluginHookReplyDispatchEvent</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">ctx</span>: <span class="kt">FinalizedMsgContext</span><span class="p">;</span>
+  <span class="nx">runId?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">sessionKey?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">inboundAudio</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">sessionTtsAuto?</span>: <span class="kt">TtsAutoMode</span><span class="p">;</span>
+  <span class="nx">ttsChannel?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">suppressUserDelivery?</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">shouldRouteToOriginating</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">originatingChannel?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">originatingTo?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">shouldSendToolSummaries</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">sendPolicy</span><span class="o">:</span> <span class="s2">&quot;allow&quot;</span> <span class="o">|</span> <span class="s2">&quot;deny&quot;</span><span class="p">;</span>
+  <span class="nx">isTailDispatch?</span>: <span class="kt">boolean</span><span class="p">;</span>
+<span class="p">};</span>
+
+<span class="k">export</span> <span class="kr">type</span> <span class="nx">PluginHookReplyDispatchResult</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">handled</span>: <span class="kt">boolean</span><span class="p">;</span>      <span class="c1">// 是否已处理分发</span>
+  <span class="nx">queuedFinal</span>: <span class="kt">boolean</span><span class="p">;</span>  <span class="c1">// 是否已发送最终回复</span>
+  <span class="nx">counts</span>: <span class="kt">Record</span><span class="o">&lt;</span><span class="nx">ReplyDispatchKind</span><span class="p">,</span> <span class="kt">number</span><span class="o">&gt;</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="66-before_tool_call-requireapproval">6.6 before_tool_call — 异步 requireApproval（新增）</h3>
+<p><code>before_tool_call</code> Hook 新增了 <code>requireApproval</code> 机制，允许插件在工具执行前要求人类审批：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/plugins/types.ts:2714-2732</span>
+<span class="k">export</span> <span class="kr">type</span> <span class="nx">PluginHookBeforeToolCallResult</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">params?</span>: <span class="kt">Record</span><span class="o">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="nx">unknown</span><span class="o">&gt;</span><span class="p">;</span>  <span class="c1">// 修改后的参数</span>
+  <span class="nx">block?</span>: <span class="kt">boolean</span><span class="p">;</span>                   <span class="c1">// 直接阻止</span>
+  <span class="nx">blockReason?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">requireApproval</span><span class="o">?:</span> <span class="p">{</span>
+    <span class="nx">title</span>: <span class="kt">string</span><span class="p">;</span>
+    <span class="nx">description</span>: <span class="kt">string</span><span class="p">;</span>
+    <span class="nx">severity</span><span class="o">?:</span> <span class="s2">&quot;info&quot;</span> <span class="o">|</span> <span class="s2">&quot;warning&quot;</span> <span class="o">|</span> <span class="s2">&quot;critical&quot;</span><span class="p">;</span>
+    <span class="nx">timeoutMs?</span>: <span class="kt">number</span><span class="p">;</span>
+    <span class="nx">timeoutBehavior</span><span class="o">?:</span> <span class="s2">&quot;allow&quot;</span> <span class="o">|</span> <span class="s2">&quot;deny&quot;</span><span class="p">;</span>
+    <span class="nx">pluginId?</span>: <span class="kt">string</span><span class="p">;</span>             <span class="c1">// 由 Hook Runner 自动设置</span>
+    <span class="nx">onResolution</span><span class="o">?:</span> <span class="p">(</span><span class="nx">decision</span>: <span class="kt">PluginApprovalResolution</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="ow">void</span><span class="o">&gt;</span> <span class="o">|</span> <span class="ow">void</span><span class="p">;</span>
+  <span class="p">};</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p><strong>审批结果类型</strong>：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kd">const</span> <span class="nx">PluginApprovalResolutions</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">ALLOW_ONCE</span><span class="o">:</span> <span class="s2">&quot;allow-once&quot;</span><span class="p">,</span>
+  <span class="nx">ALLOW_ALWAYS</span><span class="o">:</span> <span class="s2">&quot;allow-always&quot;</span><span class="p">,</span>
+  <span class="nx">DENY</span><span class="o">:</span> <span class="s2">&quot;deny&quot;</span><span class="p">,</span>
+  <span class="nx">TIMEOUT</span><span class="o">:</span> <span class="s2">&quot;timeout&quot;</span><span class="p">,</span>
+  <span class="nx">CANCELLED</span><span class="o">:</span> <span class="s2">&quot;cancelled&quot;</span><span class="p">,</span>
+<span class="p">}</span> <span class="kr">as</span> <span class="kd">const</span><span class="p">;</span>
+</code></pre></div>
+
+<p><strong>多插件合并规则</strong>（<code>src/plugins/hooks.ts:784-803</code>）：</p>
+<ol>
+<li>已 <code>block=true</code> 的不会被后续插件覆盖（粘性）</li>
+<li>第一个设置 <code>requireApproval</code> 的插件赢得审批权</li>
+<li>审批插件设置后，其他插件不能修改 <code>params</code>（参数冻结）</li>
+<li><code>block=true</code> 仍可由低优先级插件追加</li>
+</ol>
+<div class="codehilite"><pre><span></span><code><span class="kd">const</span> <span class="nx">freezeParamsForDifferentPlugin</span> <span class="o">=</span>
+  <span class="nb">Boolean</span><span class="p">(</span><span class="nx">approvalPluginId</span><span class="p">)</span> <span class="o">&amp;&amp;</span> <span class="nx">approvalPluginId</span> <span class="o">!==</span> <span class="nx">reg</span><span class="p">.</span><span class="nx">pluginId</span><span class="p">;</span>
+<span class="k">return</span> <span class="p">{</span>
+  <span class="nx">params</span>: <span class="kt">freezeParamsForDifferentPlugin</span>
+    <span class="o">?</span> <span class="nx">acc?.params</span>
+    : <span class="kt">lastDefined</span><span class="p">(</span><span class="nx">acc</span><span class="o">?</span><span class="p">.</span><span class="nx">params</span><span class="p">,</span> <span class="nx">next</span><span class="p">.</span><span class="nx">params</span><span class="p">),</span>
+  <span class="nx">block</span>: <span class="kt">stickyTrue</span><span class="p">(</span><span class="nx">acc</span><span class="o">?</span><span class="p">.</span><span class="nx">block</span><span class="p">,</span> <span class="nx">next</span><span class="p">.</span><span class="nx">block</span><span class="p">),</span>
+  <span class="nx">requireApproval</span>: <span class="kt">acc?.requireApproval</span> <span class="o">??</span>
+    <span class="p">(</span><span class="nx">next</span><span class="p">.</span><span class="nx">requireApproval</span> <span class="o">?</span> <span class="p">{</span> <span class="p">...</span><span class="nx">next</span><span class="p">.</span><span class="nx">requireApproval</span><span class="p">,</span> <span class="nx">pluginId</span>: <span class="kt">reg.pluginId</span> <span class="p">}</span> <span class="o">:</span> <span class="kc">undefined</span><span class="p">),</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p><strong>Fail-Closed 默认策略</strong>：<code>before_tool_call</code> 配置为 <code>fail-closed</code>，即 Hook 执行出错时默认阻止工具调用，保障安全。</p>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/plugins/hook-runner-global.ts:44</span>
+<span class="nx">failurePolicyByHook</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">before_tool_call</span><span class="o">:</span> <span class="s2">&quot;fail-closed&quot;</span><span class="p">,</span>
+<span class="p">},</span>
+</code></pre></div>
+
+<hr />
+<h2 id="7-webhook-http">7. Webhook — 外部 HTTP 触发系统</h2>
+<h3 id="71">7.1 概述</h3>
 <p>Webhook 是 OpenClaw Gateway 的 HTTP 端点（默认 <code>/hooks/*</code>），外部系统通过 HTTP POST 请求触发 AI 行为。例如：</p>
 <ul>
 <li>GitHub 仓库有新 PR → Webhook 触发 → AI 自动代码审查</li>
@@ -525,8 +780,8 @@ fireAndForgetHook(promise, errorMessage);
 <li>客服系统收到投诉 → Webhook 触发 → AI 自动分类并分配优先级</li>
 </ul>
 <p>核心实现：<code>src/gateway/hooks.ts</code>, <code>src/gateway/hooks-mapping.ts</code>。</p>
-<h3 id="62-配置">6.2 配置</h3>
-<pre><code class="language-jsonc">{
+<h3 id="72">7.2 配置</h3>
+<div class="codehilite"><pre><span></span><code>{
   &quot;hooks&quot;: {
     &quot;enabled&quot;: true,
     &quot;token&quot;: &quot;your-secret-token&quot;,    // 必需，用于 Bearer Token 认证
@@ -535,9 +790,10 @@ fireAndForgetHook(promise, errorMessage);
     &quot;mappings&quot;: [...]                // 路由映射规则
   }
 }
-</code></pre>
+</code></pre></div>
+
 <p>源码：<code>src/gateway/hooks.ts:39-97</code> — <code>resolveHooksConfig()</code> 负责解析配置并验证必要字段。</p>
-<h3 id="63-安全机制">6.3 安全机制</h3>
+<h3 id="73">7.3 安全机制</h3>
 <ul>
 <li><strong>Token 认证</strong>：<code>hooks.token</code> 是必填项，没有 Token 无法启用 Webhook</li>
 <li><strong>Agent 策略</strong>：<code>allowedAgentIds</code> 限制可触发的 Agent 范围</li>
@@ -545,26 +801,29 @@ fireAndForgetHook(promise, errorMessage);
 <li><strong>请求体大小限制</strong>：默认 256KB，防止恶意大负载</li>
 <li><strong>外部内容标记</strong>：通过 <code>HookExternalContentSource</code> 标记内容来源，便于安全审计</li>
 </ul>
-<pre><code class="language-typescript">// src/gateway/hooks.ts:14-15
-const DEFAULT_HOOKS_PATH = &quot;/hooks&quot;;
-const DEFAULT_HOOKS_MAX_BODY_BYTES = 256 * 1024;
-</code></pre>
-<h3 id="64-路由映射">6.4 路由映射</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/gateway/hooks.ts:14-15</span>
+<span class="kd">const</span> <span class="nx">DEFAULT_HOOKS_PATH</span> <span class="o">=</span> <span class="s2">&quot;/hooks&quot;</span><span class="p">;</span>
+<span class="kd">const</span> <span class="nx">DEFAULT_HOOKS_MAX_BODY_BYTES</span> <span class="o">=</span> <span class="mf">256</span> <span class="o">*</span> <span class="mf">1024</span><span class="p">;</span>
+</code></pre></div>
+
+<h3 id="74">7.4 路由映射</h3>
 <p>通过 <code>mappings</code> 配置将不同 URL 路径映射到不同的 Agent/Session/Action：</p>
-<pre><code class="language-typescript">// src/gateway/hooks-mapping.ts
-type HookMappingResolved = {
-  path: string;              // URL 路径后缀
-  action: &quot;wake&quot; | &quot;agent&quot;;  // 触发模式
-  agentId?: string;
-  sessionKey?: string;
-  // ...
-};
-</code></pre>
-<h3 id="65-cron-结果的-webhook-投递">6.5 Cron 结果的 Webhook 投递</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/gateway/hooks-mapping.ts</span>
+<span class="kr">type</span> <span class="nx">HookMappingResolved</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">path</span>: <span class="kt">string</span><span class="p">;</span>              <span class="c1">// URL 路径后缀</span>
+  <span class="nx">action</span><span class="o">:</span> <span class="s2">&quot;wake&quot;</span> <span class="o">|</span> <span class="s2">&quot;agent&quot;</span><span class="p">;</span>  <span class="c1">// 触发模式</span>
+  <span class="nx">agentId?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">sessionKey?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="c1">// ...</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="75-cron-webhook">7.5 Cron 结果的 Webhook 投递</h3>
 <p>除了接收外部请求，Webhook 也是 Cron 任务执行结果的投递方式之一：</p>
-<pre><code class="language-typescript">// src/cron/types.ts:22
-export type CronDeliveryMode = &quot;none&quot; | &quot;announce&quot; | &quot;webhook&quot;;
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/cron/types.ts:22</span>
+<span class="k">export</span> <span class="kr">type</span> <span class="nx">CronDeliveryMode</span> <span class="o">=</span> <span class="s2">&quot;none&quot;</span> <span class="o">|</span> <span class="s2">&quot;announce&quot;</span> <span class="o">|</span> <span class="s2">&quot;webhook&quot;</span><span class="p">;</span>
+</code></pre></div>
+
 <table>
 <thead>
 <tr>
@@ -589,8 +848,8 @@ export type CronDeliveryMode = &quot;none&quot; | &quot;announce&quot; | &quot;w
 </table>
 <p>Webhook 投递实现在 <code>src/gateway/server-cron.ts</code>，超时 10 秒（<code>CRON_WEBHOOK_TIMEOUT_MS = 10_000</code>），支持 Bearer Token 认证。URL 经过 <code>normalizeHttpWebhookUrl()</code> 校验，限定 <code>http:</code>/<code>https:</code> 协议。</p>
 <hr />
-<h2 id="7-调度引擎核心实现">7. 调度引擎核心实现</h2>
-<h3 id="71-croner-库">7.1 croner 库</h3>
+<h2 id="8">8. 调度引擎核心实现</h2>
+<h3 id="81-croner">8.1 croner 库</h3>
 <p>OpenClaw 使用 <strong>croner</strong>（<code>^10.0.1</code>）作为 cron 表达式解析引擎，而非更常见的 <code>node-cron</code> 或 <code>node-schedule</code>。选择理由：</p>
 <ul>
 <li><strong>零依赖</strong>：无外部依赖，包体最小</li>
@@ -598,61 +857,72 @@ export type CronDeliveryMode = &quot;none&quot; | &quot;announce&quot; | &quot;w
 <li><strong>DST 正确性</strong>：正确处理夏令时转换和闰年</li>
 <li><strong>原生 TypeScript</strong>：内置类型定义</li>
 </ul>
-<h3 id="72-时区处理">7.2 时区处理</h3>
-<pre><code class="language-typescript">// src/cron/schedule.ts:8-14
-function resolveCronTimezone(tz?: string) {
-  const trimmed = typeof tz === &quot;string&quot; ? tz.trim() : &quot;&quot;;
-  if (trimmed) { return trimmed; }
-  return Intl.DateTimeFormat().resolvedOptions().timeZone;  // 回退到系统时区
-}
-</code></pre>
+<h3 id="82">8.2 时区处理</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/cron/schedule.ts:8-14</span>
+<span class="kd">function</span> <span class="nx">resolveCronTimezone</span><span class="p">(</span><span class="nx">tz?</span>: <span class="kt">string</span><span class="p">)</span> <span class="p">{</span>
+  <span class="kd">const</span> <span class="nx">trimmed</span> <span class="o">=</span> <span class="ow">typeof</span> <span class="nx">tz</span> <span class="o">===</span> <span class="s2">&quot;string&quot;</span> <span class="o">?</span> <span class="nx">tz</span><span class="p">.</span><span class="nx">trim</span><span class="p">()</span> <span class="o">:</span> <span class="s2">&quot;&quot;</span><span class="p">;</span>
+  <span class="k">if</span> <span class="p">(</span><span class="nx">trimmed</span><span class="p">)</span> <span class="p">{</span> <span class="k">return</span> <span class="nx">trimmed</span><span class="p">;</span> <span class="p">}</span>
+  <span class="k">return</span> <span class="nb">Intl</span><span class="p">.</span><span class="nx">DateTimeFormat</span><span class="p">().</span><span class="nx">resolvedOptions</span><span class="p">().</span><span class="nx">timeZone</span><span class="p">;</span>  <span class="c1">// 回退到系统时区</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <ul>
 <li>支持 IANA 时区字符串（如 <code>Asia/Shanghai</code>）</li>
 <li>未指定时区时自动使用系统本地时区</li>
 <li>包含 croner 年份回绕 bug 的 Workaround（<code>schedule.ts:113-136</code>）</li>
 </ul>
-<h3 id="73-表达式缓存">7.3 表达式缓存</h3>
-<pre><code class="language-typescript">// src/cron/schedule.ts:5-6
-const CRON_EVAL_CACHE_MAX = 512;
-const cronEvalCache = new Map&lt;string, Cron&gt;();
-</code></pre>
+<h3 id="83">8.3 表达式缓存</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/cron/schedule.ts:5-6</span>
+<span class="kd">const</span> <span class="nx">CRON_EVAL_CACHE_MAX</span> <span class="o">=</span> <span class="mf">512</span><span class="p">;</span>
+<span class="kd">const</span> <span class="nx">cronEvalCache</span> <span class="o">=</span> <span class="ow">new</span> <span class="nb">Map</span><span class="o">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="nx">Cron</span><span class="o">&gt;</span><span class="p">();</span>
+</code></pre></div>
+
 <p>按 <code>timezone\0expr</code> 组合键缓存 croner 实例，最多 512 条，LRU 淘汰。</p>
-<h3 id="74-timer-调度">7.4 Timer 调度</h3>
+<h3 id="84-timer">8.4 Timer 调度</h3>
 <p>Cron Service 使用单一 <code>setTimeout</code> 驱动整个调度循环，最大延迟 60 秒：</p>
-<pre><code class="language-typescript">// src/cron/service/timer.ts:30
-const MAX_TIMER_DELAY_MS = 60_000;
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/cron/service/timer.ts:30</span>
+<span class="kd">const</span> <span class="nx">MAX_TIMER_DELAY_MS</span> <span class="o">=</span> <span class="mf">60</span><span class="nx">_000</span><span class="p">;</span>
+</code></pre></div>
+
 <p><strong>防死循环保护</strong>：</p>
-<pre><code class="language-typescript">// src/cron/service/timer.ts:38-39
-const MIN_REFIRE_GAP_MS = 2_000;  // 同一任务最小再触发间隔
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/cron/service/timer.ts:38-39</span>
+<span class="kd">const</span> <span class="nx">MIN_REFIRE_GAP_MS</span> <span class="o">=</span> <span class="mf">2</span><span class="nx">_000</span><span class="p">;</span>  <span class="c1">// 同一任务最小再触发间隔</span>
+</code></pre></div>
+
 <p>当 <code>computeJobNextRunAtMs</code> 返回值在上次执行的同一秒内时，强制 2 秒间隔，防止无限循环（Issue #17821）。</p>
-<h3 id="75-并发控制">7.5 并发控制</h3>
-<pre><code class="language-typescript">// src/cron/service/timer.ts:93-98
-function resolveRunConcurrency(state: CronServiceState): number {
-  const raw = state.deps.cronConfig?.maxConcurrentRuns;
-  if (typeof raw !== &quot;number&quot; || !Number.isFinite(raw)) { return 1; }
-  return Math.max(1, Math.floor(raw));
-}
-</code></pre>
+<h3 id="85">8.5 并发控制</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/cron/service/timer.ts:93-98</span>
+<span class="kd">function</span> <span class="nx">resolveRunConcurrency</span><span class="p">(</span><span class="nx">state</span>: <span class="kt">CronServiceState</span><span class="p">)</span><span class="o">:</span> <span class="kt">number</span> <span class="p">{</span>
+  <span class="kd">const</span> <span class="nx">raw</span> <span class="o">=</span> <span class="nx">state</span><span class="p">.</span><span class="nx">deps</span><span class="p">.</span><span class="nx">cronConfig</span><span class="o">?</span><span class="p">.</span><span class="nx">maxConcurrentRuns</span><span class="p">;</span>
+  <span class="k">if</span> <span class="p">(</span><span class="ow">typeof</span> <span class="nx">raw</span> <span class="o">!==</span> <span class="s2">&quot;number&quot;</span> <span class="o">||</span> <span class="o">!</span><span class="nb">Number</span><span class="p">.</span><span class="nb">isFinite</span><span class="p">(</span><span class="nx">raw</span><span class="p">))</span> <span class="p">{</span> <span class="k">return</span> <span class="mf">1</span><span class="p">;</span> <span class="p">}</span>
+  <span class="k">return</span> <span class="nb">Math</span><span class="p">.</span><span class="nx">max</span><span class="p">(</span><span class="mf">1</span><span class="p">,</span> <span class="nb">Math</span><span class="p">.</span><span class="nx">floor</span><span class="p">(</span><span class="nx">raw</span><span class="p">));</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p>默认并发度为 1。隔离模式任务在专用的 <code>CommandLane.Cron</code> 上执行，避免阻塞主队列的自动回复。</p>
-<h3 id="76-超时策略">7.6 超时策略</h3>
+<h3 id="86">8.6 超时策略</h3>
 <p>每个任务可配置独立超时（<code>src/cron/service/timeout-policy.ts</code>），通过 <code>AbortController</code> 实现。超时时中断 Agent 执行。</p>
 <hr />
-<h2 id="8-存储与持久化">8. 存储与持久化</h2>
-<h3 id="81-存储结构">8.1 存储结构</h3>
-<pre><code class="language-typescript">// src/cron/types.ts:149-152
-export type CronStoreFile = {
-  version: 1;
-  jobs: CronJob[];
-};
-</code></pre>
+<h2 id="9">9. 存储与持久化</h2>
+<h3 id="91">9.1 存储结构</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/cron/types.ts:149-152</span>
+<span class="k">export</span> <span class="kr">type</span> <span class="nx">CronStoreFile</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">version</span>: <span class="kt">1</span><span class="p">;</span>
+  <span class="nx">jobs</span>: <span class="kt">CronJob</span><span class="p">[];</span>
+<span class="p">};</span>
+</code></pre></div>
+
 <p><strong>默认路径</strong>：<code>~/.openclaw/cron/jobs.json</code></p>
-<pre><code class="language-typescript">// src/cron/store.ts:9-10
-export const DEFAULT_CRON_DIR = path.join(CONFIG_DIR, &quot;cron&quot;);
-export const DEFAULT_CRON_STORE_PATH = path.join(DEFAULT_CRON_DIR, &quot;jobs.json&quot;);
-</code></pre>
-<h3 id="82-写入安全">8.2 写入安全</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/cron/store.ts:11,15 (unexported private helpers)</span>
+<span class="kd">function</span> <span class="nx">resolveDefaultCronDir</span><span class="p">()</span> <span class="p">{</span>
+  <span class="k">return</span> <span class="nx">path</span><span class="p">.</span><span class="nx">join</span><span class="p">(</span><span class="nx">resolveConfigDir</span><span class="p">(),</span> <span class="s2">&quot;cron&quot;</span><span class="p">);</span>
+<span class="p">}</span>
+<span class="kd">function</span> <span class="nx">resolveDefaultCronStorePath</span><span class="p">()</span> <span class="p">{</span>
+  <span class="k">return</span> <span class="nx">path</span><span class="p">.</span><span class="nx">join</span><span class="p">(</span><span class="nx">resolveDefaultCronDir</span><span class="p">(),</span> <span class="s2">&quot;jobs.json&quot;</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="92">9.2 写入安全</h3>
 <p>存储写入采用多重安全措施：</p>
 <ol>
 <li><strong>原子写入</strong>：先写临时文件（<code>${storePath}.${pid}.${randomHex}.tmp</code>），再 rename</li>
@@ -662,37 +932,41 @@ export const DEFAULT_CRON_STORE_PATH = path.join(DEFAULT_CRON_DIR, &quot;jobs.js
 <li><strong>变更检测</strong>：通过内存缓存 + JSON 比较避免无意义的重复写入</li>
 <li><strong>Rename 重试</strong>：Windows EBUSY 场景下最多重试 3 次，支持 Copy+Unlink fallback</li>
 </ol>
-<pre><code class="language-typescript">// src/cron/store.ts:110-155 — saveCronStore 实现
-// 核心流程：mkdir(0o700) → chmod(dir) → writeFile(tmp, mode:0o600) → chmod(tmp)
-//          → copyFile(.bak) → chmod(.bak) → rename(tmp → target) → chmod(target)
-</code></pre>
-<h3 id="83-promise-链串行锁">8.3 Promise 链串行锁</h3>
-<pre><code class="language-typescript">// src/cron/service/locked.ts:11-22
-export async function locked&lt;T&gt;(state: CronServiceState, fn: () =&gt; Promise&lt;T&gt;): Promise&lt;T&gt; {
-  const storePath = state.deps.storePath;
-  const storeOp = storeLocks.get(storePath) ?? Promise.resolve();
-  const next = Promise.all([resolveChain(state.op), resolveChain(storeOp)]).then(fn);
-  const keepAlive = resolveChain(next);
-  state.op = keepAlive;
-  storeLocks.set(storePath, keepAlive);
-  return (await next) as T;
-}
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/cron/store.ts:110-155 — saveCronStore 实现</span>
+<span class="c1">// 核心流程：mkdir(0o700) → chmod(dir) → writeFile(tmp, mode:0o600) → chmod(tmp)</span>
+<span class="c1">//          → copyFile(.bak) → chmod(.bak) → rename(tmp → target) → chmod(target)</span>
+</code></pre></div>
+
+<h3 id="93-promise">9.3 Promise 链串行锁</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/cron/service/locked.ts:11-22</span>
+<span class="k">export</span> <span class="k">async</span> <span class="kd">function</span> <span class="nx">locked</span><span class="o">&lt;</span><span class="nx">T</span><span class="o">&gt;</span><span class="p">(</span><span class="nx">state</span>: <span class="kt">CronServiceState</span><span class="p">,</span> <span class="nx">fn</span><span class="o">:</span> <span class="p">()</span> <span class="p">=&gt;</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="nx">T</span><span class="o">&gt;</span><span class="p">)</span><span class="o">:</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="nx">T</span><span class="o">&gt;</span> <span class="p">{</span>
+  <span class="kd">const</span> <span class="nx">storePath</span> <span class="o">=</span> <span class="nx">state</span><span class="p">.</span><span class="nx">deps</span><span class="p">.</span><span class="nx">storePath</span><span class="p">;</span>
+  <span class="kd">const</span> <span class="nx">storeOp</span> <span class="o">=</span> <span class="nx">storeLocks</span><span class="p">.</span><span class="nx">get</span><span class="p">(</span><span class="nx">storePath</span><span class="p">)</span> <span class="o">??</span> <span class="nb">Promise</span><span class="p">.</span><span class="nx">resolve</span><span class="p">();</span>
+  <span class="kd">const</span> <span class="nx">next</span> <span class="o">=</span> <span class="nb">Promise</span><span class="p">.</span><span class="nx">all</span><span class="p">([</span><span class="nx">resolveChain</span><span class="p">(</span><span class="nx">state</span><span class="p">.</span><span class="nx">op</span><span class="p">),</span> <span class="nx">resolveChain</span><span class="p">(</span><span class="nx">storeOp</span><span class="p">)]).</span><span class="nx">then</span><span class="p">(</span><span class="nx">fn</span><span class="p">);</span>
+  <span class="kd">const</span> <span class="nx">keepAlive</span> <span class="o">=</span> <span class="nx">resolveChain</span><span class="p">(</span><span class="nx">next</span><span class="p">);</span>
+  <span class="nx">state</span><span class="p">.</span><span class="nx">op</span> <span class="o">=</span> <span class="nx">keepAlive</span><span class="p">;</span>
+  <span class="nx">storeLocks</span><span class="p">.</span><span class="nx">set</span><span class="p">(</span><span class="nx">storePath</span><span class="p">,</span> <span class="nx">keepAlive</span><span class="p">);</span>
+  <span class="k">return</span> <span class="p">(</span><span class="k">await</span> <span class="nx">next</span><span class="p">)</span> <span class="kr">as</span> <span class="nx">T</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p>使用 Promise 链实现的异步互斥锁，按 <code>storePath</code> 隔离。确保同一 Store 的读写操作串行化，但不同 Store 之间可并行。</p>
-<h3 id="84-执行日志runlog">8.4 执行日志（RunLog）</h3>
+<h3 id="94-runlog">9.4 执行日志（RunLog）</h3>
 <p>每个任务有独立的 JSONL 日志文件：</p>
-<pre><code>~/.openclaw/cron/runs/&lt;jobId&gt;.jsonl
-</code></pre>
+<div class="codehilite"><pre><span></span><code>~/.openclaw/cron/runs/&lt;jobId&gt;.jsonl
+</code></pre></div>
+
 <p>每行一条 <code>CronRunLogEntry</code>，记录执行时间、状态、摘要、Token 消耗、模型/提供商信息、投递状态等。支持分页查询（最多 200 条/页）、按状态/投递状态过滤、关键词搜索、正序/倒序排列。</p>
 <p><strong>日志轮转</strong>：</p>
-<pre><code class="language-typescript">// src/cron/run-log.ts:82-83
-export const DEFAULT_CRON_RUN_LOG_MAX_BYTES = 2_000_000;  // 2MB
-export const DEFAULT_CRON_RUN_LOG_KEEP_LINES = 2_000;     // 最近 2000 行
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/cron/run-log.ts:82-83</span>
+<span class="k">export</span> <span class="kd">const</span> <span class="nx">DEFAULT_CRON_RUN_LOG_MAX_BYTES</span> <span class="o">=</span> <span class="mf">2</span><span class="nx">_000_000</span><span class="p">;</span>  <span class="c1">// 2MB</span>
+<span class="k">export</span> <span class="kd">const</span> <span class="nx">DEFAULT_CRON_RUN_LOG_KEEP_LINES</span> <span class="o">=</span> <span class="mf">2</span><span class="nx">_000</span><span class="p">;</span>     <span class="c1">// 最近 2000 行</span>
+</code></pre></div>
+
 <p>超过大小阈值时自动裁剪到最近 N 行。</p>
 <hr />
-<h2 id="9-执行引擎与会话管理">9. 执行引擎与会话管理</h2>
-<h3 id="91-main-模式执行">9.1 main 模式执行</h3>
+<h2 id="10">10. 执行引擎与会话管理</h2>
+<h3 id="101-main">10.1 main 模式执行</h3>
 <p><code>systemEvent</code> payload 的 main 模式任务：</p>
 <ol>
 <li>将文本作为系统事件注入主会话（<code>enqueueSystemEvent()</code>）</li>
@@ -703,145 +977,157 @@ export const DEFAULT_CRON_RUN_LOG_KEEP_LINES = 2_000;     // 最近 2000 行
 <p><strong>Heartbeat 投递策略</strong>（<code>src/cron/heartbeat-policy.ts</code>）：
 - <code>shouldSkipHeartbeatOnlyDelivery()</code> — 如果回复仅包含 HEARTBEAT_OK token，跳过投递
 - <code>shouldEnqueueCronMainSummary()</code> — 决定是否将 Cron 摘要回注主会话</p>
-<h3 id="92-isolated-模式执行">9.2 isolated 模式执行</h3>
+<h3 id="102-isolated">10.2 isolated 模式执行</h3>
 <p><code>agentTurn</code> payload 的隔离模式任务：</p>
 <ol>
 <li>创建临时会话（<code>resolveCronSession()</code>）</li>
 <li>解析工作空间技能快照（<code>src/cron/isolated-agent/skills-snapshot.ts</code>），带版本跟踪和过期刷新</li>
 <li>在独立上下文中运行完整 Agent 对话（<code>runIsolatedAgentJob()</code>）</li>
+<li>应用 <code>toolsAllow</code> 白名单过滤工具（如已配置）</li>
 <li>收集执行结果（summary、outputText、usage telemetry）</li>
 <li>投递到配置的渠道</li>
 <li>会话按保留策略自动清理</li>
 </ol>
 <p>隔离执行的核心代码在 <code>src/cron/isolated-agent/</code> 目录下，包括：
 - <code>run.ts</code> — 执行主逻辑
+- <code>run-executor.ts</code> — 执行器（传递 <code>toolsAllow</code> 到 Agent 引擎）
+- <code>run-config.ts</code> — Agent 默认配置构建（模型覆盖合并）
 - <code>session.ts</code> — 会话创建与管理
 - <code>session-key.ts</code> — 会话键生成
 - <code>delivery-dispatch.ts</code> — 结果分发
 - <code>delivery-target.ts</code> — 投递目标解析
 - <code>model-selection.ts</code> — 模型选择
-- <code>run-config.ts</code> — 运行配置
 - <code>helpers.ts</code> — 辅助函数
 - <code>skills-snapshot.ts</code> — 技能快照
 - <code>subagent-followup.ts</code> — 子 Agent 跟踪</p>
-<h3 id="93-子-agent-跟踪subagent-followup">9.3 子 Agent 跟踪（Subagent Followup）</h3>
+<h3 id="103-agent-subagent-followup">10.3 子 Agent 跟踪（Subagent Followup）</h3>
 <p>当 Cron 触发的 Agent 进一步生成子 Agent 时，<code>src/cron/isolated-agent/subagent-followup.ts</code> 处理结果等待：</p>
 <ul>
 <li><strong>临时回复检测</strong>：<code>isLikelyInterimCronMessage()</code> 通过关键词匹配（如 "working on it", "pulling together"）识别 Agent 的临时应答，避免误将中间状态当作最终结果</li>
 <li><strong>子 Agent 等待</strong>：<code>waitForDescendantSubagentSummary()</code> 通过 push-based <code>agent.wait</code> RPC 等待子 Agent 完成</li>
 <li><strong>降级读取</strong>：<code>readDescendantSubagentFallbackReply()</code> 在等待超时后提取子 Agent 的可用输出</li>
 </ul>
-<h3 id="94-job-状态机">9.4 Job 状态机</h3>
-<pre><code class="language-typescript">// src/cron/types.ts:112-136
-export type CronJobState = {
-  nextRunAtMs?: number;          // 下次执行时间
-  runningAtMs?: number;          // 正在执行的开始时间（清除=完成）
-  lastRunAtMs?: number;          // 上次执行时间
-  lastRunStatus?: CronRunStatus; // ok / error / skipped（首选字段）
-  lastStatus?: &quot;ok&quot; | &quot;error&quot; | &quot;skipped&quot;;  // lastRunStatus 的向后兼容别名
-  lastError?: string;            // 上次错误信息
-  lastErrorReason?: FailoverReason;
-  lastDurationMs?: number;       // 上次执行耗时
-  consecutiveErrors?: number;    // 连续错误次数（成功后重置）
-  lastFailureAlertAtMs?: number; // 上次失败告警时间
-  scheduleErrorCount?: number;   // 连续调度计算错误数
-  lastDeliveryStatus?: CronDeliveryStatus;  // 投递状态
-  lastDeliveryError?: string;    // 投递错误
-  lastDelivered?: boolean;       // 上次是否成功投递
-};
-</code></pre>
+<h3 id="104-job">10.4 Job 状态机</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/cron/types.ts:114-136</span>
+<span class="k">export</span> <span class="kr">type</span> <span class="nx">CronJobState</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">nextRunAtMs?</span>: <span class="kt">number</span><span class="p">;</span>          <span class="c1">// 下次执行时间</span>
+  <span class="nx">runningAtMs?</span>: <span class="kt">number</span><span class="p">;</span>          <span class="c1">// 正在执行的开始时间（清除=完成）</span>
+  <span class="nx">lastRunAtMs?</span>: <span class="kt">number</span><span class="p">;</span>          <span class="c1">// 上次执行时间</span>
+  <span class="nx">lastRunStatus?</span>: <span class="kt">CronRunStatus</span><span class="p">;</span> <span class="c1">// ok / error / skipped（首选字段）</span>
+  <span class="nx">lastStatus</span><span class="o">?:</span> <span class="s2">&quot;ok&quot;</span> <span class="o">|</span> <span class="s2">&quot;error&quot;</span> <span class="o">|</span> <span class="s2">&quot;skipped&quot;</span><span class="p">;</span>  <span class="c1">// lastRunStatus 的向后兼容别名</span>
+  <span class="nx">lastError?</span>: <span class="kt">string</span><span class="p">;</span>            <span class="c1">// 上次错误信息</span>
+  <span class="nx">lastErrorReason?</span>: <span class="kt">FailoverReason</span><span class="p">;</span>
+  <span class="nx">lastDurationMs?</span>: <span class="kt">number</span><span class="p">;</span>       <span class="c1">// 上次执行耗时</span>
+  <span class="nx">consecutiveErrors?</span>: <span class="kt">number</span><span class="p">;</span>    <span class="c1">// 连续错误次数（成功后重置）</span>
+  <span class="nx">lastFailureAlertAtMs?</span>: <span class="kt">number</span><span class="p">;</span> <span class="c1">// 上次失败告警时间</span>
+  <span class="nx">scheduleErrorCount?</span>: <span class="kt">number</span><span class="p">;</span>   <span class="c1">// 连续调度计算错误数</span>
+  <span class="nx">lastDeliveryStatus?</span>: <span class="kt">CronDeliveryStatus</span><span class="p">;</span>  <span class="c1">// 投递状态</span>
+  <span class="nx">lastDeliveryError?</span>: <span class="kt">string</span><span class="p">;</span>    <span class="c1">// 投递错误</span>
+  <span class="nx">lastDelivered?</span>: <span class="kt">boolean</span><span class="p">;</span>       <span class="c1">// 上次是否成功投递</span>
+<span class="p">};</span>
+</code></pre></div>
+
 <p><strong>卡住检测</strong>：</p>
-<pre><code class="language-typescript">// src/cron/service/jobs.ts:35
-const STUCK_RUN_MS = 2 * 60 * 60 * 1000;  // 2 小时
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/cron/service/jobs.ts:35</span>
+<span class="kd">const</span> <span class="nx">STUCK_RUN_MS</span> <span class="o">=</span> <span class="mf">2</span> <span class="o">*</span> <span class="mf">60</span> <span class="o">*</span> <span class="mf">60</span> <span class="o">*</span> <span class="mf">1000</span><span class="p">;</span>  <span class="c1">// 2 小时</span>
+</code></pre></div>
+
 <p>超过 2 小时仍在 running 状态的任务被视为卡住，在启动时自动重置。</p>
 <hr />
-<h2 id="10-结果投递系统">10. 结果投递系统</h2>
-<h3 id="101-投递计划解析">10.1 投递计划解析</h3>
+<h2 id="11">11. 结果投递系统</h2>
+<h3 id="111">11.1 投递计划解析</h3>
 <p><code>src/cron/delivery.ts:50</code> 的 <code>resolveCronDeliveryPlan()</code> 统一解析投递策略：</p>
-<pre><code class="language-typescript">export type CronDeliveryPlan = {
-  mode: CronDeliveryMode;            // &quot;none&quot; | &quot;announce&quot; | &quot;webhook&quot;
-  channel?: CronMessageChannel;       // 渠道 ID 或 &quot;last&quot;
-  to?: string;                        // 目标
-  accountId?: string;                  // 多账号 ID
-  source: &quot;delivery&quot; | &quot;payload&quot;;     // 配置来源
-  requested: boolean;                  // 是否需要投递
-};
-</code></pre>
-<h3 id="102-announce-投递">10.2 announce 投递</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kr">type</span> <span class="nx">CronDeliveryPlan</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">mode</span>: <span class="kt">CronDeliveryMode</span><span class="p">;</span>            <span class="c1">// &quot;none&quot; | &quot;announce&quot; | &quot;webhook&quot;</span>
+  <span class="nx">channel?</span>: <span class="kt">CronMessageChannel</span><span class="p">;</span>       <span class="c1">// 渠道 ID 或 &quot;last&quot;</span>
+  <span class="nx">to?</span>: <span class="kt">string</span><span class="p">;</span>                        <span class="c1">// 目标</span>
+  <span class="nx">accountId?</span>: <span class="kt">string</span><span class="p">;</span>                  <span class="c1">// 多账号 ID</span>
+  <span class="nx">source</span><span class="o">:</span> <span class="s2">&quot;delivery&quot;</span> <span class="o">|</span> <span class="s2">&quot;payload&quot;</span><span class="p">;</span>     <span class="c1">// 配置来源</span>
+  <span class="nx">requested</span>: <span class="kt">boolean</span><span class="p">;</span>                  <span class="c1">// 是否需要投递</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="112-announce">11.2 announce 投递</h3>
 <p>通过 OpenClaw 的消息渠道系统（WhatsApp、Telegram、Discord、飞书等）发送结果。使用 <code>deliverOutboundPayloads()</code> 统一处理。</p>
-<h3 id="103-失败通知">10.3 失败通知</h3>
+<h3 id="113">11.3 失败通知</h3>
 <p>可配置独立的失败通知目标：</p>
-<pre><code class="language-typescript">// src/cron/types.ts:35-40
-export type CronFailureDestination = {
-  channel?: CronMessageChannel;
-  to?: string;
-  accountId?: string;
-  mode?: &quot;announce&quot; | &quot;webhook&quot;;
-};
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/cron/types.ts:35-40</span>
+<span class="k">export</span> <span class="kr">type</span> <span class="nx">CronFailureDestination</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">channel?</span>: <span class="kt">CronMessageChannel</span><span class="p">;</span>
+  <span class="nx">to?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">accountId?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">mode</span><span class="o">?:</span> <span class="s2">&quot;announce&quot;</span> <span class="o">|</span> <span class="s2">&quot;webhook&quot;</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
 <hr />
-<h2 id="11-失败处理与重试机制">11. 失败处理与重试机制</h2>
-<h3 id="111-指数退避">11.1 指数退避</h3>
+<h2 id="12">12. 失败处理与重试机制</h2>
+<h3 id="121">12.1 指数退避</h3>
 <p>连续失败时按指数退避延迟：</p>
-<pre><code class="language-typescript">// src/cron/service/timer.ts:114-120
-const DEFAULT_BACKOFF_SCHEDULE_MS = [
-  30_000,       // 1st error →  30s
-  60_000,       // 2nd error →   1min
-  5 * 60_000,   // 3rd error →   5min
-  15 * 60_000,  // 4th error →  15min
-  60 * 60_000,  // 5th+ error → 60min（持续）
-];
-</code></pre>
-<h3 id="112-瞬态错误重试">11.2 瞬态错误重试</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/cron/service/timer.ts:114-120</span>
+<span class="kd">const</span> <span class="nx">DEFAULT_BACKOFF_SCHEDULE_MS</span> <span class="o">=</span> <span class="p">[</span>
+  <span class="mf">30</span><span class="nx">_000</span><span class="p">,</span>       <span class="c1">// 1st error →  30s</span>
+  <span class="mf">60</span><span class="nx">_000</span><span class="p">,</span>       <span class="c1">// 2nd error →   1min</span>
+  <span class="mf">5</span> <span class="o">*</span> <span class="mf">60</span><span class="nx">_000</span><span class="p">,</span>   <span class="c1">// 3rd error →   5min</span>
+  <span class="mf">15</span> <span class="o">*</span> <span class="mf">60</span><span class="nx">_000</span><span class="p">,</span>  <span class="c1">// 4th error →  15min</span>
+  <span class="mf">60</span> <span class="o">*</span> <span class="mf">60</span><span class="nx">_000</span><span class="p">,</span>  <span class="c1">// 5th+ error → 60min（持续）</span>
+<span class="p">];</span>
+</code></pre></div>
+
+<h3 id="122">12.2 瞬态错误重试</h3>
 <p>一次性任务（<code>at</code> 模式）遇到瞬态错误时可自动重试（Issue #24355）：</p>
-<pre><code class="language-typescript">// src/cron/service/timer.ts:133-141
-const TRANSIENT_PATTERNS: Record&lt;string, RegExp&gt; = {
-  rate_limit:   /(rate[_ ]limit|too many requests|429|resource has been exhausted|cloudflare|tokens per day)/i,
-  overloaded:   /\b529\b|\boverloaded(?:_error)?\b|high demand|temporar(?:ily|y) overloaded|capacity exceeded/i,
-  network:      /(network|econnreset|econnrefused|fetch failed|socket)/i,
-  timeout:      /(timeout|etimedout)/i,
-  server_error: /\b5\d{2}\b/,
-};
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/cron/service/timer.ts:133-141</span>
+<span class="kd">const</span> <span class="nx">TRANSIENT_PATTERNS</span>: <span class="kt">Record</span><span class="o">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="nb">RegExp</span><span class="o">&gt;</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">rate_limit</span><span class="o">:</span>   <span class="sr">/(rate[_ ]limit|too many requests|429|resource has been exhausted|cloudflare|tokens per day)/i</span><span class="p">,</span>
+  <span class="nx">overloaded</span><span class="o">:</span>   <span class="sr">/\b529\b|\boverloaded(?:_error)?\b|high demand|temporar(?:ily|y) overloaded|capacity exceeded/i</span><span class="p">,</span>
+  <span class="nx">network</span><span class="o">:</span>      <span class="sr">/(network|econnreset|econnrefused|fetch failed|socket)/i</span><span class="p">,</span>
+  <span class="nx">timeout</span><span class="o">:</span>      <span class="sr">/(timeout|etimedout)/i</span><span class="p">,</span>
+  <span class="nx">server_error</span><span class="o">:</span> <span class="sr">/\b5\d{2}\b/</span><span class="p">,</span>
+<span class="p">};</span>
+</code></pre></div>
+
 <p>默认最多重试 3 次（<code>DEFAULT_MAX_TRANSIENT_RETRIES</code>），可通过 <code>cronConfig.retry</code> 自定义。</p>
-<h3 id="113-失败告警">11.3 失败告警</h3>
+<h3 id="123">12.3 失败告警</h3>
 <p>连续失败 N 次后自动发送告警：</p>
-<pre><code class="language-typescript">// src/cron/service/timer.ts:43-44
-const DEFAULT_FAILURE_ALERT_AFTER = 2;       // 连续失败 2 次后告警
-const DEFAULT_FAILURE_ALERT_COOLDOWN_MS = 60 * 60_000;  // 告警冷却 1 小时
-</code></pre>
-<h3 id="114-调度错误自动禁用">11.4 调度错误自动禁用</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/cron/service/timer.ts:43-44</span>
+<span class="kd">const</span> <span class="nx">DEFAULT_FAILURE_ALERT_AFTER</span> <span class="o">=</span> <span class="mf">2</span><span class="p">;</span>       <span class="c1">// 连续失败 2 次后告警</span>
+<span class="kd">const</span> <span class="nx">DEFAULT_FAILURE_ALERT_COOLDOWN_MS</span> <span class="o">=</span> <span class="mf">60</span> <span class="o">*</span> <span class="mf">60</span><span class="nx">_000</span><span class="p">;</span>  <span class="c1">// 告警冷却 1 小时</span>
+</code></pre></div>
+
+<h3 id="124">12.4 调度错误自动禁用</h3>
 <p>当 <code>scheduleErrorCount</code> 超过阈值时，任务自动禁用。防止错误的 cron 表达式持续消耗资源（<code>src/cron/service/jobs.ts</code> 中 <code>recordScheduleComputeError</code> 实现）。</p>
 <hr />
-<h2 id="12-防雷群效应stagger-机制">12. 防雷群效应：Stagger 机制</h2>
-<h3 id="121-问题">12.1 问题</h3>
+<h2 id="13-stagger">13. 防雷群效应：Stagger 机制</h2>
+<h3 id="131">13.1 问题</h3>
 <p>多个 Cron 任务配置相同的 cron 表达式（如 <code>0 * * * *</code> 每小时整点）时，会同时触发，造成瞬时负载峰值。</p>
-<h3 id="122-解决方案">12.2 解决方案</h3>
-<pre><code class="language-typescript">// src/cron/stagger.ts:3
-export const DEFAULT_TOP_OF_HOUR_STAGGER_MS = 5 * 60 * 1000;  // 5 分钟窗口
-</code></pre>
+<h3 id="132">13.2 解决方案</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/cron/stagger.ts:3</span>
+<span class="k">export</span> <span class="kd">const</span> <span class="nx">DEFAULT_TOP_OF_HOUR_STAGGER_MS</span> <span class="o">=</span> <span class="mf">5</span> <span class="o">*</span> <span class="mf">60</span> <span class="o">*</span> <span class="mf">1000</span><span class="p">;</span>  <span class="c1">// 5 分钟窗口</span>
+</code></pre></div>
+
 <p>对于每小时整点触发的 cron 表达式，自动启用 5 分钟的错峰窗口。</p>
-<h3 id="123-确定性偏移">12.3 确定性偏移</h3>
+<h3 id="133">13.3 确定性偏移</h3>
 <p>基于 <code>SHA256(jobId)</code> 计算每个任务的确定性偏移量，确保：
 - 同一任务在不同重启后保持相同偏移
 - 不同任务均匀分布在错峰窗口内</p>
-<pre><code class="language-typescript">// src/cron/service/jobs.ts:43-62
-function resolveStableCronOffsetMs(jobId: string, staggerMs: number) {
-  const digest = crypto.createHash(&quot;sha256&quot;).update(jobId).digest();
-  const offset = digest.readUInt32BE(0) % staggerMs;
-  return offset;
-}
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/cron/service/jobs.ts:43-62</span>
+<span class="kd">function</span> <span class="nx">resolveStableCronOffsetMs</span><span class="p">(</span><span class="nx">jobId</span>: <span class="kt">string</span><span class="p">,</span> <span class="nx">staggerMs</span>: <span class="kt">number</span><span class="p">)</span> <span class="p">{</span>
+  <span class="kd">const</span> <span class="nx">digest</span> <span class="o">=</span> <span class="nx">crypto</span><span class="p">.</span><span class="nx">createHash</span><span class="p">(</span><span class="s2">&quot;sha256&quot;</span><span class="p">).</span><span class="nx">update</span><span class="p">(</span><span class="nx">jobId</span><span class="p">).</span><span class="nx">digest</span><span class="p">();</span>
+  <span class="kd">const</span> <span class="nx">offset</span> <span class="o">=</span> <span class="nx">digest</span><span class="p">.</span><span class="nx">readUInt32BE</span><span class="p">(</span><span class="mf">0</span><span class="p">)</span> <span class="o">%</span> <span class="nx">staggerMs</span><span class="p">;</span>
+  <span class="k">return</span> <span class="nx">offset</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p>偏移缓存上限 4096 条（<code>STAGGER_OFFSET_CACHE_MAX</code>）。</p>
 <hr />
-<h2 id="13-会话生命周期管理">13. 会话生命周期管理</h2>
-<h3 id="131-session-reaper">13.1 Session Reaper</h3>
+<h2 id="14">14. 会话生命周期管理</h2>
+<h3 id="141-session-reaper">14.1 Session Reaper</h3>
 <p>隔离模式任务每次执行都会创建临时会话。为防止会话存储无限膨胀，<code>src/cron/session-reaper.ts</code> 实现了自动清理：</p>
-<pre><code class="language-typescript">// session-reaper.ts:20-23
-const DEFAULT_RETENTION_MS = 24 * 3_600_000;    // 默认保留 24 小时
-const MIN_SWEEP_INTERVAL_MS = 5 * 60_000;       // 最少 5 分钟扫一次
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="c1">// session-reaper.ts:20-23</span>
+<span class="kd">const</span> <span class="nx">DEFAULT_RETENTION_MS</span> <span class="o">=</span> <span class="mf">24</span> <span class="o">*</span> <span class="mf">3</span><span class="nx">_600_000</span><span class="p">;</span>    <span class="c1">// 默认保留 24 小时</span>
+<span class="kd">const</span> <span class="nx">MIN_SWEEP_INTERVAL_MS</span> <span class="o">=</span> <span class="mf">5</span> <span class="o">*</span> <span class="mf">60</span><span class="nx">_000</span><span class="p">;</span>       <span class="c1">// 最少 5 分钟扫一次</span>
+</code></pre></div>
+
 <ul>
 <li><strong>清理目标</strong>：键名匹配 <code>...:cron:&lt;jobId&gt;:run:&lt;uuid&gt;</code> 模式的临时会话</li>
 <li><strong>保留策略</strong>：默认 24 小时，可通过 <code>sessionRetention</code> 配置（支持 <code>"7d"</code>, <code>"1h30m"</code> 等），<code>false</code> 禁用</li>
@@ -850,8 +1136,8 @@ const MIN_SWEEP_INTERVAL_MS = 5 * 60_000;       // 最少 5 分钟扫一次
 <li><strong>转录清理</strong>：会话删除后同步归档和清理对应的对话转录文件</li>
 </ul>
 <hr />
-<h2 id="14-agent-工具接口">14. Agent 工具接口</h2>
-<h3 id="141-cron-工具">14.1 cron 工具</h3>
+<h2 id="15-agent">15. Agent 工具接口</h2>
+<h3 id="151-cron">15.1 cron 工具</h3>
 <p><code>src/agents/tools/cron-tool.ts</code> 将 Cron 管理暴露为 Agent 可调用的工具，支持以下操作：</p>
 <table>
 <thead>
@@ -871,11 +1157,11 @@ const MIN_SWEEP_INTERVAL_MS = 5 * 60_000;       // 最少 5 分钟扫一次
 </tr>
 <tr>
 <td><code>add</code></td>
-<td>创建新任务</td>
+<td>创建新任务（支持 <code>toolsAllow</code> 工具白名单）</td>
 </tr>
 <tr>
 <td><code>update</code></td>
-<td>修改现有任务</td>
+<td>修改现有任务（支持 <code>toolsAllow</code> 变更/清除）</td>
 </tr>
 <tr>
 <td><code>remove</code></td>
@@ -896,17 +1182,18 @@ const MIN_SWEEP_INTERVAL_MS = 5 * 60_000;       // 最少 5 分钟扫一次
 </tbody>
 </table>
 <p><code>wake</code> 的两种模式：<code>"now"</code> 为默认——立即唤醒 Agent；<code>"next-heartbeat"</code> 将唤醒延迟到下一个心跳周期。</p>
-<h3 id="142-上下文注入">14.2 上下文注入</h3>
+<h3 id="152">15.2 上下文注入</h3>
 <p>创建提醒类任务时，工具自动注入最近对话上下文（最多 10 条消息，每条 220 字，总共 700 字），让 AI 的提醒包含相关对话背景：</p>
-<pre><code class="language-typescript">// src/agents/tools/cron-tool.ts:25-28
-const REMINDER_CONTEXT_MESSAGES_MAX = 10;
-const REMINDER_CONTEXT_PER_MESSAGE_MAX = 220;
-const REMINDER_CONTEXT_TOTAL_MAX = 700;
-const REMINDER_CONTEXT_MARKER = &quot;\n\nRecent context:\n&quot;;
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/agents/tools/cron-tool.ts:25-28</span>
+<span class="kd">const</span> <span class="nx">REMINDER_CONTEXT_MESSAGES_MAX</span> <span class="o">=</span> <span class="mf">10</span><span class="p">;</span>
+<span class="kd">const</span> <span class="nx">REMINDER_CONTEXT_PER_MESSAGE_MAX</span> <span class="o">=</span> <span class="mf">220</span><span class="p">;</span>
+<span class="kd">const</span> <span class="nx">REMINDER_CONTEXT_TOTAL_MAX</span> <span class="o">=</span> <span class="mf">700</span><span class="p">;</span>
+<span class="kd">const</span> <span class="nx">REMINDER_CONTEXT_MARKER</span> <span class="o">=</span> <span class="s2">&quot;\n\nRecent context:\n&quot;</span><span class="p">;</span>
+</code></pre></div>
+
 <hr />
-<h2 id="15-输入规范化与数据迁移">15. 输入规范化与数据迁移</h2>
-<h3 id="151-输入规范化">15.1 输入规范化</h3>
+<h2 id="16">16. 输入规范化与数据迁移</h2>
+<h3 id="161">16.1 输入规范化</h3>
 <p><code>src/cron/normalize.ts</code>（约 550 行）是所有 Job 创建/更新操作的入口网关：</p>
 <ul>
 <li><strong>Schedule kind 推断</strong>：根据提供的字段（<code>expr</code>/<code>cron</code>/<code>at</code>/<code>atMs</code>/<code>everyMs</code>）自动推断 <code>kind</code></li>
@@ -915,8 +1202,9 @@ const REMINDER_CONTEXT_MARKER = &quot;\n\nRecent context:\n&quot;;
 <li><strong><code>current</code> 会话解析</strong>：将 <code>sessionTarget: "current"</code> 解析为 <code>session:&lt;实际会话key&gt;</code></li>
 <li><strong><code>deleteAfterRun</code> 自动设置</strong>：<code>at</code> 调度模式自动标记为执行后删除</li>
 <li><strong>默认投递模式</strong>：未指定时为 <code>announce</code></li>
+<li><strong><code>toolsAllow</code> 规范化</strong>（新增）：修剪空白、去空字符串，支持 <code>null</code> 清除语义</li>
 </ul>
-<h3 id="152-存储迁移">15.2 存储迁移</h3>
+<h3 id="162">16.2 存储迁移</h3>
 <p><code>src/cron/store-migration.ts</code>（约 515 行）在加载 Store 时执行遗留格式迁移：</p>
 <table>
 <thead>
@@ -957,17 +1245,18 @@ const REMINDER_CONTEXT_MARKER = &quot;\n\nRecent context:\n&quot;;
 </tbody>
 </table>
 <p>迁移函数返回 <code>CronStoreIssueKey[]</code> 报告发现的问题类型，供 doctor 命令交互式修复。</p>
-<h3 id="153-payload-迁移">15.3 Payload 迁移</h3>
+<h3 id="163-payload">16.3 Payload 迁移</h3>
 <p><code>src/cron/payload-migration.ts</code> 处理 <code>provider</code> → <code>channel</code> 字段的遗留迁移。</p>
 <hr />
-<h2 id="16-启动追赶missed-jobs">16. 启动追赶：Missed Jobs</h2>
-<h3 id="161-问题">16.1 问题</h3>
+<h2 id="17-missed-jobs">17. 启动追赶：Missed Jobs</h2>
+<h3 id="171">17.1 问题</h3>
 <p>Gateway 重启期间可能有 Cron 任务错过了执行时间。启动后需要追赶执行这些任务，但不能同时运行太多以免压垮系统。</p>
-<h3 id="162-追赶策略">16.2 追赶策略</h3>
-<pre><code class="language-typescript">// src/cron/service/timer.ts:41-42
-const DEFAULT_MISSED_JOB_STAGGER_MS = 5_000;           // 错过任务间隔 5 秒
-const DEFAULT_MAX_MISSED_JOBS_PER_RESTART = 5;          // 每次重启最多立即执行 5 个
-</code></pre>
+<h3 id="172">17.2 追赶策略</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/cron/service/timer.ts:41-42</span>
+<span class="kd">const</span> <span class="nx">DEFAULT_MISSED_JOB_STAGGER_MS</span> <span class="o">=</span> <span class="mf">5</span><span class="nx">_000</span><span class="p">;</span>           <span class="c1">// 错过任务间隔 5 秒</span>
+<span class="kd">const</span> <span class="nx">DEFAULT_MAX_MISSED_JOBS_PER_RESTART</span> <span class="o">=</span> <span class="mf">5</span><span class="p">;</span>          <span class="c1">// 每次重启最多立即执行 5 个</span>
+</code></pre></div>
+
 <p>追赶流程三阶段：</p>
 <ol>
 <li><strong>计划阶段</strong>（<code>planStartupCatchup</code>）：扫描所有 enabled 任务，找出 <code>nextRunAtMs &lt; nowMs</code> 的候选任务</li>
@@ -976,17 +1265,18 @@ const DEFAULT_MAX_MISSED_JOBS_PER_RESTART = 5;          // 每次重启最多立
 </ol>
 <p>可通过 <code>CronServiceDeps.missedJobStaggerMs</code> 和 <code>maxMissedJobsPerRestart</code> 自定义。</p>
 <hr />
-<h2 id="17-commandlane-队列隔离">17. CommandLane 队列隔离</h2>
-<h3 id="171-队列分道">17.1 队列分道</h3>
-<pre><code class="language-typescript">// src/process/lanes.ts
-export const enum CommandLane {
-  Main = &quot;main&quot;,           // 用户消息处理
-  Cron = &quot;cron&quot;,           // 定时任务执行
-  Subagent = &quot;subagent&quot;,   // 子 Agent 调用
-  Nested = &quot;nested&quot;,       // 嵌套 Agent
-}
-</code></pre>
-<h3 id="172-cron-独立车道">17.2 Cron 独立车道</h3>
+<h2 id="18-commandlane">18. CommandLane 队列隔离</h2>
+<h3 id="181">18.1 队列分道</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/process/lanes.ts</span>
+<span class="k">export</span> <span class="kd">const</span> <span class="kd">enum</span> <span class="nx">CommandLane</span> <span class="p">{</span>
+  <span class="nx">Main</span> <span class="o">=</span> <span class="s2">&quot;main&quot;</span><span class="p">,</span>           <span class="c1">// 用户消息处理</span>
+  <span class="nx">Cron</span> <span class="o">=</span> <span class="s2">&quot;cron&quot;</span><span class="p">,</span>           <span class="c1">// 定时任务执行</span>
+  <span class="nx">Subagent</span> <span class="o">=</span> <span class="s2">&quot;subagent&quot;</span><span class="p">,</span>   <span class="c1">// 子 Agent 调用</span>
+  <span class="nx">Nested</span> <span class="o">=</span> <span class="s2">&quot;nested&quot;</span><span class="p">,</span>       <span class="c1">// 嵌套 Agent</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="182-cron">18.2 Cron 独立车道</h3>
 <p>Cron 任务在 <code>CommandLane.Cron</code> 上执行（通过 <code>src/cron/service/ops.ts</code> 中的 <code>enqueueCommandInLane()</code>），与主用户消息队列完全隔离：</p>
 <ul>
 <li>Cron 执行不会阻塞用户的交互式消息处理</li>
@@ -994,78 +1284,333 @@ export const enum CommandLane {
 <li>手动 <code>run</code> 触发也走 Cron 车道，保持行为一致</li>
 </ul>
 <hr />
-<h2 id="18-运维工具">18. 运维工具</h2>
-<h3 id="181-cli-doctor-诊断">18.1 CLI Doctor 诊断</h3>
+<h2 id="19-task-taskflow">19. Task 系统 — 任务账本与 TaskFlow（新增）</h2>
+<h3 id="191">19.1 概述</h3>
+<p>Task 系统是 OpenClaw 的统一后台任务账本（Task Ledger），将来自不同 runtime（Cron、子 Agent、ACP、CLI）的任务统一注册到一个中央注册表中。这使得 <code>openclaw tasks</code> CLI 命令和聊天中的 <code>/tasks</code> 命令可以呈现跨 runtime 的统一任务视图。</p>
+<p>核心文件位于 <code>src/tasks/</code> 目录。</p>
+<h3 id="192-sqlite">19.2 SQLite 持久化</h3>
+<p>Task Registry 使用 <strong>node:sqlite</strong>（<code>DatabaseSync</code>）进行持久化存储，替代了早期的纯内存方案。</p>
+<p><strong>存储路径</strong>：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/tasks/task-registry.paths.ts:21</span>
+<span class="k">export</span> <span class="kd">function</span> <span class="nx">resolveTaskRegistrySqlitePath</span><span class="p">(</span><span class="nx">env</span><span class="p">)</span> <span class="p">{</span>
+  <span class="k">return</span> <span class="nx">path</span><span class="p">.</span><span class="nx">join</span><span class="p">(</span><span class="nx">resolveTaskRegistryDir</span><span class="p">(</span><span class="nx">env</span><span class="p">),</span> <span class="s2">&quot;runs.sqlite&quot;</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>默认存储在 <code>~/.openclaw/tasks/runs.sqlite</code>。</p>
+<p><strong>数据库配置</strong>：
+- WAL 模式（<code>PRAGMA journal_mode = WAL</code>）— 提高并发读写性能
+- NORMAL 同步模式（<code>PRAGMA synchronous = NORMAL</code>）— 性能与安全平衡
+- 5 秒 busy timeout — 防止锁竞争死等
+- 文件权限 <code>0o600</code>，目录权限 <code>0o700</code>
+- SQLite sidecar 文件（<code>-shm</code>, <code>-wal</code>）同样受权限保护</p>
+<p><strong>表结构</strong>（<code>src/tasks/task-registry.store.sqlite.ts:364-392</code>）：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">CREATE</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="k">IF</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">EXISTS</span><span class="w"> </span><span class="n">task_runs</span><span class="w"> </span><span class="p">(</span><span class="w"></span>
+<span class="w">  </span><span class="n">task_id</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">PRIMARY</span><span class="w"> </span><span class="k">KEY</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">runtime</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w">           </span><span class="c1">-- &quot;subagent&quot; | &quot;acp&quot; | &quot;cli&quot; | &quot;cron&quot;</span>
+<span class="w">  </span><span class="n">source_id</span><span class="w"> </span><span class="nb">TEXT</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">owner_key</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">scope_kind</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w">        </span><span class="c1">-- &quot;session&quot; | &quot;system&quot;</span>
+<span class="w">  </span><span class="n">child_session_key</span><span class="w"> </span><span class="nb">TEXT</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">parent_flow_id</span><span class="w"> </span><span class="nb">TEXT</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">parent_task_id</span><span class="w"> </span><span class="nb">TEXT</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">agent_id</span><span class="w"> </span><span class="nb">TEXT</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">run_id</span><span class="w"> </span><span class="nb">TEXT</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">label</span><span class="w"> </span><span class="nb">TEXT</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">task</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">status</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">delivery_status</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">notify_policy</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">created_at</span><span class="w"> </span><span class="nb">INTEGER</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">started_at</span><span class="w"> </span><span class="nb">INTEGER</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">ended_at</span><span class="w"> </span><span class="nb">INTEGER</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">last_event_at</span><span class="w"> </span><span class="nb">INTEGER</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">cleanup_after</span><span class="w"> </span><span class="nb">INTEGER</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">error</span><span class="w"> </span><span class="nb">TEXT</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">progress_summary</span><span class="w"> </span><span class="nb">TEXT</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">terminal_summary</span><span class="w"> </span><span class="nb">TEXT</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">terminal_outcome</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"></span>
+<span class="p">);</span><span class="w"></span>
+
+<span class="k">CREATE</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="k">IF</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">EXISTS</span><span class="w"> </span><span class="n">task_delivery_state</span><span class="w"> </span><span class="p">(</span><span class="w"></span>
+<span class="w">  </span><span class="n">task_id</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">PRIMARY</span><span class="w"> </span><span class="k">KEY</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">requester_origin_json</span><span class="w"> </span><span class="nb">TEXT</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">last_notified_event_at</span><span class="w"> </span><span class="nb">INTEGER</span><span class="w"></span>
+<span class="p">);</span><span class="w"></span>
+</code></pre></div>
+
+<p><strong>索引</strong>：<code>run_id</code>, <code>status</code>, <code>runtime+status</code>, <code>cleanup_after</code>, <code>last_event_at</code>, <code>owner_key</code>, <code>parent_flow_id</code>, <code>child_session_key</code>。</p>
+<p><strong>遗留迁移</strong>：<code>migrateLegacyOwnerColumns()</code> 自动检测并迁移旧 schema（如 <code>requester_session_key</code> → <code>owner_key</code>）。</p>
+<h3 id="193-task">19.3 Task 类型系统</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/tasks/task-registry.types.ts</span>
+<span class="k">export</span> <span class="kr">type</span> <span class="nx">TaskRuntime</span> <span class="o">=</span> <span class="s2">&quot;subagent&quot;</span> <span class="o">|</span> <span class="s2">&quot;acp&quot;</span> <span class="o">|</span> <span class="s2">&quot;cli&quot;</span> <span class="o">|</span> <span class="s2">&quot;cron&quot;</span><span class="p">;</span>
+
+<span class="k">export</span> <span class="kr">type</span> <span class="nx">TaskStatus</span> <span class="o">=</span>
+  <span class="o">|</span> <span class="s2">&quot;queued&quot;</span>     <span class="c1">// 已排队</span>
+  <span class="o">|</span> <span class="s2">&quot;running&quot;</span>    <span class="c1">// 执行中</span>
+  <span class="o">|</span> <span class="s2">&quot;succeeded&quot;</span>  <span class="c1">// 成功</span>
+  <span class="o">|</span> <span class="s2">&quot;failed&quot;</span>     <span class="c1">// 失败</span>
+  <span class="o">|</span> <span class="s2">&quot;timed_out&quot;</span>  <span class="c1">// 超时</span>
+  <span class="o">|</span> <span class="s2">&quot;cancelled&quot;</span>  <span class="c1">// 已取消</span>
+  <span class="o">|</span> <span class="s2">&quot;lost&quot;</span><span class="p">;</span>      <span class="c1">// 丢失（会话消失）</span>
+
+<span class="k">export</span> <span class="kr">type</span> <span class="nx">TaskDeliveryStatus</span> <span class="o">=</span>
+  <span class="o">|</span> <span class="s2">&quot;pending&quot;</span>         <span class="c1">// 待投递</span>
+  <span class="o">|</span> <span class="s2">&quot;delivered&quot;</span>       <span class="c1">// 已投递</span>
+  <span class="o">|</span> <span class="s2">&quot;session_queued&quot;</span>  <span class="c1">// 会话内排队</span>
+  <span class="o">|</span> <span class="s2">&quot;failed&quot;</span>          <span class="c1">// 投递失败</span>
+  <span class="o">|</span> <span class="s2">&quot;parent_missing&quot;</span>  <span class="c1">// 父记录缺失</span>
+  <span class="o">|</span> <span class="s2">&quot;not_applicable&quot;</span><span class="p">;</span> <span class="c1">// 不需要投递</span>
+
+<span class="k">export</span> <span class="kr">type</span> <span class="nx">TaskNotifyPolicy</span> <span class="o">=</span> <span class="s2">&quot;done_only&quot;</span> <span class="o">|</span> <span class="s2">&quot;state_changes&quot;</span> <span class="o">|</span> <span class="s2">&quot;silent&quot;</span><span class="p">;</span>
+<span class="k">export</span> <span class="kr">type</span> <span class="nx">TaskScopeKind</span> <span class="o">=</span> <span class="s2">&quot;session&quot;</span> <span class="o">|</span> <span class="s2">&quot;system&quot;</span><span class="p">;</span>
+</code></pre></div>
+
+<h3 id="194-task-pressure">19.4 Task Pressure — 任务压力摘要（新增）</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/tasks/task-registry.summary.ts</span>
+<span class="k">export</span> <span class="kr">type</span> <span class="nx">TaskRegistrySummary</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">total</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="nx">active</span>: <span class="kt">number</span><span class="p">;</span>      <span class="c1">// queued + running</span>
+  <span class="nx">terminal</span>: <span class="kt">number</span><span class="p">;</span>    <span class="c1">// 已结束</span>
+  <span class="nx">failures</span>: <span class="kt">number</span><span class="p">;</span>    <span class="c1">// failed + timed_out + lost</span>
+  <span class="nx">byStatus</span>: <span class="kt">TaskStatusCounts</span><span class="p">;</span>   <span class="c1">// 每个状态的计数</span>
+  <span class="nx">byRuntime</span>: <span class="kt">TaskRuntimeCounts</span><span class="p">;</span> <span class="c1">// 每个 runtime 的计数</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p><code>summarizeTaskRecords()</code> 函数遍历所有 TaskRecord，生成摘要。此摘要在以下位置使用：
+- <code>openclaw status</code> 命令输出（显示任务压力概览）
+- <code>openclaw tasks</code> CLI（列表头部摘要行）
+- Task Audit 异常检测</p>
+<h3 id="195-taskflow">19.5 TaskFlow — 多步骤任务编排</h3>
+<p>除了单个 Task 记录外，系统还支持 <strong>TaskFlow</strong>——多步骤任务流的编排：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/tasks/task-flow-registry.types.ts</span>
+<span class="k">export</span> <span class="kr">type</span> <span class="nx">TaskFlowSyncMode</span> <span class="o">=</span> <span class="s2">&quot;task_mirrored&quot;</span> <span class="o">|</span> <span class="s2">&quot;managed&quot;</span><span class="p">;</span>
+
+<span class="k">export</span> <span class="kr">type</span> <span class="nx">TaskFlowStatus</span> <span class="o">=</span>
+  <span class="o">|</span> <span class="s2">&quot;queued&quot;</span>
+  <span class="o">|</span> <span class="s2">&quot;running&quot;</span>
+  <span class="o">|</span> <span class="s2">&quot;waiting&quot;</span>     <span class="c1">// 等待外部输入</span>
+  <span class="o">|</span> <span class="s2">&quot;blocked&quot;</span>     <span class="c1">// 被阻塞</span>
+  <span class="o">|</span> <span class="s2">&quot;succeeded&quot;</span>
+  <span class="o">|</span> <span class="s2">&quot;failed&quot;</span>
+  <span class="o">|</span> <span class="s2">&quot;cancelled&quot;</span>
+  <span class="o">|</span> <span class="s2">&quot;lost&quot;</span><span class="p">;</span>
+
+<span class="k">export</span> <span class="kr">type</span> <span class="nx">TaskFlowRecord</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">flowId</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">syncMode</span>: <span class="kt">TaskFlowSyncMode</span><span class="p">;</span>
+  <span class="nx">ownerKey</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">requesterOrigin?</span>: <span class="kt">DeliveryContext</span><span class="p">;</span>
+  <span class="nx">controllerId?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">revision</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="nx">status</span>: <span class="kt">TaskFlowStatus</span><span class="p">;</span>
+  <span class="nx">notifyPolicy</span>: <span class="kt">TaskNotifyPolicy</span><span class="p">;</span>
+  <span class="nx">goal</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">currentStep?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">blockedTaskId?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">blockedSummary?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">stateJson?</span>: <span class="kt">JsonValue</span><span class="p">;</span>
+  <span class="nx">waitJson?</span>: <span class="kt">JsonValue</span><span class="p">;</span>
+  <span class="nx">cancelRequestedAt?</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="nx">createdAt</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="nx">updatedAt</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="nx">endedAt?</span>: <span class="kt">number</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p><strong>两种同步模式</strong>：
+- <code>task_mirrored</code>：状态镜像单个 Task（单任务流）
+- <code>managed</code>：由 controller 主动管理（多步骤流）</p>
+<p><strong>乐观并发控制</strong>：<code>revision</code> 字段实现了乐观锁——<code>updateFlowRecordByIdExpectedRevision()</code> 要求提供期望版本号，版本不匹配时返回 <code>revision_conflict</code>。</p>
+<p><strong>独立 SQLite 存储</strong>（<code>src/tasks/task-flow-registry.store.sqlite.ts</code>）：
+- 路径：<code>~/.openclaw/flows/registry.sqlite</code>
+- 同样使用 WAL 模式和文件权限保护
+- 独立于 Task Registry 的 SQLite 数据库</p>
+<h3 id="196-chat-native-task-board">19.6 Chat-Native Task Board — 聊天内任务面板（新增）</h3>
+<p><code>/tasks</code> 命令（<code>src/auto-reply/reply/commands-tasks.ts</code>）在聊天中直接展示当前会话的任务状态：</p>
+<div class="codehilite"><pre><span></span><code><span class="kd">const</span> <span class="nx">MAX_VISIBLE_TASKS</span> <span class="o">=</span> <span class="mf">5</span><span class="p">;</span>
+
+<span class="k">export</span> <span class="kd">function</span> <span class="nx">buildTasksText</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span> <span class="nx">sessionKey</span>: <span class="kt">string</span><span class="p">;</span> <span class="nx">agentId</span>: <span class="kt">string</span> <span class="p">})</span><span class="o">:</span> <span class="kt">string</span> <span class="p">{</span>
+  <span class="kd">const</span> <span class="nx">sessionSnapshot</span> <span class="o">=</span> <span class="nx">buildTaskStatusSnapshot</span><span class="p">(</span>
+    <span class="nx">listTasksForSessionKeyForStatus</span><span class="p">(</span><span class="nx">params</span><span class="p">.</span><span class="nx">sessionKey</span><span class="p">),</span>
+  <span class="p">);</span>
+  <span class="c1">// &quot;Current session: 2 active · 5 total&quot;</span>
+  <span class="c1">// 展示最多 5 个任务（活跃任务 + 最近完成的任务）</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p><strong>展示规则</strong>：
+- 优先显示活跃任务（queued/running）
+- 然后显示最近 5 分钟内完成的任务（<code>TASK_STATUS_RECENT_WINDOW_MS = 5 * 60_000</code>）
+- 过期任务（<code>cleanupAfter</code> 已过）不显示
+- 每个任务展示：状态图标、标题、runtime、耗时/等待时间、详情
+- 超出 5 个时显示 "+N more recent tasks"
+- 无会话级任务时回退到 Agent 级全局任务</p>
+<h3 id="197-task-maintenance">19.7 Task Maintenance — 任务维护</h3>
+<p><code>src/tasks/task-registry.maintenance.ts</code> 实现后台周期性维护：</p>
+<div class="codehilite"><pre><span></span><code><span class="kd">const</span> <span class="nx">TASK_RECONCILE_GRACE_MS</span> <span class="o">=</span> <span class="mf">5</span> <span class="o">*</span> <span class="mf">60</span><span class="nx">_000</span><span class="p">;</span>   <span class="c1">// 5 分钟宽限期</span>
+<span class="kd">const</span> <span class="nx">TASK_RETENTION_MS</span> <span class="o">=</span> <span class="mf">7</span> <span class="o">*</span> <span class="mf">24</span> <span class="o">*</span> <span class="mf">60</span> <span class="o">*</span> <span class="mf">60</span><span class="nx">_000</span><span class="p">;</span> <span class="c1">// 7 天保留期</span>
+<span class="kd">const</span> <span class="nx">TASK_SWEEP_INTERVAL_MS</span> <span class="o">=</span> <span class="mf">60</span><span class="nx">_000</span><span class="p">;</span>          <span class="c1">// 每 60 秒扫一次</span>
+<span class="kd">const</span> <span class="nx">SWEEP_YIELD_BATCH_SIZE</span> <span class="o">=</span> <span class="mf">25</span><span class="p">;</span>              <span class="c1">// 每批 25 个后让出事件循环</span>
+</code></pre></div>
+
+<p><strong>三种维护操作</strong>：</p>
+<ol>
+<li><strong>Reconcile（调和）</strong>：检测并标记"丢失"的任务</li>
+<li>宽限期 5 分钟后检查是否还有 backing session</li>
+<li>支持 Cron、ACP、子 Agent、CLI 等各 runtime 的会话检测</li>
+<li>
+<p>丢失任务标记为 <code>lost</code> 并触发终端通知</p>
+</li>
+<li>
+<p><strong>Cleanup Stamp（清理标记）</strong>：为终态任务设置 <code>cleanupAfter</code> 时间戳</p>
+</li>
+<li>
+<p><code>cleanupAfter = terminalAt + TASK_RETENTION_MS</code></p>
+</li>
+<li>
+<p><strong>Prune（清除）</strong>：删除已过 <code>cleanupAfter</code> 的旧任务</p>
+</li>
+</ol>
+<p><strong>CLI 接口</strong>：<code>openclaw tasks maintenance --apply</code></p>
+<p><strong>Task Audit</strong>（<code>src/tasks/task-registry.audit.ts</code>）：独立的审计系统，检测：
+- 过期 queued 任务（&gt;10 分钟未启动）
+- 过期 running 任务（&gt;30 分钟仍在执行）
+- 时间戳不一致
+- 缺少 cleanupAfter 标记的终态任务</p>
+<h3 id="198-task-flow-maintenance">19.8 Task Flow Maintenance</h3>
+<p><code>src/tasks/task-flow-registry.maintenance.ts</code> 对 TaskFlow 执行类似的维护逻辑：
+- 检测 stale waiting/blocked flows
+- 检测 cancel stuck flows
+- 检测缺失的关联 tasks
+- 清理过期终态 flows</p>
+<h3 id="199-cron-task-ledger">19.9 Cron-Task Ledger 集成</h3>
+<p>Cron Service 在执行任务时自动创建/更新 Task Ledger 记录（<code>src/cron/service/timer.ts</code> 和 <code>src/cron/service/ops.ts</code>）。这使得 Cron 任务的执行状态可以在统一的 Task Registry 中被追踪。</p>
+<p>失败时采用"最佳努力"策略——日志记录错误但不阻塞调度器运行：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/cron/service/timer.ts:160</span>
+<span class="nx">log</span><span class="p">.</span><span class="nx">warn</span><span class="p">(</span><span class="s2">&quot;cron: failed to create task ledger record&quot;</span><span class="p">,</span> <span class="p">{</span> <span class="nx">error</span> <span class="p">});</span>
+</code></pre></div>
+
+<hr />
+<h2 id="20">20. 运维工具</h2>
+<h3 id="201-cli-doctor">20.1 CLI Doctor 诊断</h3>
 <p><code>src/commands/doctor-cron.ts</code> 提供 Cron Store 的健康检查和修复：</p>
 <ul>
 <li>检测遗留格式问题（<code>formatLegacyIssuePreview()</code>）</li>
 <li>交互式迁移提示：<code>notify: true</code> fallback → webhook delivery</li>
 <li>通过 <code>openclaw doctor --fix</code> 执行自动修复</li>
 </ul>
-<h3 id="182-web-ui-管理界面">18.2 Web UI 管理界面</h3>
-<p><code>src/ui/views/cron.ts</code> 提供基于 Lit 的 Web UI 组件，功能包括：</p>
+<h3 id="202-web-ui">20.2 Web UI 管理界面</h3>
+<p><code>ui/src/ui/views/cron.ts</code> 提供基于 Lit 的 Web UI 组件，功能包括：</p>
 <ul>
 <li>任务列表：支持按启用/禁用、调度类型、最后状态过滤和排序</li>
 <li>任务 CRUD：表单创建/编辑，带字段验证</li>
 <li>执行历史：RunLog 查看，支持分页和状态过滤</li>
 <li>渠道/账号选择：用于投递目标配置</li>
 </ul>
+<h3 id="203-tasks-cli">20.3 Tasks CLI（新增）</h3>
+<p><code>openclaw tasks</code> 命令提供完整的任务管理界面：</p>
+<table>
+<thead>
+<tr>
+<th>子命令</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>openclaw tasks</code></td>
+<td>列出所有任务（支持 <code>--json</code>）</td>
+</tr>
+<tr>
+<td><code>openclaw tasks show &lt;lookup&gt;</code></td>
+<td>按 task id / run id / session key 查看单个任务</td>
+</tr>
+<tr>
+<td><code>openclaw tasks audit</code></td>
+<td>运行健康审计（检测过期、不一致等）</td>
+</tr>
+<tr>
+<td><code>openclaw tasks maintenance --apply</code></td>
+<td>执行调和/清理/清除</td>
+</tr>
+<tr>
+<td><code>openclaw tasks notify &lt;lookup&gt; &lt;policy&gt;</code></td>
+<td>设置任务通知策略</td>
+</tr>
+<tr>
+<td><code>openclaw tasks cancel &lt;lookup&gt;</code></td>
+<td>取消任务</td>
+</tr>
+</tbody>
+</table>
+<h3 id="204-status">20.4 Status 集成（新增）</h3>
+<p><code>openclaw status</code> 命令现在显示任务压力摘要和审计告警：</p>
+<ul>
+<li><strong>Task Pressure</strong>：在 overview 区域显示 <code>queued/running/issues</code> 计数</li>
+<li><strong>Task Audit Hints</strong>：当审计发现 <code>errors &gt; 0</code> 时，在底部提示运行 <code>openclaw tasks maintenance --apply</code></li>
+<li><strong>Session Task Counts</strong>：<code>/status</code> 聊天命令显示当前会话的任务统计</li>
+</ul>
 <hr />
-<h2 id="19-配置体系">19. 配置体系</h2>
-<h3 id="191-cron-配置">19.1 Cron 配置</h3>
-<pre><code class="language-typescript">// src/config/types.cron.ts:30-60
-export type CronConfig = {
-  enabled?: boolean;                     // 是否启用
-  store?: string;                        // 存储路径
-  maxConcurrentRuns?: number;            // 最大并发数
-  retry?: CronRetryConfig;              // 重试策略
-  webhook?: string;                      // 遗留 Webhook URL
-  webhookToken?: SecretInput;            // Webhook 认证 Token
-  sessionRetention?: string | false;     // 会话保留时间
-  runLog?: {
-    maxBytes?: number | string;          // 日志最大字节数
-    keepLines?: number;                  // 保留行数
-  };
-  failureAlert?: CronFailureAlertConfig; // 失败告警
-  failureDestination?: CronFailureDestinationConfig;  // 失败通知目标
-};
-</code></pre>
-<h3 id="192-heartbeat-配置">19.2 Heartbeat 配置</h3>
+<h2 id="21">21. 配置体系</h2>
+<h3 id="211-cron">21.1 Cron 配置</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// src/config/types.cron.ts:30-60</span>
+<span class="k">export</span> <span class="kr">type</span> <span class="nx">CronConfig</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">enabled?</span>: <span class="kt">boolean</span><span class="p">;</span>                     <span class="c1">// 是否启用</span>
+  <span class="nx">store?</span>: <span class="kt">string</span><span class="p">;</span>                        <span class="c1">// 存储路径</span>
+  <span class="nx">maxConcurrentRuns?</span>: <span class="kt">number</span><span class="p">;</span>            <span class="c1">// 最大并发数</span>
+  <span class="nx">retry?</span>: <span class="kt">CronRetryConfig</span><span class="p">;</span>              <span class="c1">// 重试策略</span>
+  <span class="nx">webhook?</span>: <span class="kt">string</span><span class="p">;</span>                      <span class="c1">// 遗留 Webhook URL</span>
+  <span class="nx">webhookToken?</span>: <span class="kt">SecretInput</span><span class="p">;</span>            <span class="c1">// Webhook 认证 Token</span>
+  <span class="nx">sessionRetention?</span>: <span class="kt">string</span> <span class="o">|</span> <span class="kc">false</span><span class="p">;</span>     <span class="c1">// 会话保留时间</span>
+  <span class="nx">runLog</span><span class="o">?:</span> <span class="p">{</span>
+    <span class="nx">maxBytes?</span>: <span class="kt">number</span> <span class="o">|</span> <span class="kt">string</span><span class="p">;</span>          <span class="c1">// 日志最大字节数</span>
+    <span class="nx">keepLines?</span>: <span class="kt">number</span><span class="p">;</span>                  <span class="c1">// 保留行数</span>
+  <span class="p">};</span>
+  <span class="nx">failureAlert?</span>: <span class="kt">CronFailureAlertConfig</span><span class="p">;</span> <span class="c1">// 失败告警</span>
+  <span class="nx">failureDestination?</span>: <span class="kt">CronFailureDestinationConfig</span><span class="p">;</span>  <span class="c1">// 失败通知目标</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="212-heartbeat">21.2 Heartbeat 配置</h3>
 <p>Heartbeat 配置嵌套在 Agent 配置中（<code>src/config/types.agent-defaults.ts</code>），支持：</p>
 <ul>
 <li><code>every</code>：间隔（duration 字符串）</li>
 <li><code>session</code>：使用的会话</li>
 <li><code>target</code>：回复目标</li>
-<li><code>prompt</code>：自定义提示</li>
+<li><code>prompt</code>：自定义心跳提示（新增）</li>
+<li><code>model</code>：心跳模型覆盖</li>
 <li><code>ackMaxChars</code>：HEARTBEAT_OK 最大字符数</li>
 <li><code>activeHours</code>：活跃时段（start/end/timezone）</li>
 </ul>
-<h3 id="193-hooks-配置内部事件-http-webhook-共用-hooks-顶层键">19.3 Hooks 配置（内部事件 + HTTP Webhook 共用 <code>hooks</code> 顶层键）</h3>
-<pre><code class="language-typescript">// 内部 Hooks 配置（src/config/types.hooks.ts）
-config.hooks.internal = {
-  enabled?: boolean;
-  handlers?: InternalHookHandlerConfig[];
-  entries?: Record&lt;string, HookConfig&gt;;      // 按 hookKey 覆盖
-  load?: { extraDirs?: string[] };
-  installs?: Record&lt;string, HookInstallRecord&gt;;
-};
+<h3 id="213-hooks-http-webhook-hooks">21.3 Hooks 配置（内部事件 + HTTP Webhook 共用 <code>hooks</code> 顶层键）</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// 内部 Hooks 配置（src/config/types.hooks.ts）</span>
+<span class="nx">config</span><span class="p">.</span><span class="nx">hooks</span><span class="p">.</span><span class="nx">internal</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">enabled?</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">handlers?</span>: <span class="kt">InternalHookHandlerConfig</span><span class="p">[];</span>
+  <span class="nx">entries?</span>: <span class="kt">Record</span><span class="o">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="nx">HookConfig</span><span class="o">&gt;</span><span class="p">;</span>      <span class="c1">// 按 hookKey 覆盖</span>
+  <span class="nx">load</span><span class="o">?:</span> <span class="p">{</span> <span class="nx">extraDirs?</span>: <span class="kt">string</span><span class="p">[]</span> <span class="p">};</span>
+  <span class="nx">installs?</span>: <span class="kt">Record</span><span class="o">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="nx">HookInstallRecord</span><span class="o">&gt;</span><span class="p">;</span>
+<span class="p">};</span>
 
-// HTTP Webhook 配置（同一 hooks 顶层键下）
-config.hooks = {
-  enabled?: boolean;
-  token: string;              // 必需
-  path?: string;              // 默认 &quot;/hooks&quot;
-  maxBodyBytes?: number;      // 默认 256KB
-  mappings?: HookMapping[];
-  allowedAgentIds?: string[];
-  defaultSessionKey?: string;
-  allowedSessionKeyPrefixes?: string[];
-  internal: InternalHooksConfig;  // 内部 Hooks 嵌套在此
-};
-</code></pre>
+<span class="c1">// HTTP Webhook 配置（同一 hooks 顶层键下）</span>
+<span class="nx">config</span><span class="p">.</span><span class="nx">hooks</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">enabled?</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">token</span>: <span class="kt">string</span><span class="p">;</span>              <span class="c1">// 必需</span>
+  <span class="nx">path?</span>: <span class="kt">string</span><span class="p">;</span>              <span class="c1">// 默认 &quot;/hooks&quot;</span>
+  <span class="nx">maxBodyBytes?</span>: <span class="kt">number</span><span class="p">;</span>      <span class="c1">// 默认 256KB</span>
+  <span class="nx">mappings?</span>: <span class="kt">HookMapping</span><span class="p">[];</span>
+  <span class="nx">allowedAgentIds?</span>: <span class="kt">string</span><span class="p">[];</span>
+  <span class="nx">defaultSessionKey?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">allowedSessionKeyPrefixes?</span>: <span class="kt">string</span><span class="p">[];</span>
+  <span class="nx">internal</span>: <span class="kt">InternalHooksConfig</span><span class="p">;</span>  <span class="c1">// 内部 Hooks 嵌套在此</span>
+<span class="p">};</span>
+</code></pre></div>
+
 <hr />
-<h2 id="20-业界方案对比">20. 业界方案对比</h2>
-<h3 id="201-openclaw-的技术选型">20.1 OpenClaw 的技术选型</h3>
+<h2 id="22">22. 业界方案对比</h2>
+<h3 id="221-openclaw">22.1 OpenClaw 的技术选型</h3>
 <table>
 <thead>
 <tr>
@@ -1081,13 +1626,18 @@ config.hooks = {
 <td>零依赖、跨运行时、DST 正确性最佳</td>
 </tr>
 <tr>
-<td><strong>持久化</strong></td>
+<td><strong>Cron 持久化</strong></td>
 <td>JSON 文件 (<code>jobs.json</code>)</td>
 <td>无外部依赖（无 Redis/MongoDB/PostgreSQL）</td>
 </tr>
 <tr>
+<td><strong>Task 持久化</strong></td>
+<td>SQLite (<code>node:sqlite</code>)</td>
+<td>零外部依赖、ACID、支持索引查询</td>
+</tr>
+<tr>
 <td><strong>锁机制</strong></td>
-<td>Promise 链串行锁</td>
+<td>Promise 链串行锁（Cron）/ SQLite WAL（Task）</td>
 <td>进程内锁，无分布式锁需求</td>
 </tr>
 <tr>
@@ -1100,10 +1650,15 @@ config.hooks = {
 <td>单 <code>setTimeout</code> 循环</td>
 <td>最大 60s 精度，够用且低开销</td>
 </tr>
+<tr>
+<td><strong>任务审计</strong></td>
+<td>内置 Audit + Maintenance</td>
+<td>自动检测异常、周期清理</td>
+</tr>
 </tbody>
 </table>
-<h3 id="202-业界替代方案概览">20.2 业界替代方案概览</h3>
-<h4 id="进程内调度器">进程内调度器</h4>
+<h3 id="222">22.2 业界替代方案概览</h3>
+<h4 id="_2">进程内调度器</h4>
 <table>
 <thead>
 <tr>
@@ -1141,7 +1696,7 @@ config.hooks = {
 <td>2.1.1</td>
 <td>否</td>
 <td>支持 Date + RecurrenceRule</td>
-<td>⚠️ 桌面端 sleep 导致时间漂移</td>
+<td>桌面端 sleep 导致时间漂移</td>
 </tr>
 <tr>
 <td><strong>Bree</strong></td>
@@ -1152,7 +1707,7 @@ config.hooks = {
 </tr>
 </tbody>
 </table>
-<h4 id="数据库redis-驱动">数据库/Redis 驱动</h4>
+<h4 id="redis">数据库/Redis 驱动</h4>
 <table>
 <thead>
 <tr>
@@ -1167,34 +1722,34 @@ config.hooks = {
 <tr>
 <td><strong>BullMQ</strong></td>
 <td>Redis</td>
-<td>✅</td>
-<td>✅</td>
+<td>是</td>
+<td>是</td>
 <td>生产级分布式任务队列</td>
 </tr>
 <tr>
 <td><strong>pg-boss</strong></td>
 <td>PostgreSQL</td>
-<td>✅</td>
-<td>✅</td>
+<td>是</td>
+<td>是</td>
 <td>事务一致性（Exactly-once）</td>
 </tr>
 <tr>
 <td><strong>graphile-worker</strong></td>
 <td>PostgreSQL</td>
-<td>✅</td>
-<td>✅</td>
+<td>是</td>
+<td>是</td>
 <td>LISTEN/NOTIFY 低延迟</td>
 </tr>
 <tr>
 <td><strong>Agenda</strong></td>
 <td>MongoDB</td>
-<td>✅</td>
-<td>✅</td>
-<td>⚠️ 维护不活跃</td>
+<td>是</td>
+<td>是</td>
+<td>维护不活跃</td>
 </tr>
 </tbody>
 </table>
-<h4 id="系统级">系统级</h4>
+<h4 id="_3">系统级</h4>
 <table>
 <thead>
 <tr>
@@ -1209,23 +1764,23 @@ config.hooks = {
 <td><strong>crontab</strong></td>
 <td>Linux/macOS</td>
 <td>重启存活</td>
-<td>❌ 不重试</td>
+<td>不重试</td>
 </tr>
 <tr>
 <td><strong>systemd timer</strong></td>
 <td>Linux</td>
 <td>重启存活</td>
-<td>✅ <code>Persistent=true</code></td>
+<td><code>Persistent=true</code></td>
 </tr>
 <tr>
 <td><strong>launchd</strong></td>
 <td>macOS</td>
 <td>重启存活</td>
-<td>✅ 自动补执行</td>
+<td>自动补执行</td>
 </tr>
 </tbody>
 </table>
-<h4 id="云托管">云托管</h4>
+<h4 id="_4">云托管</h4>
 <table>
 <thead>
 <tr>
@@ -1256,18 +1811,19 @@ config.hooks = {
 </tr>
 </tbody>
 </table>
-<h3 id="203-openclaw-选型合理性分析">20.3 OpenClaw 选型合理性分析</h3>
-<p>OpenClaw 选择"croner + JSON 文件存储 + Promise 链锁"的自包含方案是合理的：</p>
+<h3 id="223-openclaw">22.3 OpenClaw 选型合理性分析</h3>
+<p>OpenClaw 选择"croner + JSON 文件存储 + SQLite Task Ledger + Promise 链锁"的自包含方案是合理的：</p>
 <ol>
 <li><strong>单进程部署</strong>：OpenClaw Gateway 本质是单进程桌面/服务器应用，不需要分布式调度</li>
 <li><strong>无外部依赖</strong>：不要求用户安装 Redis/MongoDB/PostgreSQL，降低部署门槛</li>
-<li><strong>文件持久化够用</strong>：任务数量级通常在数十到数百，JSON 文件性能完全足够</li>
-<li><strong>原子写入安全</strong>：通过 tmp + rename 模式保证崩溃一致性</li>
+<li><strong>Cron 文件持久化够用</strong>：任务数量级通常在数十到数百，JSON 文件性能完全足够</li>
+<li><strong>Task SQLite 提供查询能力</strong>：当任务量增长时，SQLite 的索引查询远优于 JSON 遍历</li>
+<li><strong>原子写入安全</strong>：Cron 通过 tmp + rename 模式保证崩溃一致性；Task 通过 SQLite WAL 模式保证</li>
 <li><strong>croner 正确性最佳</strong>：在时区/DST 处理上优于 node-cron/node-schedule</li>
 </ol>
 <p><strong>潜在改进方向</strong>：若未来需要多实例水平扩展，可考虑引入 pg-boss（PostgreSQL）或 BullMQ（Redis）。</p>
 <hr />
-<h2 id="21-关键设计决策总结">21. 关键设计决策总结</h2>
+<h2 id="23">23. 关键设计决策总结</h2>
 <table>
 <thead>
 <tr>
@@ -1283,9 +1839,14 @@ config.hooks = {
 <td>零依赖、DST 正确性、跨平台</td>
 </tr>
 <tr>
-<td>持久化方式</td>
+<td>Cron 持久化</td>
 <td>JSON 文件 + JSONL 日志</td>
 <td>零外部依赖、单进程够用</td>
+</tr>
+<tr>
+<td>Task 持久化</td>
+<td>SQLite（node:sqlite）</td>
+<td>零外部依赖、支持索引查询、ACID</td>
 </tr>
 <tr>
 <td>并发控制</td>
@@ -1294,7 +1855,7 @@ config.hooks = {
 </tr>
 <tr>
 <td>写入安全</td>
-<td>tmp → rename 原子操作</td>
+<td>tmp → rename 原子操作 / SQLite WAL</td>
 <td>崩溃一致性</td>
 </tr>
 <tr>
@@ -1306,6 +1867,11 @@ config.hooks = {
 <td>心跳唤醒</td>
 <td>优先级队列 + Coalesce</td>
 <td>避免重复触发</td>
+</tr>
+<tr>
+<td>心跳提示</td>
+<td>可配 prompt 覆盖 HEARTBEAT.md</td>
+<td>灵活性 + 兼容性</td>
 </tr>
 <tr>
 <td>会话管理</td>
@@ -1333,14 +1899,34 @@ config.hooks = {
 <td>多层防护</td>
 </tr>
 <tr>
+<td>工具控制</td>
+<td>Per-job toolsAllow 白名单</td>
+<td>精细安全 + 成本控制</td>
+</tr>
+<tr>
 <td>内部事件</td>
 <td>进程内事件总线 + 四来源优先级</td>
 <td>可扩展、默认安全</td>
 </tr>
+<tr>
+<td>Plugin Hook</td>
+<td>Claiming + Modifying + Void 三模式</td>
+<td>插件互斥/修改/观察需求分离</td>
+</tr>
+<tr>
+<td>工具审批</td>
+<td>异步 requireApproval + fail-closed</td>
+<td>安全默认 + 人类在环</td>
+</tr>
+<tr>
+<td>任务追踪</td>
+<td>统一 Task Registry + Chat-Native UI</td>
+<td>跨 runtime 可见性</td>
+</tr>
 </tbody>
 </table>
 <hr />
-<h2 id="22-四组件选型指南">22. 四组件选型指南</h2>
+<h2 id="24">24. 四组件选型指南</h2>
 <table>
 <thead>
 <tr>
@@ -1374,6 +1960,26 @@ config.hooks = {
 <td><strong>Cron delivery</strong>（<code>announce</code> / <code>webhook</code> 模式）</td>
 </tr>
 <tr>
+<td>限制 Cron 任务可用工具</td>
+<td><strong>Cron</strong> <code>toolsAllow</code> 白名单</td>
+</tr>
+<tr>
+<td>插件拦截用户消息</td>
+<td><strong>Plugin Hook</strong> <code>before_agent_reply</code></td>
+</tr>
+<tr>
+<td>工具调用需要人类审批</td>
+<td><strong>Plugin Hook</strong> <code>before_tool_call.requireApproval</code></td>
+</tr>
+<tr>
+<td>插件接管回复分发</td>
+<td><strong>Plugin Hook</strong> <code>reply_dispatch</code></td>
+</tr>
+<tr>
+<td>查看所有后台任务状态</td>
+<td><strong>Task Board</strong> <code>/tasks</code> 聊天命令 / <code>openclaw tasks</code> CLI</td>
+</tr>
+<tr>
 <td>24 小时值班自动化</td>
 <td>Heartbeat + Cron + Hooks + Webhook 组合</td>
 </tr>
@@ -1382,14 +1988,79 @@ config.hooks = {
 <p><strong>组合实战示例 — AI 自动化值班员</strong>：</p>
 <ol>
 <li><strong>Heartbeat</strong>（每 30 分钟）：巡检服务状态</li>
-<li><strong>Cron</strong>（每天 9:00）：推送昨日巡检汇总</li>
+<li><strong>Cron</strong>（每天 9:00，<code>toolsAllow: ["exec", "read"]</code>）：推送昨日巡检汇总</li>
 <li><strong>Hooks</strong>（<code>message:received</code>）：自动分类新消息</li>
+<li><strong>Plugin Hook</strong>（<code>before_tool_call</code>）：危险操作要求审批</li>
 <li><strong>Webhook</strong>（HTTP 端点）：对接公司的监控告警系统</li>
 <li><strong>Cron delivery</strong>（webhook 模式）：执行结果推送到飞书/Telegram</li>
+<li><strong>Task Board</strong>（<code>/tasks</code>）：随时查看值班任务进展</li>
 </ol>
 <hr />
-<h2 id="附录-a-关键文件索引">附录 A. 关键文件索引</h2>
-<h3 id="cron-系统">Cron 系统</h3>
+<h2 id="25-seam-based-testing">25. 测试架构：Seam-based Testing（新增）</h2>
+<h3 id="251">25.1 概述</h3>
+<p>自 2026 年 3 月以来，Cron 系统的测试架构进行了大规模重构，从传统的模块级 mock 转向基于 <strong>seam（接缝）</strong> 的测试模式。这个转变体现在测试文件和 test harness 的组织方式上。</p>
+<h3 id="252-test-harness">25.2 Test Harness 架构</h3>
+<p><strong>Service Test Harness</strong>（<code>src/cron/service.test-harness.ts</code>）：</p>
+<p>提供了一套标准化的测试工具：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1">// 创建包含 fake timer、logger、store 的完整测试环境</span>
+<span class="k">export</span> <span class="kd">function</span> <span class="nx">setupCronServiceSuite</span><span class="p">(</span><span class="nx">options</span><span class="o">?</span><span class="p">)</span> <span class="p">{</span>
+  <span class="kd">const</span> <span class="nx">logger</span> <span class="o">=</span> <span class="nx">createNoopLogger</span><span class="p">();</span>
+  <span class="kd">const</span> <span class="p">{</span> <span class="nx">makeStorePath</span> <span class="p">}</span> <span class="o">=</span> <span class="nx">createCronStoreHarness</span><span class="p">();</span>
+  <span class="nx">installCronTestHooks</span><span class="p">({</span> <span class="nx">logger</span><span class="p">,</span> <span class="nx">baseTimeIso</span>: <span class="kt">options?.baseTimeIso</span> <span class="p">});</span>
+  <span class="k">return</span> <span class="p">{</span> <span class="nx">logger</span><span class="p">,</span> <span class="nx">makeStorePath</span> <span class="p">};</span>
+<span class="p">}</span>
+
+<span class="c1">// 创建依赖注入的 CronService 实例，支持 finished barrier</span>
+<span class="k">export</span> <span class="kd">function</span> <span class="nx">createStartedCronServiceWithFinishedBarrier</span><span class="p">(</span><span class="nx">params</span><span class="p">)</span> <span class="p">{</span>
+  <span class="kd">const</span> <span class="nx">enqueueSystemEvent</span> <span class="o">=</span> <span class="nx">vi</span><span class="p">.</span><span class="nx">fn</span><span class="p">();</span>
+  <span class="kd">const</span> <span class="nx">requestHeartbeatNow</span> <span class="o">=</span> <span class="nx">vi</span><span class="p">.</span><span class="nx">fn</span><span class="p">();</span>
+  <span class="kd">const</span> <span class="nx">finished</span> <span class="o">=</span> <span class="nx">createFinishedBarrier</span><span class="p">();</span>
+  <span class="kd">const</span> <span class="nx">cron</span> <span class="o">=</span> <span class="ow">new</span> <span class="nx">CronService</span><span class="p">({</span> <span class="p">...</span><span class="nx">params</span><span class="p">,</span> <span class="p">...</span><span class="nx">mocks</span> <span class="p">});</span>
+  <span class="k">return</span> <span class="p">{</span> <span class="nx">cron</span><span class="p">,</span> <span class="nx">enqueueSystemEvent</span><span class="p">,</span> <span class="nx">requestHeartbeatNow</span><span class="p">,</span> <span class="nx">finished</span> <span class="p">};</span>
+<span class="p">}</span>
+
+<span class="c1">// 直接操作 CronServiceState 的低级测试接口</span>
+<span class="k">export</span> <span class="kd">function</span> <span class="nx">createRunningCronServiceState</span><span class="p">(</span><span class="nx">params</span><span class="p">)</span> <span class="p">{</span> <span class="p">...</span> <span class="p">}</span>
+<span class="k">export</span> <span class="kd">function</span> <span class="nx">createMockCronStateForJobs</span><span class="p">(</span><span class="nx">params</span><span class="p">)</span> <span class="p">{</span> <span class="p">...</span> <span class="p">}</span>
+</code></pre></div>
+
+<p><strong>Isolated Agent Test Harness</strong>（<code>src/cron/isolated-agent.test-harness.ts</code>）：</p>
+<p>提供 Cron 隔离执行的测试工具——临时 home 目录、session store 写入、config 构造、job 工厂。</p>
+<p><strong>Isolated Agent Run Test Harness</strong>（<code>src/cron/isolated-agent/run.test-harness.ts</code>）：</p>
+<p>专门测试 <code>run.ts</code> 中的执行逻辑，支持注入自定义的 <code>runIsolatedAgentJob</code> 实现。</p>
+<h3 id="253">25.3 测试文件组织</h3>
+<p>Cron 测试文件采用"单一关注点"命名模式，每个测试文件聚焦于一个具体行为：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">src</span><span class="o">/</span><span class="n">cron</span><span class="o">/</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">service</span><span class="p">.</span><span class="n">armtimer</span><span class="o">-</span><span class="n">tight</span><span class="o">-</span><span class="n">loop</span><span class="p">.</span><span class="n">test</span><span class="p">.</span><span class="n">ts</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">service</span><span class="p">.</span><span class="n">failure</span><span class="o">-</span><span class="n">alert</span><span class="p">.</span><span class="n">test</span><span class="p">.</span><span class="n">ts</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">service</span><span class="p">.</span><span class="n">get</span><span class="o">-</span><span class="n">job</span><span class="p">.</span><span class="n">test</span><span class="p">.</span><span class="n">ts</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">service</span><span class="p">.</span><span class="n">heartbeat</span><span class="o">-</span><span class="n">ok</span><span class="o">-</span><span class="n">summary</span><span class="o">-</span><span class="n">suppressed</span><span class="p">.</span><span class="n">test</span><span class="p">.</span><span class="n">ts</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">service</span><span class="p">.</span><span class="n">issue</span><span class="o">-</span><span class="mh">13992</span><span class="o">-</span><span class="n">regression</span><span class="p">.</span><span class="n">test</span><span class="p">.</span><span class="n">ts</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">service</span><span class="p">.</span><span class="n">issue</span><span class="o">-</span><span class="mh">16156</span><span class="o">-</span><span class="n">list</span><span class="o">-</span><span class="n">skips</span><span class="o">-</span><span class="n">cron</span><span class="p">.</span><span class="n">test</span><span class="p">.</span><span class="n">ts</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">service</span><span class="p">.</span><span class="n">issue</span><span class="o">-</span><span class="mh">17852</span><span class="o">-</span><span class="n">daily</span><span class="o">-</span><span class="n">skip</span><span class="p">.</span><span class="n">test</span><span class="p">.</span><span class="n">ts</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">service</span><span class="p">.</span><span class="n">issue</span><span class="o">-</span><span class="mh">19676</span><span class="o">-</span><span class="n">at</span><span class="o">-</span><span class="n">reschedule</span><span class="p">.</span><span class="n">test</span><span class="p">.</span><span class="n">ts</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">service</span><span class="p">.</span><span class="n">issue</span><span class="o">-</span><span class="mh">22895</span><span class="o">-</span><span class="n">every</span><span class="o">-</span><span class="n">next</span><span class="o">-</span><span class="n">run</span><span class="p">.</span><span class="n">test</span><span class="p">.</span><span class="n">ts</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">service</span><span class="p">.</span><span class="n">issue</span><span class="o">-</span><span class="mh">35195</span><span class="o">-</span><span class="n">backup</span><span class="o">-</span><span class="n">timing</span><span class="p">.</span><span class="n">test</span><span class="p">.</span><span class="n">ts</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">service</span><span class="p">.</span><span class="n">jobs</span><span class="p">.</span><span class="n">top</span><span class="o">-</span><span class="n">of</span><span class="o">-</span><span class="n">hour</span><span class="o">-</span><span class="n">stagger</span><span class="p">.</span><span class="n">test</span><span class="p">.</span><span class="n">ts</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">service</span><span class="p">.</span><span class="n">list</span><span class="o">-</span><span class="n">page</span><span class="o">-</span><span class="n">sort</span><span class="o">-</span><span class="n">guards</span><span class="p">.</span><span class="n">test</span><span class="p">.</span><span class="n">ts</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">service</span><span class="p">.</span><span class="n">prevents</span><span class="o">-</span><span class="n">duplicate</span><span class="o">-</span><span class="n">timers</span><span class="p">.</span><span class="n">test</span><span class="p">.</span><span class="n">ts</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">service</span><span class="p">.</span><span class="n">rearm</span><span class="o">-</span><span class="n">timer</span><span class="o">-</span><span class="n">when</span><span class="o">-</span><span class="n">running</span><span class="p">.</span><span class="n">test</span><span class="p">.</span><span class="n">ts</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">service</span><span class="p">.</span><span class="n">skips</span><span class="o">-</span><span class="n">main</span><span class="o">-</span><span class="n">jobs</span><span class="o">-</span><span class="n">empty</span><span class="o">-</span><span class="n">systemevent</span><span class="o">-</span><span class="n">text</span><span class="p">.</span><span class="n">test</span><span class="p">.</span><span class="n">ts</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">service</span><span class="p">.</span><span class="n">session</span><span class="o">-</span><span class="n">reaper</span><span class="o">-</span><span class="n">in</span><span class="o">-</span><span class="n">finally</span><span class="p">.</span><span class="n">test</span><span class="p">.</span><span class="n">ts</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">service</span><span class="p">.</span><span class="n">every</span><span class="o">-</span><span class="n">jobs</span><span class="o">-</span><span class="n">fire</span><span class="p">.</span><span class="n">test</span><span class="p">.</span><span class="n">ts</span><span class="w"></span>
+<span class="err">└──</span><span class="w"> </span><span class="p">...</span><span class="w"></span>
+</code></pre></div>
+
+<p><strong>优势</strong>：
+1. 每个 Issue 修复有对应的回归测试文件，可追溯
+2. 测试文件之间无状态共享，可以并行执行
+3. 使用 seam（依赖注入的接缝）替代 <code>vi.mock()</code>，避免模块重置开销
+4. Test harness 提供标准化的 fixture 和 lifecycle 管理</p>
+<h3 id="254-heartbeat-test-harness">25.4 Heartbeat Test Harness</h3>
+<p><code>src/infra/heartbeat-runner.test-harness.ts</code> 和 <code>src/infra/heartbeat-runner.test-utils.ts</code> 为心跳系统提供类似的 seam-based 测试基础设施，支持配置注入、fake timer 和 event 收集。</p>
+<hr />
+<h2 id="a">附录 A. 关键文件索引</h2>
+<h3 id="cron">Cron 系统</h3>
 <table>
 <thead>
 <tr>
@@ -1400,7 +2071,7 @@ config.hooks = {
 <tbody>
 <tr>
 <td><code>src/cron/types.ts</code></td>
-<td>核心类型定义</td>
+<td>核心类型定义（含 <code>toolsAllow</code>）</td>
 </tr>
 <tr>
 <td><code>src/cron/types-shared.ts</code></td>
@@ -1416,11 +2087,11 @@ config.hooks = {
 </tr>
 <tr>
 <td><code>src/cron/service/ops.ts</code></td>
-<td>CRUD 操作 + CommandLane 入队</td>
+<td>CRUD 操作 + CommandLane 入队 + Task Ledger 集成</td>
 </tr>
 <tr>
 <td><code>src/cron/service/timer.ts</code></td>
-<td>Timer 调度 + 执行 + 退避 + 追赶</td>
+<td>Timer 调度 + 执行 + 退避 + 追赶 + Task Ledger 集成</td>
 </tr>
 <tr>
 <td><code>src/cron/service/jobs.ts</code></td>
@@ -1456,7 +2127,7 @@ config.hooks = {
 </tr>
 <tr>
 <td><code>src/cron/normalize.ts</code></td>
-<td>输入规范化</td>
+<td>输入规范化（含 <code>toolsAllow</code> 处理）</td>
 </tr>
 <tr>
 <td><code>src/cron/store-migration.ts</code></td>
@@ -1495,6 +2166,14 @@ config.hooks = {
 <td>隔离执行主逻辑</td>
 </tr>
 <tr>
+<td><code>src/cron/isolated-agent/run-executor.ts</code></td>
+<td>执行器（<code>toolsAllow</code> 传递）</td>
+</tr>
+<tr>
+<td><code>src/cron/isolated-agent/run-config.ts</code></td>
+<td>Agent 默认配置构建</td>
+</tr>
+<tr>
 <td><code>src/cron/isolated-agent/session.ts</code></td>
 <td>会话管理</td>
 </tr>
@@ -1518,9 +2197,17 @@ config.hooks = {
 <td><code>src/cron/isolated-agent/skills-snapshot.ts</code></td>
 <td>技能快照</td>
 </tr>
+<tr>
+<td><code>src/cron/service.test-harness.ts</code></td>
+<td>Service 测试 harness</td>
+</tr>
+<tr>
+<td><code>src/cron/isolated-agent.test-harness.ts</code></td>
+<td>隔离 Agent 测试 harness</td>
+</tr>
 </tbody>
 </table>
-<h3 id="heartbeat-系统">Heartbeat 系统</h3>
+<h3 id="heartbeat">Heartbeat 系统</h3>
 <table>
 <thead>
 <tr>
@@ -1531,7 +2218,7 @@ config.hooks = {
 <tbody>
 <tr>
 <td><code>src/infra/heartbeat-runner.ts</code></td>
-<td>心跳运行器主逻辑</td>
+<td>心跳运行器主逻辑（含 prompt 解析）</td>
 </tr>
 <tr>
 <td><code>src/infra/heartbeat-wake.ts</code></td>
@@ -1543,7 +2230,7 @@ config.hooks = {
 </tr>
 <tr>
 <td><code>src/infra/heartbeat-summary.ts</code></td>
-<td>心跳配置解析</td>
+<td>心跳配置解析（含 prompt/model）</td>
 </tr>
 <tr>
 <td><code>src/infra/heartbeat-reason.ts</code></td>
@@ -1557,9 +2244,21 @@ config.hooks = {
 <td><code>src/infra/heartbeat-events.ts</code></td>
 <td>心跳事件发射</td>
 </tr>
+<tr>
+<td><code>src/infra/heartbeat-events-filter.ts</code></td>
+<td>心跳事件过滤</td>
+</tr>
+<tr>
+<td><code>src/infra/heartbeat-runner.test-harness.ts</code></td>
+<td>心跳测试 harness</td>
+</tr>
+<tr>
+<td><code>src/infra/heartbeat-runner.test-utils.ts</code></td>
+<td>心跳测试工具</td>
+</tr>
 </tbody>
 </table>
-<h3 id="内部-hooks-系统">内部 Hooks 系统</h3>
+<h3 id="hooks">内部 Hooks 系统</h3>
 <table>
 <thead>
 <tr>
@@ -1630,7 +2329,137 @@ config.hooks = {
 </tr>
 </tbody>
 </table>
-<h3 id="http-webhook-系统">HTTP Webhook 系统</h3>
+<h3 id="plugin-hooks">Plugin Hooks 系统（新增）</h3>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>src/plugins/hooks.ts</code></td>
+<td>HookRunner 实现（claiming/modifying/void）</td>
+</tr>
+<tr>
+<td><code>src/plugins/types.ts</code></td>
+<td>完整 Hook 类型定义（含 requireApproval）</td>
+</tr>
+<tr>
+<td><code>src/plugins/hook-runner-global.ts</code></td>
+<td>全局 Hook Runner 初始化</td>
+</tr>
+<tr>
+<td><code>src/plugins/hooks.before-tool-call.test.ts</code></td>
+<td>before_tool_call 合并测试</td>
+</tr>
+<tr>
+<td><code>src/plugins/wired-hooks-reply-dispatch.test.ts</code></td>
+<td>reply_dispatch 测试</td>
+</tr>
+</tbody>
+</table>
+<h3 id="task">Task 系统（新增）</h3>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>src/tasks/task-registry.ts</code></td>
+<td>Task 注册表主逻辑</td>
+</tr>
+<tr>
+<td><code>src/tasks/task-registry.types.ts</code></td>
+<td>Task 类型定义</td>
+</tr>
+<tr>
+<td><code>src/tasks/task-registry.store.ts</code></td>
+<td>Task 存储抽象层</td>
+</tr>
+<tr>
+<td><code>src/tasks/task-registry.store.sqlite.ts</code></td>
+<td>SQLite 存储实现</td>
+</tr>
+<tr>
+<td><code>src/tasks/task-registry.paths.ts</code></td>
+<td>存储路径解析</td>
+</tr>
+<tr>
+<td><code>src/tasks/task-registry.summary.ts</code></td>
+<td>Task 压力摘要</td>
+</tr>
+<tr>
+<td><code>src/tasks/task-registry.maintenance.ts</code></td>
+<td>维护（调和/清理/清除）</td>
+</tr>
+<tr>
+<td><code>src/tasks/task-registry.audit.ts</code></td>
+<td>审计检测</td>
+</tr>
+<tr>
+<td><code>src/tasks/task-registry.reconcile.ts</code></td>
+<td>调和逻辑</td>
+</tr>
+<tr>
+<td><code>src/tasks/task-flow-registry.ts</code></td>
+<td>TaskFlow 注册表</td>
+</tr>
+<tr>
+<td><code>src/tasks/task-flow-registry.types.ts</code></td>
+<td>TaskFlow 类型定义</td>
+</tr>
+<tr>
+<td><code>src/tasks/task-flow-registry.store.sqlite.ts</code></td>
+<td>TaskFlow SQLite 存储</td>
+</tr>
+<tr>
+<td><code>src/tasks/task-flow-registry.maintenance.ts</code></td>
+<td>TaskFlow 维护</td>
+</tr>
+<tr>
+<td><code>src/tasks/task-status.ts</code></td>
+<td>任务状态展示逻辑</td>
+</tr>
+<tr>
+<td><code>src/tasks/task-status-access.ts</code></td>
+<td>按会话/Agent 查询任务</td>
+</tr>
+<tr>
+<td><code>src/tasks/task-executor.ts</code></td>
+<td>任务执行器</td>
+</tr>
+<tr>
+<td><code>src/tasks/task-executor-policy.ts</code></td>
+<td>执行策略/通知策略</td>
+</tr>
+<tr>
+<td><code>src/tasks/task-domain-views.ts</code></td>
+<td>领域视图</td>
+</tr>
+<tr>
+<td><code>src/tasks/task-owner-access.ts</code></td>
+<td>所有权访问控制</td>
+</tr>
+<tr>
+<td><code>src/auto-reply/reply/commands-tasks.ts</code></td>
+<td><code>/tasks</code> 聊天命令</td>
+</tr>
+<tr>
+<td><code>src/commands/tasks.ts</code></td>
+<td><code>openclaw tasks</code> CLI</td>
+</tr>
+<tr>
+<td><code>src/cli/program/register.status-health-sessions.ts</code></td>
+<td>tasks 子命令注册</td>
+</tr>
+</tbody>
+</table>
+<h3 id="http-webhook">HTTP Webhook 系统</h3>
 <table>
 <thead>
 <tr>
@@ -1657,7 +2486,7 @@ config.hooks = {
 </tr>
 </tbody>
 </table>
-<h3 id="运维与-ui">运维与 UI</h3>
+<h3 id="ui">运维与 UI</h3>
 <table>
 <thead>
 <tr>
@@ -1671,7 +2500,7 @@ config.hooks = {
 <td>CLI 诊断与修复</td>
 </tr>
 <tr>
-<td><code>src/ui/views/cron.ts</code></td>
+<td><code>ui/src/ui/views/cron.ts</code></td>
 <td>Web UI 管理界面</td>
 </tr>
 <tr>
@@ -1689,6 +2518,14 @@ config.hooks = {
 <tr>
 <td><code>src/process/lanes.ts</code></td>
 <td>CommandLane 枚举</td>
+</tr>
+<tr>
+<td><code>src/commands/status.summary.ts</code></td>
+<td>Status 摘要（含任务压力）</td>
+</tr>
+<tr>
+<td><code>src/commands/status.command-report-data.ts</code></td>
+<td>Status 报告数据（含维护提示）</td>
 </tr>
 </tbody>
 </table>

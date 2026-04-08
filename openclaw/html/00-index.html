@@ -26,9 +26,9 @@
 </head>
 <body>
 <nav><a href="00-index.html">← 索引</a></nav>
-<h1 id="openclaw-架构研究索引">OpenClaw 架构研究索引</h1>
+<h1 id="openclaw">OpenClaw 架构研究索引</h1>
 <p>本目录聚焦 OpenClaw 的关键架构与核心子系统分析，每篇文档包含 ASCII 架构图、关键接口、伪代码、配置样例、数据流图和设计模式总结。</p>
-<h2 id="文档列表">文档列表</h2>
+<h2 id="_1">文档列表</h2>
 <table>
 <thead>
 <tr>
@@ -43,50 +43,98 @@
 <td>01</td>
 <td><a href="01-context-orchestration.html">01-context-orchestration.md</a></td>
 <td>上下文编排、压缩、路由与子 Agent 生命周期</td>
-<td>~1187</td>
+<td>~2082</td>
 </tr>
 <tr>
 <td>02</td>
 <td><a href="02-memory-system.html">02-memory-system.md</a></td>
 <td>记忆索引、混合检索、会话转录与嵌入后端</td>
-<td>~1274</td>
+<td>~1620</td>
 </tr>
 <tr>
 <td>03</td>
 <td><a href="03-architecture-overview.html">03-architecture-overview.md</a></td>
 <td>整体架构、模块分层、技术栈与数据流</td>
-<td>~1524</td>
+<td>~2381</td>
 </tr>
 <tr>
 <td>04</td>
 <td><a href="04-channel-integration.html">04-channel-integration.md</a></td>
 <td>聊天工具接入、Channel 插件体系与消息流</td>
-<td>~1464</td>
+<td>~1935</td>
 </tr>
 <tr>
 <td>05</td>
 <td><a href="05-scheduled-tasks.html">05-scheduled-tasks.md</a></td>
 <td>Heartbeat、Cron、Hooks、Webhook 与调度执行</td>
-<td>~1329</td>
+<td>~2030</td>
+</tr>
+<tr>
+<td>06</td>
+<td><a href="06-dreaming-system.html">06-dreaming-system.md</a></td>
+<td>梦境系统、自主思考、记忆整合与创意生成</td>
+<td>~1437</td>
+</tr>
+<tr>
+<td>07</td>
+<td><a href="07-plugin-extension-sdk.html">07-plugin-extension-sdk.md</a></td>
+<td>插件/扩展 SDK、Manifest、加载器与注册表</td>
+<td>~712</td>
+</tr>
+<tr>
+<td>08</td>
+<td><a href="08-model-failover.html">08-model-failover.md</a></td>
+<td>模型 Failover、Provider 韧性与容错设计</td>
+<td>~711</td>
+</tr>
+<tr>
+<td>09</td>
+<td><a href="09-exec-approvals-sandbox.html">09-exec-approvals-sandbox.md</a></td>
+<td>执行审批、沙箱体系与安全策略</td>
+<td>~414</td>
+</tr>
+<tr>
+<td>10</td>
+<td><a href="10-sse-streaming-pipeline.html">10-sse-streaming-pipeline.md</a></td>
+<td>SSE/流式输出管线与实时推送</td>
+<td>~418</td>
+</tr>
+<tr>
+<td>11</td>
+<td><a href="11-queue-concurrency.html">11-queue-concurrency.md</a></td>
+<td>队列系统、并发控制与消息合并</td>
+<td>~452</td>
 </tr>
 </tbody>
 </table>
-<p><strong>总计</strong>: ~6,700+ 行深度分析</p>
-<h2 id="建议阅读顺序">建议阅读顺序</h2>
+<p><strong>总计</strong>: ~14,100+ 行深度分析</p>
+<h2 id="_2">建议阅读顺序</h2>
 <ol>
 <li><code>03-architecture-overview.md</code> — 先建立整体架构与模块边界</li>
 <li><code>01-context-orchestration.md</code> — 再看上下文装配、压缩与路由编排</li>
 <li><code>02-memory-system.md</code> — 深入记忆、检索与会话存储机制</li>
 <li><code>04-channel-integration.md</code> — 理解多 Channel 插件化接入与消息收发</li>
-<li><code>05-scheduled-tasks.md</code> — 最后看主动任务、调度与后台执行体系</li>
+<li><code>05-scheduled-tasks.md</code> — 主动任务、调度与后台执行体系</li>
+<li><code>06-dreaming-system.md</code> — 梦境系统与自主思考机制</li>
+<li><code>07-plugin-extension-sdk.md</code> — 插件 SDK 架构与扩展点设计</li>
+<li><code>08-model-failover.md</code> — 模型容错与 Provider 切换策略</li>
+<li><code>09-exec-approvals-sandbox.md</code> — 执行审批与沙箱安全体系</li>
+<li><code>10-sse-streaming-pipeline.md</code> — 流式输出管线与实时推送</li>
+<li><code>11-queue-concurrency.md</code> — 队列与并发控制机制</li>
 </ol>
-<h2 id="按主题阅读">按主题阅读</h2>
+<h2 id="_3">按主题阅读</h2>
 <ul>
-<li>架构总览：<code>03-architecture-overview.md</code></li>
-<li>上下文与 Agent 编排：<code>01-context-orchestration.md</code></li>
-<li>记忆与检索：<code>02-memory-system.md</code></li>
-<li>接入层与消息流：<code>04-channel-integration.md</code></li>
-<li>调度与主动执行：<code>05-scheduled-tasks.md</code></li>
+<li><strong>架构总览</strong>: <code>03-architecture-overview.md</code></li>
+<li><strong>上下文与 Agent 编排</strong>: <code>01-context-orchestration.md</code></li>
+<li><strong>记忆与检索</strong>: <code>02-memory-system.md</code></li>
+<li><strong>接入层与消息流</strong>: <code>04-channel-integration.md</code></li>
+<li><strong>调度与主动执行</strong>: <code>05-scheduled-tasks.md</code></li>
+<li><strong>梦境与自主思考</strong>: <code>06-dreaming-system.md</code></li>
+<li><strong>插件与扩展</strong>: <code>07-plugin-extension-sdk.md</code></li>
+<li><strong>模型容错</strong>: <code>08-model-failover.md</code></li>
+<li><strong>执行安全</strong>: <code>09-exec-approvals-sandbox.md</code></li>
+<li><strong>流式输出</strong>: <code>10-sse-streaming-pipeline.md</code></li>
+<li><strong>队列并发</strong>: <code>11-queue-concurrency.md</code></li>
 </ul>
 </body>
 </html>

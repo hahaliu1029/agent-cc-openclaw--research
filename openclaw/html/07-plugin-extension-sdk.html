@@ -1,0 +1,890 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>07-plugin-extension-sdk</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1 id="07-sdk">07 - 插件/扩展 SDK 架构深度调研</h1>
+<hr />
+<h2 id="1">1. 插件系统总体架构</h2>
+<h3 id="11">1.1 四层分层设计</h3>
+<p>OpenClaw 的插件系统由四个清晰分层构成:</p>
+<p><strong>第一层: Manifest + Discovery（清单与发现）</strong>
+- 从配置路径、工作区根目录、全局扩展根目录和内置扩展目录中查找候选插件
+- 首先读取原生 <code>openclaw.plugin.json</code> 清单和兼容 bundle 清单
+- 核心原则: <strong>发现阶段不执行插件代码</strong></p>
+<p><strong>第二层: Enablement + Validation（启用与校验）</strong>
+- 决定每个发现的插件是启用、禁用、阻止，还是被选入独占槽位（如 memory）
+- 使用 AJV 做 JSON Schema 校验（<code>src/plugins/schema-validator.ts</code>）</p>
+<p><strong>第三层: Runtime Loading（运行时加载）</strong>
+- 原生插件通过 jiti 在进程内加载，向中央注册表注册能力
+- 兼容 bundle 被规范化为注册表记录，但不导入运行时代码</p>
+<p><strong>第四层: Surface Consumption（表面消费）</strong>
+- 核心功能从注册表读取，暴露工具、渠道、Provider 设置、hooks、HTTP 路由、CLI 命令和服务</p>
+<h3 id="12">1.2 边界隔离原则</h3>
+<p>整个系统遵循几条严格的边界规则（来自 <code>src/plugin-sdk/AGENTS.md</code> 和 <code>src/plugins/AGENTS.md</code>）:</p>
+<ol>
+<li><strong>Manifest-First</strong>: 发现、配置校验和设置必须在插件运行时执行之前通过元数据完成</li>
+<li><strong>惰性加载</strong>: 加载器、注册表和公共产物不应在元数据、轻量导出或类型契约就足够时急切地导入 bundled plugin 的运行时模块</li>
+<li><strong>单向依赖</strong>: plugin module -&gt; registry registration; core runtime -&gt; registry consumption</li>
+<li><strong>窄公共契约</strong>: 优先使用狭窄的、目的明确的子路径（subpath），而非宽泛的便利性再导出</li>
+<li><strong>不跨边界导入</strong>: 扩展生产代码只能从 <code>openclaw/plugin-sdk/*</code> 和自身本地 barrel 导入，不能导入 <code>src/**</code> 核心内部</li>
+</ol>
+<h3 id="13">1.3 依赖方向</h3>
+<div class="codehilite"><pre><span></span><code><span class="n">extensions</span><span class="o">/</span><span class="w">  </span><span class="err">──</span><span class="n">import</span><span class="err">──</span><span class="o">&gt;</span><span class="w">  </span><span class="n">openclaw</span><span class="o">/</span><span class="n">plugin</span><span class="o">-</span><span class="n">sdk</span><span class="o">/*</span><span class="w">  </span><span class="p">(</span><span class="err">公共契约</span><span class="p">)</span><span class="w"></span>
+<span class="w">                                  </span><span class="o">|</span><span class="w"></span>
+<span class="w">                                  </span><span class="n">v</span><span class="w"> </span><span class="p">(</span><span class="n">re</span><span class="o">-</span><span class="k">export</span><span class="w"> </span><span class="n">types</span><span class="w"> </span><span class="n">from</span><span class="p">)</span><span class="w"></span>
+<span class="w">                          </span><span class="n">src</span><span class="o">/</span><span class="n">plugins</span><span class="o">/</span><span class="n">types</span><span class="o">.</span><span class="n">ts</span><span class="w">  </span><span class="p">(</span><span class="err">核心类型</span><span class="p">)</span><span class="w"></span>
+<span class="w">                          </span><span class="n">src</span><span class="o">/</span><span class="n">plugins</span><span class="o">/</span><span class="n">runtime</span><span class="o">/</span><span class="n">types</span><span class="o">.</span><span class="n">ts</span><span class="w">  </span><span class="p">(</span><span class="err">运行时类型</span><span class="p">)</span><span class="w"></span>
+
+<span class="err">插件加载</span><span class="p">:</span><span class="w">  </span><span class="n">plugin</span><span class="w"> </span><span class="n">module</span><span class="w"> </span><span class="err">──</span><span class="n">register</span><span class="err">──</span><span class="o">&gt;</span><span class="w"> </span><span class="n">plugin</span><span class="w"> </span><span class="n">registry</span><span class="w"> </span><span class="err">──</span><span class="n">consume</span><span class="err">──</span><span class="o">&gt;</span><span class="w"> </span><span class="n">core</span><span class="w"> </span><span class="n">surfaces</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="14">1.4 关键源码路径</h3>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>职责</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>docs/plugins/architecture.md</code></td>
+<td>架构文档</td>
+</tr>
+<tr>
+<td><code>src/plugin-sdk/AGENTS.md</code></td>
+<td>Plugin SDK 边界规则</td>
+</tr>
+<tr>
+<td><code>src/plugins/AGENTS.md</code></td>
+<td>Plugin System 边界规则</td>
+</tr>
+<tr>
+<td><code>extensions/AGENTS.md</code></td>
+<td>Extensions 边界规则</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="2-plugin-manifest">2. Plugin Manifest 规范</h2>
+<h3 id="21-openclawpluginjson-schema">2.1 openclaw.plugin.json 完整 Schema</h3>
+<p>每个原生 OpenClaw 插件<strong>必须</strong>在插件根目录中提供一个 <code>openclaw.plugin.json</code> 文件。OpenClaw 使用此清单来<strong>在不执行插件代码的情况下</strong>验证配置。</p>
+<p><strong>必填字段:</strong></p>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>类型</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td><code>string</code></td>
+<td>插件的规范 ID</td>
+</tr>
+<tr>
+<td><code>configSchema</code></td>
+<td><code>object</code></td>
+<td>插件配置的内联 JSON Schema</td>
+</tr>
+</tbody>
+</table>
+<p><strong>选填字段:</strong></p>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>类型</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td><code>string</code></td>
+<td>人类可读名称</td>
+</tr>
+<tr>
+<td><code>description</code></td>
+<td><code>string</code></td>
+<td>简短描述</td>
+</tr>
+<tr>
+<td><code>version</code></td>
+<td><code>string</code></td>
+<td>信息性版本号</td>
+</tr>
+<tr>
+<td><code>enabledByDefault</code></td>
+<td><code>true</code></td>
+<td>标记内置插件默认启用</td>
+</tr>
+<tr>
+<td><code>legacyPluginIds</code></td>
+<td><code>string[]</code></td>
+<td>规范化到当前ID的旧ID列表</td>
+</tr>
+<tr>
+<td><code>autoEnableWhenConfiguredProviders</code></td>
+<td><code>string[]</code></td>
+<td>提到时自动启用的 Provider ID</td>
+</tr>
+<tr>
+<td><code>kind</code></td>
+<td><code>"memory" \| "context-engine"</code></td>
+<td>独占插件类型</td>
+</tr>
+<tr>
+<td><code>channels</code></td>
+<td><code>string[]</code></td>
+<td>此插件拥有的渠道ID</td>
+</tr>
+<tr>
+<td><code>providers</code></td>
+<td><code>string[]</code></td>
+<td>此插件拥有的 Provider ID</td>
+</tr>
+<tr>
+<td><code>modelSupport</code></td>
+<td><code>object</code></td>
+<td>模型家族短名匹配元数据</td>
+</tr>
+<tr>
+<td><code>cliBackends</code></td>
+<td><code>string[]</code></td>
+<td>CLI 推理后端ID</td>
+</tr>
+<tr>
+<td><code>providerAuthEnvVars</code></td>
+<td><code>Record&lt;string, string[]&gt;</code></td>
+<td>Provider 认证环境变量</td>
+</tr>
+<tr>
+<td><code>channelEnvVars</code></td>
+<td><code>Record&lt;string, string[]&gt;</code></td>
+<td>渠道环境变量</td>
+</tr>
+<tr>
+<td><code>providerAuthChoices</code></td>
+<td><code>object[]</code></td>
+<td>认证选择元数据</td>
+</tr>
+<tr>
+<td><code>contracts</code></td>
+<td><code>object</code></td>
+<td>静态能力快照</td>
+</tr>
+<tr>
+<td><code>channelConfigs</code></td>
+<td><code>Record&lt;string, object&gt;</code></td>
+<td>渠道配置元数据</td>
+</tr>
+<tr>
+<td><code>skills</code></td>
+<td><code>string[]</code></td>
+<td>技能目录</td>
+</tr>
+<tr>
+<td><code>uiHints</code></td>
+<td><code>Record&lt;string, object&gt;</code></td>
+<td>UI 渲染提示</td>
+</tr>
+</tbody>
+</table>
+<h3 id="22-openai">2.2 实际示例 — OpenAI 插件</h3>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;openai&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;enabledByDefault&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;providers&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;openai&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;openai-codex&quot;</span><span class="p">],</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;modelSupport&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">    </span><span class="nt">&quot;modelPrefixes&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;gpt-&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;o1&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;o3&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;o4&quot;</span><span class="p">]</span><span class="w"></span>
+<span class="w">  </span><span class="p">},</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;cliBackends&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;codex-cli&quot;</span><span class="p">],</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;providerAuthEnvVars&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">    </span><span class="nt">&quot;openai&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;OPENAI_API_KEY&quot;</span><span class="p">]</span><span class="w"></span>
+<span class="w">  </span><span class="p">},</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;providerAuthChoices&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"></span>
+<span class="w">    </span><span class="p">{</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;provider&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;openai-codex&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;method&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;oauth&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;choiceId&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;openai-codex&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;choiceLabel&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;OpenAI Codex (ChatGPT OAuth)&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;groupId&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;openai&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;groupLabel&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;OpenAI&quot;</span><span class="w"></span>
+<span class="w">    </span><span class="p">},</span><span class="w"></span>
+<span class="w">    </span><span class="p">{</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;provider&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;openai&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;method&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;api-key&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;choiceId&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;openai-api-key&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;choiceLabel&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;OpenAI API key&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;optionKey&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;openaiApiKey&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;cliFlag&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;--openai-api-key&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;cliOption&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;--openai-api-key &lt;key&gt;&quot;</span><span class="w"></span>
+<span class="w">    </span><span class="p">}</span><span class="w"></span>
+<span class="w">  </span><span class="p">],</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;contracts&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">    </span><span class="nt">&quot;speechProviders&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;openai&quot;</span><span class="p">],</span><span class="w"></span>
+<span class="w">    </span><span class="nt">&quot;realtimeTranscriptionProviders&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;openai&quot;</span><span class="p">],</span><span class="w"></span>
+<span class="w">    </span><span class="nt">&quot;realtimeVoiceProviders&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;openai&quot;</span><span class="p">],</span><span class="w"></span>
+<span class="w">    </span><span class="nt">&quot;mediaUnderstandingProviders&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;openai&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;openai-codex&quot;</span><span class="p">],</span><span class="w"></span>
+<span class="w">    </span><span class="nt">&quot;imageGenerationProviders&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;openai&quot;</span><span class="p">],</span><span class="w"></span>
+<span class="w">    </span><span class="nt">&quot;videoGenerationProviders&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;openai&quot;</span><span class="p">]</span><span class="w"></span>
+<span class="w">  </span><span class="p">},</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;configSchema&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">    </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;object&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">    </span><span class="nt">&quot;additionalProperties&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span><span class="w"></span>
+<span class="w">    </span><span class="nt">&quot;properties&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;personality&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">        </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;string&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">        </span><span class="nt">&quot;enum&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;friendly&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;on&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;off&quot;</span><span class="p">],</span><span class="w"></span>
+<span class="w">        </span><span class="nt">&quot;default&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;friendly&quot;</span><span class="w"></span>
+<span class="w">      </span><span class="p">}</span><span class="w"></span>
+<span class="w">    </span><span class="p">}</span><span class="w"></span>
+<span class="w">  </span><span class="p">}</span><span class="w"></span>
+<span class="p">}</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="23">2.3 校验流程</h3>
+<ol>
+<li><strong>AJV 编译</strong>: 使用 <code>src/plugins/schema-validator.ts</code> 中的 AJV 实例编译 JSON Schema</li>
+<li><strong>缓存机制</strong>: Schema 按 <code>cacheKey</code> 缓存已编译的验证函数</li>
+<li><strong>深克隆</strong>: 启用 <code>useDefaults</code> 时先克隆值再验证</li>
+<li><strong>错误格式化</strong>: AJV 错误被格式化为 <code>{ path, message, text, allowedValues }</code> 结构</li>
+</ol>
+<h3 id="24-manifest-packagejson">2.4 Manifest 与 package.json 的分工</h3>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>openclaw.plugin.json</code></td>
+<td>发现、配置校验、认证选择元数据和 UI 提示（插件代码运行前必须知道的）</td>
+</tr>
+<tr>
+<td><code>package.json</code></td>
+<td>npm 元数据、依赖安装和 <code>openclaw</code> 块（入口点、安装控制、设置、目录元数据）</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="3-plugin-sdk">3. Plugin SDK 公共契约</h2>
+<h3 id="31">3.1 子路径分类</h3>
+<p>SDK 包含约 250 个子路径（列于 <code>scripts/lib/plugin-sdk-entrypoints.json</code>），按功能分组:</p>
+<p><strong>插件入口类 (4个核心):</strong>
+- <code>plugin-sdk/plugin-entry</code> — <code>definePluginEntry</code> 非渠道插件入口
+- <code>plugin-sdk/core</code> — <code>defineChannelPluginEntry</code>, <code>createChatChannelPlugin</code> 等
+- <code>plugin-sdk/channel-core</code> — 聚焦的渠道入口定义和构建器
+- <code>plugin-sdk/provider-entry</code> — <code>defineSingleProviderPluginEntry</code></p>
+<p><strong>渠道类 (~30个):</strong>
+<code>channel-setup</code>, <code>channel-pairing</code>, <code>channel-reply-pipeline</code>, <code>channel-config-helpers</code>, <code>channel-lifecycle</code>, <code>inbound-envelope</code>, <code>outbound-media</code>, <code>channel-inbound</code>, <code>channel-send-result</code> 等</p>
+<p><strong>Provider类 (~20个):</strong>
+<code>provider-auth</code>, <code>provider-catalog-shared</code>, <code>provider-model-shared</code>, <code>provider-stream</code>, <code>provider-tools</code>, <code>provider-usage</code>, <code>provider-web-fetch</code>, <code>provider-web-search</code> 等</p>
+<p><strong>认证与安全类 (~15个):</strong>
+<code>command-auth</code>, <code>approval-runtime</code>, <code>security-runtime</code>, <code>ssrf-policy</code>, <code>ssrf-runtime</code>, <code>secret-input</code>, <code>webhook-ingress</code> 等</p>
+<p><strong>运行时与存储类 (~40个):</strong>
+<code>runtime-store</code>, <code>runtime-env</code>, <code>plugin-runtime</code>, <code>hook-runtime</code>, <code>lazy-runtime</code>, <code>config-runtime</code>, <code>gateway-runtime</code>, <code>json-store</code>, <code>persistent-dedupe</code> 等</p>
+<p><strong>能力与测试类 (~20个):</strong>
+<code>media-runtime</code>, <code>speech</code>, <code>realtime-transcription</code>, <code>image-generation</code>, <code>video-generation</code>, <code>testing</code> 等</p>
+<p><strong>内存类 (~20个):</strong>
+<code>memory-core</code>, <code>memory-host-core</code>, <code>memory-host-events</code>, <code>memory-lancedb</code> 等</p>
+<h3 id="32">3.2 导入约定</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// 正确: 从聚焦的子路径导入</span>
+<span class="k">import</span> <span class="p">{</span> <span class="nx">definePluginEntry</span> <span class="p">}</span> <span class="kr">from</span> <span class="s2">&quot;openclaw/plugin-sdk/plugin-entry&quot;</span><span class="p">;</span>
+<span class="k">import</span> <span class="p">{</span> <span class="nx">createPluginRuntimeStore</span> <span class="p">}</span> <span class="kr">from</span> <span class="s2">&quot;openclaw/plugin-sdk/runtime-store&quot;</span><span class="p">;</span>
+
+<span class="c1">// 错误: 从根路径导入（已废弃，将被移除）</span>
+<span class="k">import</span> <span class="p">{</span> <span class="p">...</span> <span class="p">}</span> <span class="kr">from</span> <span class="s2">&quot;openclaw/plugin-sdk&quot;</span><span class="p">;</span>
+</code></pre></div>
+
+<hr />
+<h2 id="4">4. 插件生命周期</h2>
+<h3 id="41">4.1 完整流程</h3>
+<p><strong>第一步: 发现候选插件根目录</strong></p>
+<p>来自 <code>src/plugins/roots.ts</code> 的三个源:</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">PluginSourceRoots</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">stock?</span>: <span class="kt">string</span><span class="p">;</span>     <span class="c1">// 内置插件目录 (resolveBundledPluginsDir)</span>
+  <span class="nx">global</span>: <span class="kt">string</span><span class="p">;</span>     <span class="c1">// ~/.openclaw/extensions/</span>
+  <span class="nx">workspace?</span>: <span class="kt">string</span><span class="p">;</span> <span class="c1">// .openclaw/extensions/ (工作区)</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p>加上 <code>plugins.load.paths</code> 配置的额外路径。</p>
+<p><strong>第二步: 读取清单和包元数据</strong></p>
+<p><code>src/plugins/discovery.ts</code> 中的 <code>discoverOpenClawPlugins()</code> 发现候选者（<code>bundled-sources.ts</code> 调用该函数），<code>loadPluginManifest()</code> 读取清单。</p>
+<p>检测优先级:
+1. <code>openclaw.plugin.json</code> 或有效的 <code>package.json</code> 带 <code>openclaw.extensions</code> -&gt; 原生插件
+2. Bundle 标记 (<code>.codex-plugin/</code>, <code>.claude-plugin/</code>, 默认布局) -&gt; Bundle</p>
+<p><strong>第三步: 安全检查</strong></p>
+<p><code>src/plugins/install-security-scan.ts</code> 执行安装安全扫描:
+- <code>scanBundleInstallSource()</code> — Bundle 安全扫描
+- <code>scanPackageInstallSource()</code> — 包安全扫描
+- <code>scanFileInstallSource()</code> — 文件安全扫描
+- <code>scanSkillInstallSource()</code> — 技能安全扫描</p>
+<p><code>src/plugins/path-safety.ts</code> 做路径边界检查:
+- <code>isPathInside()</code> — 确保入口不逃逸插件根目录
+- 检查世界可写权限和路径所有权</p>
+<p><strong>第四步: 归一化插件配置</strong></p>
+<p><code>src/plugins/activation-context.ts</code> 处理:
+- <code>plugins.enabled</code> / <code>allow</code> / <code>deny</code> / <code>entries</code> / <code>slots</code> / <code>load.paths</code>
+- 自动启用逻辑: <code>applyPluginAutoEnable()</code>
+- 兼容性覆盖: <code>applyPluginCompatibilityOverrides()</code></p>
+<p><strong>第五步: 决定每个候选者的启用状态</strong></p>
+<p>独占槽位通过 <code>src/plugins/slots.ts</code> 处理（<code>PluginKind</code> 类型定义在 <code>src/plugins/types.ts</code>）:</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">PluginKind</span> <span class="o">=</span> <span class="s2">&quot;memory&quot;</span> <span class="o">|</span> <span class="s2">&quot;context-engine&quot;</span><span class="p">;</span>
+<span class="kd">const</span> <span class="nx">SLOT_BY_KIND</span>: <span class="kt">Record</span><span class="o">&lt;</span><span class="nx">PluginKind</span><span class="p">,</span> <span class="nx">PluginSlotKey</span><span class="o">&gt;</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">memory</span><span class="o">:</span> <span class="s2">&quot;memory&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;context-engine&quot;</span><span class="o">:</span> <span class="s2">&quot;contextEngine&quot;</span><span class="p">,</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p><code>applyExclusiveSlotSelection()</code> 确保同一槽位只有一个插件激活。</p>
+<p><strong>第六步: 通过 jiti 加载启用的原生模块</strong></p>
+<p><strong>第七步: 调用 <code>register(api)</code> 收集注册</strong></p>
+<p>加载器解析 <code>def.register ?? def.activate</code>（<code>activate</code> 是旧的兼容别名），传入 <code>OpenClawPluginApi</code> 对象。</p>
+<p><strong>第八步: 向命令/运行时表面公开注册表</strong></p>
+<h3 id="42">4.2 注册模式</h3>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">PluginRegistrationMode</span> <span class="o">=</span> <span class="s2">&quot;full&quot;</span> <span class="o">|</span> <span class="s2">&quot;setup-only&quot;</span> <span class="o">|</span> <span class="s2">&quot;setup-runtime&quot;</span> <span class="o">|</span> <span class="s2">&quot;cli-metadata&quot;</span><span class="p">;</span>
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>触发时机</th>
+<th>应注册内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>full</code></td>
+<td>正常网关启动</td>
+<td>所有内容</td>
+</tr>
+<tr>
+<td><code>setup-only</code></td>
+<td>禁用/未配置的渠道</td>
+<td>仅渠道注册</td>
+</tr>
+<tr>
+<td><code>setup-runtime</code></td>
+<td>带运行时的设置流程</td>
+<td>渠道注册 + 轻量运行时</td>
+</tr>
+<tr>
+<td><code>cli-metadata</code></td>
+<td>根帮助/CLI 元数据捕获</td>
+<td>仅 CLI 描述符</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="5-channel-plugin">5. Channel Plugin 契约</h2>
+<h3 id="51">5.1 核心接口</h3>
+<p>渠道插件需要实现的关键部分:</p>
+<div class="codehilite"><pre><span></span><code><span class="c1">// 入口定义</span>
+<span class="nx">defineChannelPluginEntry</span><span class="p">({</span>
+  <span class="nx">id</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">name</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">description</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">plugin</span>: <span class="kt">ChannelPlugin</span><span class="p">;</span>          <span class="c1">// 渠道插件对象</span>
+  <span class="nx">setRuntime</span><span class="o">?:</span> <span class="p">(</span><span class="nx">rt</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="ow">void</span><span class="p">;</span>      <span class="c1">// 存储运行时引用</span>
+  <span class="nx">registerCliMetadata</span><span class="o">?:</span> <span class="p">(</span><span class="nx">api</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="ow">void</span><span class="p">;</span>  <span class="c1">// CLI 描述符</span>
+  <span class="nx">registerFull</span><span class="o">?:</span> <span class="p">(</span><span class="nx">api</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="ow">void</span><span class="p">;</span>   <span class="c1">// 运行时专用注册</span>
+<span class="p">});</span>
+</code></pre></div>
+
+<p>渠道插件使用 <code>createChatChannelPlugin</code> 构建器声明式定义:</p>
+<table>
+<thead>
+<tr>
+<th>选项</th>
+<th>功能</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>security.dm</code></td>
+<td>作用域 DM 安全策略解析</td>
+</tr>
+<tr>
+<td><code>pairing.text</code></td>
+<td>基于文本的 DM 配对流程</td>
+</tr>
+<tr>
+<td><code>threading</code></td>
+<td>回复线程模式</td>
+</tr>
+<tr>
+<td><code>outbound.attachedResults</code></td>
+<td>带返回结果元数据的发送函数</td>
+</tr>
+</tbody>
+</table>
+<h3 id="52">5.2 适配器模式</h3>
+<p>渠道插件不需要自己的发送/编辑/反应工具。OpenClaw 在核心维护一个共享的 <code>message</code> 工具。插件拥有:</p>
+<table>
+<thead>
+<tr>
+<th>插件拥有</th>
+<th>核心拥有</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Config — 账户解析和设置向导</td>
+<td>共享 message 工具</td>
+</tr>
+<tr>
+<td>Security — DM 策略和白名单</td>
+<td>Prompt 布线</td>
+</tr>
+<tr>
+<td>Pairing — DM 审批流程</td>
+<td>外部 session-key 形状</td>
+</tr>
+<tr>
+<td>Session Grammar — rawId→conversationId 映射</td>
+<td>通用线程簿记和调度</td>
+</tr>
+<tr>
+<td>Outbound — 向平台发送文本、媒体和投票</td>
+<td></td>
+</tr>
+<tr>
+<td>Threading — 回复线程化</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h3 id="53">5.3 消息流</h3>
+<div class="codehilite"><pre><span></span><code><span class="err">入站</span><span class="o">:</span><span class="w"> </span><span class="err">平台</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">webhook</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">插件</span><span class="w"> </span><span class="n">registerHttpRoute</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">handleInbound</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">OpenClaw</span><span class="w"> </span><span class="err">核心</span><span class="w"></span>
+<span class="err">出站</span><span class="o">:</span><span class="w"> </span><span class="err">核心</span><span class="w"> </span><span class="n">dispatch</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">渠道</span><span class="w"> </span><span class="n">outbound</span><span class="o">.</span><span class="na">sendText</span><span class="o">/</span><span class="n">sendMedia</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">平台</span><span class="w"> </span><span class="n">API</span><span class="w"></span>
+</code></pre></div>
+
+<p>提及策略使用两层分离:
+1. 插件拥有的证据收集（回复检测、引用检测、线程参与检查）
+2. 共享策略评估（<code>resolveInboundMentionDecision</code>）</p>
+<hr />
+<h2 id="6-provider-plugin">6. Provider Plugin 契约</h2>
+<h3 id="61">6.1 需要实现的接口</h3>
+<p>一个最小的 Provider 需要:
+- <code>id</code> — Provider ID
+- <code>label</code> — 显示名称
+- <code>auth</code> — 认证方法数组 (<code>ProviderAuthMethod[]</code>)
+- <code>catalog</code> — 模型目录 (<code>ProviderPluginCatalog</code>)</p>
+<p><code>defineSingleProviderPluginEntry</code> 是针对单 Provider + API Key 认证的快捷入口。</p>
+<h3 id="62">6.2 模型目录</h3>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">ProviderPluginCatalog</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">order</span><span class="o">?:</span> <span class="s2">&quot;simple&quot;</span> <span class="o">|</span> <span class="s2">&quot;profile&quot;</span> <span class="o">|</span> <span class="s2">&quot;paired&quot;</span> <span class="o">|</span> <span class="s2">&quot;late&quot;</span><span class="p">;</span>
+  <span class="nx">run</span><span class="o">:</span> <span class="p">(</span><span class="nx">ctx</span>: <span class="kt">ProviderCatalogContext</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="nx">ProviderCatalogResult</span><span class="o">&gt;</span><span class="p">;</span>
+<span class="p">};</span>
+
+<span class="kr">type</span> <span class="nx">ProviderCatalogResult</span> <span class="o">=</span>
+  <span class="o">|</span> <span class="p">{</span> <span class="nx">provider</span>: <span class="kt">ModelProviderConfig</span> <span class="p">}</span>
+  <span class="o">|</span> <span class="p">{</span> <span class="nx">providers</span>: <span class="kt">Record</span><span class="o">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="nx">ModelProviderConfig</span><span class="o">&gt;</span> <span class="p">}</span>
+  <span class="o">|</span> <span class="kc">null</span> <span class="o">|</span> <span class="kc">undefined</span><span class="p">;</span>
+</code></pre></div>
+
+<p>目录顺序:</p>
+<table>
+<thead>
+<tr>
+<th>顺序</th>
+<th>时机</th>
+<th>用例</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>simple</code></td>
+<td>第一轮</td>
+<td>普通 API Key Provider</td>
+</tr>
+<tr>
+<td><code>profile</code></td>
+<td>simple 之后</td>
+<td>依赖认证 profile 的 Provider</td>
+</tr>
+<tr>
+<td><code>paired</code></td>
+<td>profile 之后</td>
+<td>合成多个相关条目</td>
+</tr>
+<tr>
+<td><code>late</code></td>
+<td>最后一轮</td>
+<td>覆盖已有 Provider（冲突时胜出）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="63">6.3 认证流程</h3>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">ProviderAuthMethod</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">id</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">label</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">hint?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">kind</span><span class="o">:</span> <span class="s2">&quot;oauth&quot;</span> <span class="o">|</span> <span class="s2">&quot;api_key&quot;</span> <span class="o">|</span> <span class="s2">&quot;token&quot;</span> <span class="o">|</span> <span class="s2">&quot;device_code&quot;</span> <span class="o">|</span> <span class="s2">&quot;custom&quot;</span><span class="p">;</span>
+  <span class="nx">wizard?</span>: <span class="kt">ProviderPluginWizardSetup</span><span class="p">;</span>
+  <span class="nx">run</span><span class="o">:</span> <span class="p">(</span><span class="nx">ctx</span>: <span class="kt">ProviderAuthContext</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="nx">ProviderAuthResult</span><span class="o">&gt;</span><span class="p">;</span>
+  <span class="nx">runNonInteractive</span><span class="o">?:</span> <span class="p">(</span><span class="nx">ctx</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="nx">OpenClawConfig</span> <span class="o">|</span> <span class="kc">null</span><span class="o">&gt;</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p>便捷方法 <code>createProviderApiKeyAuthMethod</code> 封装了常见的 API Key 认证模式:
+- 支持环境变量、CLI Flag、交互式提示
+- 支持 SecretRef 存储模式
+- 与 onboarding/配置向导集成</p>
+<h3 id="64-hooks48">6.4 运行时 Hooks（~48个）</h3>
+<p>Provider 可注册的完整 hook 链（按调用顺序，含 deprecated）:</p>
+<div class="codehilite"><pre><span></span><code>catalog → applyConfigDefaults → normalizeModelId → normalizeTransport
+→ normalizeConfig → applyNativeStreamingUsageCompat → resolveConfigApiKey
+→ resolveSyntheticAuth → shouldDeferSyntheticProfileAuth → resolveDynamicModel
+→ prepareDynamicModel → normalizeResolvedModel → contributeResolvedModelCompat
+→ capabilities → normalizeToolSchemas → inspectToolSchemas
+→ resolveReasoningOutputMode → prepareExtraParams → createStreamFn
+→ wrapStreamFn → ... → onModelSelected
+</code></pre></div>
+
+<p>实际 hook 数量约 47-48 个（含 deprecated/legacy 成员如 <code>discovery</code>、<code>capabilities</code>、<code>resolveExternalOAuthProfiles</code> 等）。大多数 Provider 只需要 2-3 个 hooks（通常是 <code>catalog</code> + <code>resolveDynamicModel</code>）。</p>
+<h3 id="65-family-helpers">6.5 共享 Family Helpers</h3>
+<p>Provider 可以使用预构建的 family builders 避免手动连接每个 hook:</p>
+<div class="codehilite"><pre><span></span><code><span class="k">import</span> <span class="p">{</span> <span class="nx">buildProviderReplayFamilyHooks</span> <span class="p">}</span> <span class="kr">from</span> <span class="s2">&quot;openclaw/plugin-sdk/provider-model-shared&quot;</span><span class="p">;</span>
+<span class="k">import</span> <span class="p">{</span> <span class="nx">buildProviderStreamFamilyHooks</span> <span class="p">}</span> <span class="kr">from</span> <span class="s2">&quot;openclaw/plugin-sdk/provider-stream&quot;</span><span class="p">;</span>
+<span class="k">import</span> <span class="p">{</span> <span class="nx">buildProviderToolCompatFamilyHooks</span> <span class="p">}</span> <span class="kr">from</span> <span class="s2">&quot;openclaw/plugin-sdk/provider-tools&quot;</span><span class="p">;</span>
+</code></pre></div>
+
+<p>可用的 replay families: <code>openai-compatible</code>, <code>anthropic-by-model</code>, <code>google-gemini</code>, <code>passthrough-gemini</code>, <code>hybrid-anthropic-openai</code></p>
+<p>可用的 stream families: <code>google-thinking</code>, <code>kilocode-thinking</code>, <code>moonshot-thinking</code>, <code>minimax-fast-mode</code>, <code>openai-responses-defaults</code>, <code>openrouter-thinking</code>, <code>tool-stream-default-on</code></p>
+<hr />
+<h2 id="7">7. 插件隔离与安全</h2>
+<h3 id="71">7.1 执行模型</h3>
+<p>原生 OpenClaw 插件<strong>在进程内</strong>与 Gateway 一起运行，<strong>没有沙箱</strong>。加载的原生插件与核心代码具有相同的进程级信任边界。</p>
+<p>含义:
+- 原生插件可以注册工具、网络处理器、hooks 和服务
+- 原生插件的 bug 可能崩溃或不稳定化 gateway
+- 恶意原生插件等同于 OpenClaw 进程内的任意代码执行</p>
+<h3 id="72-bundle">7.2 Bundle 安全</h3>
+<p>兼容 Bundle 默认更安全:
+- OpenClaw 不在进程内加载任意 bundle 运行时模块
+- Skills 和 hook-pack 路径必须保持在插件根目录内（边界检查）
+- 设置文件使用相同的边界检查读取
+- 只有支持的 stdio MCP 服务器可作为子进程启动</p>
+<h3 id="73-import">7.3 Import 边界</h3>
+<p>三条 lint 规则强制执行:
+1. <strong>禁止整体根导入</strong> — <code>openclaw/plugin-sdk</code> 根 barrel 被拒绝
+2. <strong>禁止直接 src/ 导入</strong> — 插件不能导入 <code>../../src/</code>
+3. <strong>禁止自引用导入</strong> — 插件不能导入自己的 <code>plugin-sdk/&lt;name&gt;</code> 子路径</p>
+<h3 id="74">7.4 安装安全扫描</h3>
+<p><code>src/plugins/install-security-scan.ts</code> 在安装时进行安全扫描:
+- 入口逃逸插件根目录检查
+- 世界可写路径检查
+- 可疑路径所有权检查
+- 支持 <code>dangerouslyForceUnsafeInstall</code> 强制绕过</p>
+<hr />
+<h2 id="8-capability">8. Capability 注册与发现</h2>
+<h3 id="81">8.1 注册机制</h3>
+<p>所有能力通过 <code>OpenClawPluginApi</code> 对象注册:</p>
+<p><strong>能力注册:</strong></p>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>注册内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>api.registerProvider(...)</code></td>
+<td>文本推理 (LLM)</td>
+</tr>
+<tr>
+<td><code>api.registerChannel(...)</code></td>
+<td>消息渠道</td>
+</tr>
+<tr>
+<td><code>api.registerSpeechProvider(...)</code></td>
+<td>TTS/STT</td>
+</tr>
+<tr>
+<td><code>api.registerRealtimeTranscriptionProvider(...)</code></td>
+<td>实时转录</td>
+</tr>
+<tr>
+<td><code>api.registerRealtimeVoiceProvider(...)</code></td>
+<td>实时语音</td>
+</tr>
+<tr>
+<td><code>api.registerMediaUnderstandingProvider(...)</code></td>
+<td>图像/音频/视频分析</td>
+</tr>
+<tr>
+<td><code>api.registerImageGenerationProvider(...)</code></td>
+<td>图像生成</td>
+</tr>
+<tr>
+<td><code>api.registerMusicGenerationProvider(...)</code></td>
+<td>音乐生成</td>
+</tr>
+<tr>
+<td><code>api.registerVideoGenerationProvider(...)</code></td>
+<td>视频生成</td>
+</tr>
+<tr>
+<td><code>api.registerWebFetchProvider(...)</code></td>
+<td>Web 抓取</td>
+</tr>
+<tr>
+<td><code>api.registerWebSearchProvider(...)</code></td>
+<td>Web 搜索</td>
+</tr>
+</tbody>
+</table>
+<p><strong>工具和命令:</strong></p>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>注册内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>api.registerTool(tool, opts?)</code></td>
+<td>Agent 工具</td>
+</tr>
+<tr>
+<td><code>api.registerCommand(def)</code></td>
+<td>自定义命令</td>
+</tr>
+</tbody>
+</table>
+<p><strong>基础设施:</strong></p>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>注册内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>api.registerHook(events, handler, opts?)</code></td>
+<td>事件 hook</td>
+</tr>
+<tr>
+<td><code>api.registerHttpRoute(params)</code></td>
+<td>Gateway HTTP 端点</td>
+</tr>
+<tr>
+<td><code>api.registerGatewayMethod(name, handler)</code></td>
+<td>Gateway RPC 方法</td>
+</tr>
+<tr>
+<td><code>api.registerCli(registrar, opts?)</code></td>
+<td>CLI 子命令</td>
+</tr>
+<tr>
+<td><code>api.registerService(service)</code></td>
+<td>后台服务</td>
+</tr>
+</tbody>
+</table>
+<p><strong>独占槽位:</strong></p>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>注册内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>api.registerContextEngine(id, factory)</code></td>
+<td>上下文引擎（同一时间只有一个活跃）</td>
+</tr>
+<tr>
+<td><code>api.registerMemoryCapability(capability)</code></td>
+<td>统一内存能力</td>
+</tr>
+</tbody>
+</table>
+<h3 id="82">8.2 插件形状分类</h3>
+<p>OpenClaw 根据注册行为将插件分为:
+- <strong>plain-capability</strong> — 仅注册一种能力类型
+- <strong>hybrid-capability</strong> — 注册多种能力类型
+- <strong>hook-only</strong> — 仅注册 hooks
+- <strong>non-capability</strong> — 注册工具/命令/服务但无能力</p>
+<h3 id="83-hook-decision">8.3 Hook Decision 语义</h3>
+<ul>
+<li><code>before_tool_call</code>: <code>{ block: true }</code> 是终结性的</li>
+<li><code>before_install</code>: <code>{ block: true }</code> 是终结性的</li>
+<li><code>reply_dispatch</code>: <code>{ handled: true }</code> 是终结性的</li>
+<li><code>message_sending</code>: <code>{ cancel: true }</code> 是终结性的</li>
+<li>所有 <code>false</code> 值被视为"无决定"</li>
+</ul>
+<hr />
+<h2 id="9">9. 插件配置系统</h2>
+<h3 id="91-secretref">9.1 SecretRef</h3>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;secret&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">    </span><span class="nt">&quot;source&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;env&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">    </span><span class="nt">&quot;provider&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;default&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">    </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;OPENCLAW_WEBHOOK_SECRET&quot;</span><span class="w"></span>
+<span class="w">  </span><span class="p">}</span><span class="w"></span>
+<span class="p">}</span><span class="w"></span>
+</code></pre></div>
+
+<p>支持的来源: <code>"env"</code>, <code>"file"</code>, <code>"exec"</code>。</p>
+<h3 id="92">9.2 插件专属配置</h3>
+<p>用户通过 <code>plugins.entries.&lt;id&gt;.config</code> 配置插件:</p>
+<div class="codehilite"><pre><span></span><code>{
+  plugins: {
+    entries: {
+      &quot;my-plugin&quot;: {
+        enabled: true,
+        config: { webhookSecret: &quot;abc123&quot; }
+      }
+    }
+  }
+}
+</code></pre></div>
+
+<h3 id="93-config-schema">9.3 Config Schema 构建</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// 从 Zod schema 构建</span>
+<span class="kd">function</span> <span class="nx">buildPluginConfigSchema</span><span class="p">(</span><span class="nx">schema</span>: <span class="kt">ZodTypeAny</span><span class="p">,</span> <span class="nx">options</span><span class="o">?</span><span class="p">)</span><span class="o">:</span> <span class="nx">OpenClawPluginConfigSchema</span><span class="p">;</span>
+
+<span class="c1">// 空 schema（无配置的插件也必须提供）</span>
+<span class="kd">function</span> <span class="nx">emptyPluginConfigSchema</span><span class="p">()</span><span class="o">:</span> <span class="nx">OpenClawPluginConfigSchema</span><span class="p">;</span>
+</code></pre></div>
+
+<p><code>OpenClawPluginConfigSchema</code> 支持多种校验路径:</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">OpenClawPluginConfigSchema</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">safeParse</span><span class="o">?:</span> <span class="p">(</span><span class="nx">value</span>: <span class="kt">unknown</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="p">{</span> <span class="nx">success</span>: <span class="kt">boolean</span><span class="p">;</span> <span class="nx">data</span><span class="o">?</span><span class="p">;</span> <span class="nx">error</span><span class="o">?</span> <span class="p">};</span>
+  <span class="nx">parse</span><span class="o">?:</span> <span class="p">(</span><span class="nx">value</span>: <span class="kt">unknown</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="nx">unknown</span><span class="p">;</span>
+  <span class="nx">validate</span><span class="o">?:</span> <span class="p">(</span><span class="nx">value</span>: <span class="kt">unknown</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="nx">PluginConfigValidation</span><span class="p">;</span>
+  <span class="nx">uiHints?</span>: <span class="kt">Record</span><span class="o">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="nx">PluginConfigUiHint</span><span class="o">&gt;</span><span class="p">;</span>
+  <span class="nx">jsonSchema?</span>: <span class="kt">Record</span><span class="o">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="nx">unknown</span><span class="o">&gt;</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<hr />
+<h2 id="10">10. 第三方插件支持</h2>
+<h3 id="101">10.1 安装方式</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ClawHub（首选）</span>
+openclaw plugins install clawhub:@myorg/openclaw-my-plugin
+<span class="c1"># npm 回退</span>
+openclaw plugins install @myorg/openclaw-my-plugin
+<span class="c1"># 本地目录</span>
+openclaw plugins install ./my-plugin
+<span class="c1"># 本地归档</span>
+openclaw plugins install ./my-bundle.tgz
+</code></pre></div>
+
+<p>npm 安装使用 <code>npm install --ignore-scripts</code>（无生命周期脚本），保持纯 JS/TS 依赖。</p>
+<h3 id="102">10.2 版本兼容</h3>
+<p>package.json 中的 <code>openclaw</code> 块:</p>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;openclaw&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">    </span><span class="nt">&quot;compat&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;pluginApi&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&gt;=2026.3.24-beta.2&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;minGatewayVersion&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026.3.24-beta.2&quot;</span><span class="w"></span>
+<span class="w">    </span><span class="p">}</span><span class="w"></span>
+<span class="w">  </span><span class="p">}</span><span class="w"></span>
+<span class="p">}</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="103-bundle">10.3 Bundle 兼容</h3>
+<p>OpenClaw 支持三种外部生态系统的 Bundle:
+- <strong>Codex Bundle</strong>: <code>.codex-plugin/plugin.json</code>
+- <strong>Claude Bundle</strong>: <code>.claude-plugin/plugin.json</code> 或默认布局
+- <strong>Cursor Bundle</strong>: <code>.cursor-plugin/plugin.json</code></p>
+<hr />
+<h2 id="11_1">11. 测试体系</h2>
+<h3 id="111">11.1 多层测试配置</h3>
+<p>OpenClaw 为插件测试提供多个 Vitest 配置:
+- <code>vitest.plugins.config.ts</code> — 插件测试
+- <code>vitest.plugin-sdk.config.ts</code> — SDK 测试
+- <code>vitest.contracts.config.ts</code> — 契约测试
+- <code>vitest.boundary.config.ts</code> — 边界测试
+- <code>vitest.extensions.config.ts</code> — 扩展测试
+- 各扩展独立配置</p>
+<h3 id="112">11.2 契约测试</h3>
+<p>内置插件有契约测试验证注册所有权:</p>
+<p>断言内容:
+- 哪些插件注册了哪些 Providers
+- 哪些插件注册了哪些 Speech Providers
+- 注册形状正确性
+- 运行时契约合规</p>
+<p>测试文件:
+- <code>src/plugins/contracts/provider-auth.contract.test.ts</code>
+- <code>src/plugins/contracts/provider-discovery.contract.test.ts</code>
+- <code>src/plugins/contracts/provider-runtime.contract.test.ts</code>
+- <code>src/plugins/contracts/package-manifest.contract.test.ts</code>
+- <code>src/channels/plugins/contracts/channel-catalog.contract.test.ts</code></p>
+<hr />
+<h2 id="12_1">12. 关键设计决策</h2>
+<h3 id="121-manifest-first-code-first">12.1 Manifest-First 而非 Code-First</h3>
+<p><strong>决策</strong>: 在执行插件代码之前，通过清单元数据完成发现和配置校验。</p>
+<p><strong>原因</strong>: 分离控制平面（清单）和数据平面（运行时模块）。允许 OpenClaw 验证配置、解释缺失/禁用的插件、构建 UI/Schema 提示，而无需完整运行时。</p>
+<h3 id="122-barrel">12.2 窄子路径而非宽泛 Barrel</h3>
+<p><strong>决策</strong>: 200+ 个狭窄的 SDK 子路径而非一个大型入口点。</p>
+<p><strong>原因</strong>:
+- 旧方法导致启动缓慢（导入一个辅助加载数十个不相关模块）
+- 循环依赖（宽泛的再导出容易造成导入循环）
+- 不清晰的 API 表面（无法区分稳定与内部导出）</p>
+<h3 id="123">12.3 能力模型而非插件特定代码路径</h3>
+<p><strong>决策</strong>: 定义核心能力契约（如 TTS、图像生成、Web 搜索），让插件注册实现。</p>
+<p><strong>原因</strong>: 避免将一个供应商的假设烘焙到核心中。插件拥有供应商表面；核心拥有能力契约和回退行为。</p>
+<h3 id="124">12.4 进程内执行而非沙箱</h3>
+<p><strong>决策</strong>: 原生插件在 Gateway 进程内运行，无沙箱。</p>
+<p><strong>权衡</strong>:
+- 优势: 完全的能力访问、零序列化开销、直接注册
+- 劣势: 插件 bug 可能崩溃 gateway、恶意插件等同于任意代码执行
+- 缓解: 通过安装安全扫描、路径安全检查和白名单机制降低风险</p>
+<h3 id="125">12.5 公司/功能为插件边界</h3>
+<p><strong>决策</strong>: 一个公司插件拥有该公司所有面向的表面（如 <code>openai</code> 插件拥有 text + speech + realtime-voice + image-generation）。</p>
+<p><strong>原因</strong>: 保持所有权显式化，而非散落在核心中的供应商特定代码。</p>
+<h3 id="126-setup-entry-full-entry">12.6 Setup Entry 与 Full Entry 分离</h3>
+<p><strong>决策</strong>: 渠道插件可提供轻量的 <code>setup-entry.ts</code> 替代完整的 <code>index.ts</code>。</p>
+<p><strong>原因</strong>: 避免在设置流程中加载重型运行时代码。当渠道禁用但需要设置/onboarding 表面时，OpenClaw 加载 <code>setupEntry</code> 而非完整入口。</p>
+<h3 id="127-runtime-store">12.7 Runtime Store 模式</h3>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">createPluginRuntimeStore</span><span class="o">&lt;</span><span class="nx">T</span><span class="o">&gt;</span><span class="p">(</span><span class="nx">errorMessage</span>: <span class="kt">string</span><span class="p">)</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">setRuntime</span><span class="o">:</span> <span class="p">(</span><span class="nx">next</span>: <span class="kt">T</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="ow">void</span><span class="p">;</span>
+  <span class="nx">clearRuntime</span><span class="o">:</span> <span class="p">()</span> <span class="p">=&gt;</span> <span class="ow">void</span><span class="p">;</span>
+  <span class="nx">tryGetRuntime</span><span class="o">:</span> <span class="p">()</span> <span class="p">=&gt;</span> <span class="nx">T</span> <span class="o">|</span> <span class="kc">null</span><span class="p">;</span>  <span class="c1">// 安全访问</span>
+  <span class="nx">getRuntime</span><span class="o">:</span> <span class="p">()</span> <span class="p">=&gt;</span> <span class="nx">T</span><span class="p">;</span>            <span class="c1">// 严格访问（未初始化时抛出）</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p>避免全局可变状态，同时允许插件在 <code>register</code> 回调之外访问运行时引用。</p>
+</body>
+</html>

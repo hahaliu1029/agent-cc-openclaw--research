@@ -26,53 +26,88 @@
 </head>
 <body>
 <nav><a href="00-index.html">← 索引</a></nav>
-<h1 id="openclaw-记忆系统详细分析">OpenClaw 记忆系统详细分析</h1>
-<h2 id="目录">目录</h2>
+<h1 id="openclaw">OpenClaw 记忆系统详细分析</h1>
+<blockquote>
+<p>更新时间：2026-04-07
+基于 commit <code>8894dab3c4</code> 及前续 23 个记忆相关提交</p>
+</blockquote>
+<h2 id="_1">目录</h2>
 <ol>
 <li><a href="#1-架构总览">架构总览</a></li>
-<li><a href="#2-核心入口与后端切换">核心入口与后端切换</a></li>
-<li><a href="#3-memoryindexmanager-主管理器">MemoryIndexManager 主管理器</a></li>
-<li><a href="#4-sqlite-存储-schema">SQLite 存储 Schema</a></li>
-<li><a href="#5-同步编排-sync-orchestration">同步编排 (Sync Orchestration)</a></li>
-<li><a href="#6-嵌入操作-embedding-operations">嵌入操作 (Embedding Operations)</a></li>
-<li><a href="#7-向量搜索与关键词搜索">向量搜索与关键词搜索</a></li>
-<li><a href="#8-混合评分算法-hybrid-scoring">混合评分算法 (Hybrid Scoring)</a></li>
-<li><a href="#9-时间衰减-temporal-decay">时间衰减 (Temporal Decay)</a></li>
-<li><a href="#10-最大边际相关性-mmr">最大边际相关性 (MMR)</a></li>
-<li><a href="#11-查询扩展-query-expansion">查询扩展 (Query Expansion)</a></li>
-<li><a href="#12-文件扫描与分块-chunking">文件扫描与分块 (Chunking)</a></li>
-<li><a href="#13-session-转录集成">Session 转录集成</a></li>
-<li><a href="#14-agent-记忆工具接口">Agent 记忆工具接口</a></li>
-<li><a href="#15-记忆刷写-memory-flush">记忆刷写 (Memory Flush)</a></li>
-<li><a href="#16-session-存储">Session 存储</a></li>
-<li><a href="#17-嵌入提供商-embedding-providers">嵌入提供商 (Embedding Providers)</a></li>
-<li><a href="#18-配置解析与默认值">配置解析与默认值</a></li>
-<li><a href="#19-qmd-后端">QMD 后端</a></li>
-<li><a href="#20-关键设计模式总结">关键设计模式总结</a></li>
+<li><a href="#2-插件化架构-memory-plugin-extraction">插件化架构 (Memory Plugin Extraction)</a></li>
+<li><a href="#3-核心入口与后端切换">核心入口与后端切换</a></li>
+<li><a href="#4-memoryindexmanager-主管理器">MemoryIndexManager 主管理器</a></li>
+<li><a href="#5-sqlite-存储-schema">SQLite 存储 Schema</a></li>
+<li><a href="#6-同步编排-sync-orchestration">同步编排 (Sync Orchestration)</a></li>
+<li><a href="#7-嵌入操作-embedding-operations">嵌入操作 (Embedding Operations)</a></li>
+<li><a href="#8-向量搜索与关键词搜索">向量搜索与关键词搜索</a></li>
+<li><a href="#9-混合评分算法-hybrid-scoring">混合评分算法 (Hybrid Scoring)</a></li>
+<li><a href="#10-时间衰减-temporal-decay">时间衰减 (Temporal Decay)</a></li>
+<li><a href="#11-最大边际相关性-mmr">最大边际相关性 (MMR)</a></li>
+<li><a href="#12-查询扩展-query-expansion">查询扩展 (Query Expansion)</a></li>
+<li><a href="#13-文件扫描与分块-chunking">文件扫描与分块 (Chunking)</a></li>
+<li><a href="#14-session-转录集成">Session 转录集成</a></li>
+<li><a href="#15-agent-记忆工具接口">Agent 记忆工具接口</a></li>
+<li><a href="#16-记忆刷写-memory-flush">记忆刷写 (Memory Flush)</a></li>
+<li><a href="#17-session-存储">Session 存储</a></li>
+<li><a href="#18-嵌入提供商-embedding-providers">嵌入提供商 (Embedding Providers)</a></li>
+<li><a href="#19-配置解析与默认值">配置解析与默认值</a></li>
+<li><a href="#20-qmd-后端">QMD 后端</a></li>
+<li><a href="#21-睡眠阶段与梦境衰老-sleep-phases--dreaming">睡眠阶段与梦境衰老 (Sleep Phases &amp; Dreaming)</a></li>
+<li><a href="#22-memory-wiki-系统">Memory Wiki 系统</a></li>
+<li><a href="#23-记忆事件日志-memory-event-journal">记忆事件日志 (Memory Event Journal)</a></li>
+<li><a href="#24-插件状态管理-memory-plugin-state">插件状态管理 (Memory Plugin State)</a></li>
+<li><a href="#25-性能优化">性能优化</a></li>
+<li><a href="#26-关键设计模式总结">关键设计模式总结</a></li>
 </ol>
 <hr />
-<h2 id="1-架构总览">1. 架构总览</h2>
-<p>OpenClaw 的记忆系统是一个多后端、混合检索的知识持久化平台，核心架构：</p>
-<pre><code>┌──────────────────────────────────────────────────────────────┐
-│  Agent 工具层                                                 │
-│  memory_search (语义搜索) / memory_get (片段读取)             │
-├──────────────────────────────────────────────────────────────┤
-│  管理器层 (MemoryIndexManager)                                │
-│  ├── 搜索：混合检索 (向量 + FTS)                              │
-│  ├── 同步：文件监听 + Session 事件 + 定时同步                  │
-│  └── 嵌入：多 provider + 批量 + 缓存                         │
-├──────────────────────────────────────────────────────────────┤
-│  存储层                                                       │
-│  ├── SQLite (chunks + FTS5 + sqlite-vec)                     │
-│  ├── 嵌入缓存 (embedding_cache 表)                           │
-│  └── 文件元数据 (files 表)                                    │
-├──────────────────────────────────────────────────────────────┤
-│  数据源层                                                     │
-│  ├── Memory 文件 (MEMORY.md, memory/*.md)                    │
-│  └── Session 转录 (~/.openclaw/agents/{id}/sessions/*.jsonl) │
-└──────────────────────────────────────────────────────────────┘
-</code></pre>
-<h3 id="双层存储">双层存储</h3>
+<h2 id="1">1. 架构总览</h2>
+<p>OpenClaw 的记忆系统已从核心单体演进为<strong>插件化多层架构</strong>，核心引擎通过 Plugin SDK 暴露给 <code>memory-core</code>、<code>memory-wiki</code>、<code>memory-lancedb</code> 等扩展插件：</p>
+<div class="codehilite"><pre><span></span><code><span class="err">┌──────────────────────────────────────────────────────────────────┐</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">扩展层</span><span class="w"> </span><span class="p">(</span><span class="n">Extensions</span><span class="p">)</span><span class="w">                                              </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">memory</span><span class="o">-</span><span class="n">core</span><span class="err">：引擎实例化、搜索</span><span class="o">/</span><span class="n">get</span><span class="w"> </span><span class="err">工具、</span><span class="n">flush</span><span class="err">、</span><span class="n">dreaming</span><span class="w">      </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">memory</span><span class="o">-</span><span class="n">wiki</span><span class="err">：</span><span class="n">Wiki</span><span class="w"> </span><span class="n">vault</span><span class="err">、</span><span class="n">belief</span><span class="o">-</span><span class="n">layer</span><span class="err">、知识编译</span><span class="w">               </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">└──</span><span class="w"> </span><span class="n">memory</span><span class="o">-</span><span class="n">lancedb</span><span class="err">：</span><span class="n">LanceDB</span><span class="w"> </span><span class="err">向量后端</span><span class="w"> </span><span class="p">(</span><span class="err">可选</span><span class="p">)</span><span class="w">                      </span><span class="err">│</span><span class="w"></span>
+<span class="err">├──────────────────────────────────────────────────────────────────┤</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="n">Plugin</span><span class="w"> </span><span class="n">SDK</span><span class="w"> </span><span class="err">层</span><span class="w"> </span><span class="p">(</span><span class="n">openclaw</span><span class="o">/</span><span class="n">plugin</span><span class="o">-</span><span class="n">sdk</span><span class="o">/</span><span class="n">memory</span><span class="o">-*</span><span class="p">)</span><span class="w">                     </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">memory</span><span class="o">-</span><span class="n">core</span><span class="o">-</span><span class="n">host</span><span class="o">-</span><span class="n">engine</span><span class="o">-*</span><span class="err">：引擎基础</span><span class="o">/</span><span class="err">存储</span><span class="o">/</span><span class="err">嵌入</span><span class="o">/</span><span class="n">QMD</span><span class="w">             </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">memory</span><span class="o">-</span><span class="n">core</span><span class="o">-</span><span class="n">host</span><span class="o">-</span><span class="n">runtime</span><span class="o">-*</span><span class="err">：运行时核心</span><span class="o">/</span><span class="err">文件</span><span class="o">/</span><span class="n">CLI</span><span class="w">               </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">memory</span><span class="o">-</span><span class="n">core</span><span class="o">-</span><span class="n">host</span><span class="o">-</span><span class="n">status</span><span class="err">：</span><span class="n">dreaming</span><span class="w"> </span><span class="err">配置与状态</span><span class="w">                  </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">memory</span><span class="o">-</span><span class="n">core</span><span class="o">-</span><span class="n">host</span><span class="o">-</span><span class="n">events</span><span class="err">：事件日志</span><span class="w">                             </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">memory</span><span class="o">-</span><span class="n">host</span><span class="o">-</span><span class="n">core</span><span class="err">：插件状态注册</span><span class="w"> </span><span class="p">(</span><span class="n">capability</span><span class="o">/</span><span class="n">corpus</span><span class="o">/</span><span class="n">prompt</span><span class="p">)</span><span class="w">     </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">memory</span><span class="o">-</span><span class="n">host</span><span class="o">-</span><span class="n">files</span><span class="err">：搜索管理器类型</span><span class="w">                             </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">memory</span><span class="o">-</span><span class="n">host</span><span class="o">-</span><span class="n">search</span><span class="err">：活跃搜索管理器获取</span><span class="w">                        </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">memory</span><span class="o">-</span><span class="n">host</span><span class="o">-</span><span class="n">events</span><span class="err">：事件日志读写</span><span class="w">                              </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">└──</span><span class="w"> </span><span class="n">memory</span><span class="o">-</span><span class="n">host</span><span class="o">-</span><span class="n">markdown</span><span class="err">：</span><span class="n">markdown</span><span class="w"> </span><span class="err">工具函数</span><span class="w">                       </span><span class="err">│</span><span class="w"></span>
+<span class="err">├──────────────────────────────────────────────────────────────────┤</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">宿主</span><span class="w"> </span><span class="n">SDK</span><span class="w"> </span><span class="err">层</span><span class="w"> </span><span class="p">(</span><span class="n">src</span><span class="o">/</span><span class="n">memory</span><span class="o">-</span><span class="n">host</span><span class="o">-</span><span class="n">sdk</span><span class="o">/</span><span class="p">)</span><span class="w">                               </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">engine</span><span class="o">.</span><span class="n">ts</span><span class="err">：聚合</span><span class="w"> </span><span class="n">re</span><span class="o">-</span><span class="k">export</span><span class="w"> </span><span class="p">(</span><span class="n">foundation</span><span class="o">/</span><span class="n">storage</span><span class="o">/</span><span class="n">embeddings</span><span class="o">/</span><span class="n">qmd</span><span class="p">)</span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">dreaming</span><span class="o">.</span><span class="n">ts</span><span class="err">：三阶段睡眠配置模型</span><span class="w">                               </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">events</span><span class="o">.</span><span class="n">ts</span><span class="err">：事件日志格式定义</span><span class="w">                                   </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">host</span><span class="o">/</span><span class="err">：嵌入提供商实现</span><span class="w"> </span><span class="p">(</span><span class="err">含</span><span class="w"> </span><span class="n">Bedrock</span><span class="p">)</span><span class="err">、后端配置解析</span><span class="w">              </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">runtime</span><span class="o">*.</span><span class="n">ts</span><span class="err">：运行时文件</span><span class="o">/</span><span class="err">核心</span><span class="o">/</span><span class="n">CLI</span><span class="w">                              </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">└──</span><span class="w"> </span><span class="n">status</span><span class="o">.</span><span class="n">ts</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">secret</span><span class="o">.</span><span class="n">ts</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">query</span><span class="o">.</span><span class="n">ts</span><span class="w">                             </span><span class="err">│</span><span class="w"></span>
+<span class="err">├──────────────────────────────────────────────────────────────────┤</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">核心插件注册层</span><span class="w"> </span><span class="p">(</span><span class="n">src</span><span class="o">/</span><span class="n">plugins</span><span class="o">/</span><span class="p">)</span><span class="w">                                     </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">memory</span><span class="o">-</span><span class="n">state</span><span class="o">.</span><span class="n">ts</span><span class="err">：插件状态单例</span><span class="w"> </span><span class="p">(</span><span class="n">capability</span><span class="o">/</span><span class="n">flush</span><span class="o">/</span><span class="n">prompt</span><span class="o">/</span><span class="n">corpus</span><span class="p">)</span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">memory</span><span class="o">-</span><span class="n">embedding</span><span class="o">-</span><span class="n">providers</span><span class="o">.</span><span class="n">ts</span><span class="err">：嵌入提供商适配器注册表</span><span class="w">          </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">└──</span><span class="w"> </span><span class="n">memory</span><span class="o">-</span><span class="n">embedding</span><span class="o">-</span><span class="n">provider</span><span class="o">-</span><span class="n">runtime</span><span class="o">.</span><span class="n">ts</span><span class="err">：运行时创建</span><span class="w">              </span><span class="err">│</span><span class="w"></span>
+<span class="err">├──────────────────────────────────────────────────────────────────┤</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">存储层</span><span class="w">                                                           </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">SQLite</span><span class="w"> </span><span class="p">(</span><span class="n">chunks</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">FTS5</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">sqlite</span><span class="o">-</span><span class="n">vec</span><span class="p">)</span><span class="w">                          </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="err">嵌入缓存</span><span class="w"> </span><span class="p">(</span><span class="n">embedding_cache</span><span class="w"> </span><span class="err">表</span><span class="p">)</span><span class="w">                                </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="err">文件元数据</span><span class="w"> </span><span class="p">(</span><span class="n">files</span><span class="w"> </span><span class="err">表</span><span class="p">)</span><span class="w">                                        </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">└──</span><span class="w"> </span><span class="err">事件日志</span><span class="w"> </span><span class="p">(</span><span class="n">memory</span><span class="o">/.</span><span class="n">dreams</span><span class="o">/</span><span class="n">events</span><span class="o">.</span><span class="n">jsonl</span><span class="p">)</span><span class="w">                       </span><span class="err">│</span><span class="w"></span>
+<span class="err">├──────────────────────────────────────────────────────────────────┤</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">数据源层</span><span class="w">                                                         </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">Memory</span><span class="w"> </span><span class="err">文件</span><span class="w"> </span><span class="p">(</span><span class="n">MEMORY</span><span class="o">.</span><span class="n">md</span><span class="p">,</span><span class="w"> </span><span class="n">memory</span><span class="o">/*.</span><span class="n">md</span><span class="p">)</span><span class="w">                         </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">Session</span><span class="w"> </span><span class="err">转录</span><span class="w"> </span><span class="p">(</span><span class="o">~/.</span><span class="n">openclaw</span><span class="o">/</span><span class="n">agents</span><span class="o">/</span><span class="p">{</span><span class="n">id</span><span class="p">}</span><span class="o">/</span><span class="n">sessions</span><span class="o">/*.</span><span class="n">jsonl</span><span class="p">)</span><span class="w">      </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">Wiki</span><span class="w"> </span><span class="n">Vault</span><span class="w"> </span><span class="p">(</span><span class="n">entities</span><span class="o">/</span><span class="p">,</span><span class="w"> </span><span class="n">concepts</span><span class="o">/</span><span class="p">,</span><span class="w"> </span><span class="n">syntheses</span><span class="o">/</span><span class="p">,</span><span class="w"> </span><span class="n">sources</span><span class="o">/</span><span class="p">)</span><span class="w">      </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">└──</span><span class="w"> </span><span class="err">梦境产物</span><span class="w"> </span><span class="p">(</span><span class="n">memory</span><span class="o">/.</span><span class="n">dreams</span><span class="o">/</span><span class="p">)</span><span class="w">                                   </span><span class="err">│</span><span class="w"></span>
+<span class="err">└──────────────────────────────────────────────────────────────────┘</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="_2">双层存储</h3>
 <table>
 <thead>
 <tr>
@@ -95,43 +130,133 @@
 <td>JSON Lines</td>
 <td>原始对话历史</td>
 </tr>
+<tr>
+<td><strong>事件日志</strong></td>
+<td><code>{workspace}/memory/.dreams/events.jsonl</code></td>
+<td>JSONL</td>
+<td>recall/promotion/dream 事件</td>
+</tr>
+<tr>
+<td><strong>Wiki Vault</strong></td>
+<td><code>{workspace}/.openclaw-wiki/</code></td>
+<td>Markdown + JSON</td>
+<td>结构化知识库</td>
+</tr>
 </tbody>
 </table>
 <hr />
-<h2 id="2-核心入口与后端切换">2. 核心入口与后端切换</h2>
-<p><strong>文件</strong>: <code>src/memory/index.ts</code>（re-export），re-exports from <code>manager.ts</code>、<code>search-manager.ts</code> 和 <code>types.ts</code></p>
-<h3 id="工厂函数">工厂函数</h3>
-<pre><code class="language-typescript">getMemorySearchManager({ cfg, agentId, purpose })
-  → resolveMemoryBackendConfig(params)  // 检查 QMD 后端配置
-    → 尝试 QMD（如果可用）
-      → 失败：记录警告，降级
-    → 加载内建 MemoryIndexManager
-    → 如果 QMD 成功，包装为 FallbackMemoryManager
-</code></pre>
-<h3 id="fallbackmemorymanager-行为">FallbackMemoryManager 行为</h3>
-<pre><code class="language-typescript">class FallbackMemoryManager {
-  // 优先使用 primary (QMD)
-  // search() 失败时：
-  //   1. 记录错误
-  //   2. 关闭 primary
-  //   3. 驱逐缓存
-  //   4. 通过 ensureFallback() 惰性创建 fallback (builtin)
-  //   5. 用 fallback 重试搜索
-}
-</code></pre>
-<h3 id="全局清理">全局清理</h3>
-<pre><code class="language-typescript">closeAllMemorySearchManagers()  // 释放 QMD manager 缓存，同时调用 closeAllMemoryIndexManagers() 释放内建 MemoryIndexManager 的 INDEX_CACHE
-</code></pre>
+<h2 id="2-memory-plugin-extraction">2. 插件化架构 (Memory Plugin Extraction)</h2>
+<h3 id="_3">从核心到插件的迁移</h3>
+<p>2026-03 至 2026-04 期间，记忆引擎经历了三个阶段的插件化重构：</p>
+<ol>
+<li><strong><code>refactor: move memory engine behind plugin adapters</code></strong> — 将嵌入提供商创建从硬编码切换为适配器注册模式</li>
+<li><strong><code>refactor: move memory engine into memory plugin</code></strong> — 将 MemoryIndexManager、搜索管理器、sync 逻辑整体搬入 <code>extensions/memory-core/src/memory/</code></li>
+<li><strong><code>refactor: move memory plugin state into plugin host</code></strong> — 将 capability/flush/prompt/corpus 注册提升到 <code>src/plugins/memory-state.ts</code></li>
+<li><strong><code>refactor: move memory flush ownership into memory plugin</code></strong> — flush plan 解析完全由 memory-core 插件拥有</li>
+</ol>
+<h3 id="_4">当前代码组织</h3>
+<div class="codehilite"><pre><span></span><code><span class="n">extensions</span><span class="o">/</span><span class="n">memory</span><span class="o">-</span><span class="n">core</span><span class="o">/</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">index</span><span class="o">.</span><span class="n">ts</span><span class="w">                   </span><span class="c1"># 插件入口，注册所有能力</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">manager</span><span class="o">-</span><span class="n">runtime</span><span class="o">.</span><span class="n">ts</span><span class="w">         </span><span class="c1"># 惰性加载 MemoryIndexManager</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">runtime</span><span class="o">-</span><span class="n">api</span><span class="o">.</span><span class="n">ts</span><span class="w">             </span><span class="c1"># 内部 barrel</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">src</span><span class="o">/</span><span class="w"></span>
+<span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">memory</span><span class="o">/</span><span class="w">                </span><span class="c1"># ← 从 src/memory/ 迁移而来</span><span class="w"></span>
+<span class="err">│</span><span class="w">   </span><span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">manager</span><span class="o">.</span><span class="n">ts</span><span class="w">         </span><span class="c1"># MemoryIndexManager 主类</span><span class="w"></span>
+<span class="err">│</span><span class="w">   </span><span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">manager</span><span class="o">-*.</span><span class="n">ts</span><span class="w">       </span><span class="c1"># 分拆的管理器关注点</span><span class="w"></span>
+<span class="err">│</span><span class="w">   </span><span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">hybrid</span><span class="o">.</span><span class="n">ts</span><span class="w">          </span><span class="c1"># 混合评分</span><span class="w"></span>
+<span class="err">│</span><span class="w">   </span><span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">mmr</span><span class="o">.</span><span class="n">ts</span><span class="w">             </span><span class="c1"># MMR 重排序</span><span class="w"></span>
+<span class="err">│</span><span class="w">   </span><span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">temporal</span><span class="o">-</span><span class="n">decay</span><span class="o">.</span><span class="n">ts</span><span class="w">  </span><span class="c1"># 时间衰减</span><span class="w"></span>
+<span class="err">│</span><span class="w">   </span><span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">embeddings</span><span class="o">.</span><span class="n">ts</span><span class="w">      </span><span class="c1"># 嵌入提供商创建（调用适配器注册表）</span><span class="w"></span>
+<span class="err">│</span><span class="w">   </span><span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">provider</span><span class="o">-</span><span class="n">adapters</span><span class="o">.</span><span class="n">ts</span><span class="w">         </span><span class="c1"># 内建提供商适配器注册</span><span class="w"></span>
+<span class="err">│</span><span class="w">   </span><span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">provider</span><span class="o">-</span><span class="n">adapter</span><span class="o">-</span><span class="n">registration</span><span class="o">.</span><span class="n">ts</span><span class="w">  </span><span class="c1"># 过滤已注册适配器</span><span class="w"></span>
+<span class="err">│</span><span class="w">   </span><span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">search</span><span class="o">-</span><span class="n">manager</span><span class="o">.</span><span class="n">ts</span><span class="w">  </span><span class="c1"># getMemorySearchManager + fallback</span><span class="w"></span>
+<span class="err">│</span><span class="w">   </span><span class="err">│</span><span class="w">   </span><span class="err">└──</span><span class="w"> </span><span class="n">qmd</span><span class="o">-*.</span><span class="n">ts</span><span class="w">           </span><span class="c1"># QMD 管理器</span><span class="w"></span>
+<span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">tools</span><span class="o">.</span><span class="n">ts</span><span class="w">               </span><span class="c1"># memory_search / memory_get 工具实现</span><span class="w"></span>
+<span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">tools</span><span class="o">.</span><span class="n">citations</span><span class="o">.</span><span class="n">ts</span><span class="w">     </span><span class="c1"># 引用装饰</span><span class="w"></span>
+<span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">flush</span><span class="o">-</span><span class="n">plan</span><span class="o">.</span><span class="n">ts</span><span class="w">          </span><span class="c1"># 记忆刷写计划解析</span><span class="w"></span>
+<span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">prompt</span><span class="o">-</span><span class="n">section</span><span class="o">.</span><span class="n">ts</span><span class="w">      </span><span class="c1"># System prompt 记忆段落</span><span class="w"></span>
+<span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">dreaming</span><span class="o">.</span><span class="n">ts</span><span class="w">            </span><span class="c1"># 短期提升 dreaming 注册</span><span class="w"></span>
+<span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">dreaming</span><span class="o">-</span><span class="n">phases</span><span class="o">.</span><span class="n">ts</span><span class="w">     </span><span class="c1"># Light/REM sleep sweep</span><span class="w"></span>
+<span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">dreaming</span><span class="o">-</span><span class="n">narrative</span><span class="o">.</span><span class="n">ts</span><span class="w">  </span><span class="c1"># 梦境叙事生成 (subagent)</span><span class="w"></span>
+<span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">dreaming</span><span class="o">-</span><span class="n">markdown</span><span class="o">.</span><span class="n">ts</span><span class="w">   </span><span class="c1"># 梦境报告 markdown 写入</span><span class="w"></span>
+<span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">dreaming</span><span class="o">-</span><span class="n">command</span><span class="o">.</span><span class="n">ts</span><span class="w">    </span><span class="c1"># openclaw dream CLI</span><span class="w"></span>
+<span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">short</span><span class="o">-</span><span class="n">term</span><span class="o">-</span><span class="n">promotion</span><span class="o">.</span><span class="n">ts</span><span class="w">  </span><span class="c1"># 短期记忆提升算法</span><span class="w"></span>
+<span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">public</span><span class="o">-</span><span class="n">artifacts</span><span class="o">.</span><span class="n">ts</span><span class="w">    </span><span class="c1"># 公开产物（供 wiki bridge 消费）</span><span class="w"></span>
+<span class="err">│</span><span class="w">   </span><span class="err">└──</span><span class="w"> </span><span class="n">runtime</span><span class="o">-</span><span class="n">provider</span><span class="o">.</span><span class="n">ts</span><span class="w">    </span><span class="c1"># MemoryPluginRuntime 实现</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="_5">嵌入提供商适配器注册</h3>
+<p>核心通过 <code>src/plugins/memory-embedding-providers.ts</code> 维护全局适配器注册表：</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">MemoryEmbeddingProviderAdapter</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">id</span>: <span class="kt">string</span><span class="p">;</span>                    <span class="c1">// &quot;openai&quot; | &quot;gemini&quot; | &quot;bedrock&quot; 等</span>
+  <span class="nx">defaultModel?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">transport</span><span class="o">?:</span> <span class="s2">&quot;local&quot;</span> <span class="o">|</span> <span class="s2">&quot;remote&quot;</span><span class="p">;</span>
+  <span class="nx">autoSelectPriority?</span>: <span class="kt">number</span><span class="p">;</span>   <span class="c1">// auto 选择排序</span>
+  <span class="nx">allowExplicitWhenConfiguredAuto?</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">supportsMultimodalEmbeddings</span><span class="o">?:</span> <span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span> <span class="nx">model</span>: <span class="kt">string</span> <span class="p">})</span> <span class="p">=&gt;</span> <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">create</span><span class="o">:</span> <span class="p">(</span><span class="nx">options</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="nx">MemoryEmbeddingProviderCreateResult</span><span class="o">&gt;</span><span class="p">;</span>
+  <span class="nx">formatSetupError</span><span class="o">?:</span> <span class="p">(...)</span> <span class="p">=&gt;</span> <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">shouldContinueAutoSelection</span><span class="o">?:</span> <span class="p">(...)</span> <span class="p">=&gt;</span> <span class="kt">boolean</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p><code>memory-core</code> 插件启动时调用 <code>registerBuiltInMemoryEmbeddingProviders(api)</code> 注册所有内建适配器，第三方插件也可通过 <code>api.registerMemoryEmbeddingProvider()</code> 注册自定义适配器。</p>
+<h3 id="_6">插件能力注册</h3>
+<p><code>memory-core</code> 通过 <code>api.registerMemoryCapability()</code> 一次性注册：</p>
+<div class="codehilite"><pre><span></span><code><span class="nx">api</span><span class="p">.</span><span class="nx">registerMemoryCapability</span><span class="p">({</span>
+  <span class="nx">promptBuilder</span>: <span class="kt">buildPromptSection</span><span class="p">,</span>      <span class="c1">// System prompt 记忆段落</span>
+  <span class="nx">flushPlanResolver</span>: <span class="kt">buildMemoryFlushPlan</span><span class="p">,</span> <span class="c1">// 刷写计划</span>
+  <span class="nx">runtime</span>: <span class="kt">memoryRuntime</span><span class="p">,</span>                  <span class="c1">// 搜索管理器/后端配置</span>
+  <span class="nx">publicArtifacts</span><span class="o">:</span> <span class="p">{</span>
+    <span class="nx">listArtifacts</span>: <span class="kt">listMemoryCorePublicArtifacts</span><span class="p">,</span>  <span class="c1">// 供 wiki bridge 消费</span>
+  <span class="p">},</span>
+<span class="p">});</span>
+</code></pre></div>
+
 <hr />
-<h2 id="3-memoryindexmanager-主管理器">3. MemoryIndexManager 主管理器</h2>
-<p><strong>文件</strong>: <code>src/memory/manager.ts</code> (840 行)</p>
-<h3 id="类层次">类层次</h3>
-<pre><code class="language-typescript">MemoryIndexManager
-  extends MemoryManagerEmbeddingOps
-    extends MemoryManagerSyncOps
-      implements MemorySearchManager
-</code></pre>
-<h3 id="核心属性">核心属性</h3>
+<h2 id="3">3. 核心入口与后端切换</h2>
+<p><strong>文件</strong>: <code>extensions/memory-core/src/memory/search-manager.ts</code></p>
+<h3 id="_7">工厂函数</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">getMemorySearchManager</span><span class="p">({</span> <span class="nx">cfg</span><span class="p">,</span> <span class="nx">agentId</span><span class="p">,</span> <span class="nx">purpose</span> <span class="p">})</span>
+  <span class="err">→</span> <span class="nx">resolveMemoryBackendConfig</span><span class="p">(</span><span class="nx">params</span><span class="p">)</span>  <span class="c1">// 检查 QMD 后端配置</span>
+    <span class="err">→</span> <span class="nx">尝试</span> <span class="nx">QMD</span><span class="err">（</span><span class="nx">如果可用</span><span class="err">）</span>
+      <span class="err">→</span> <span class="nx">失败</span><span class="err">：</span><span class="nx">记录警告</span><span class="err">，</span><span class="nx">降级</span>
+    <span class="err">→</span> <span class="nx">加载内建</span> <span class="nx">MemoryIndexManager</span><span class="err">（</span><span class="nx">惰性</span> <span class="k">import</span> <span class="nx">manager</span><span class="o">-</span><span class="nx">runtime</span><span class="p">.</span><span class="nx">ts</span><span class="err">）</span>
+    <span class="err">→</span> <span class="nx">如果</span> <span class="nx">QMD</span> <span class="nx">成功</span><span class="err">，</span><span class="nx">包装为</span> <span class="nx">FallbackMemoryManager</span>
+</code></pre></div>
+
+<h3 id="fallbackmemorymanager">FallbackMemoryManager 行为</h3>
+<div class="codehilite"><pre><span></span><code><span class="kd">class</span> <span class="nx">FallbackMemoryManager</span> <span class="p">{</span>
+  <span class="c1">// 优先使用 primary (QMD)</span>
+  <span class="c1">// search() 失败时：</span>
+  <span class="c1">//   1. 记录错误</span>
+  <span class="c1">//   2. 关闭 primary</span>
+  <span class="c1">//   3. 驱逐缓存</span>
+  <span class="c1">//   4. 通过 ensureFallback() 惰性创建 fallback (builtin)</span>
+  <span class="c1">//   5. 用 fallback 重试搜索</span>
+<span class="p">}</span>
+
+<span class="kd">class</span> <span class="nx">BorrowedMemoryManager</span> <span class="p">{</span>
+  <span class="c1">// status 调用方借用 full 管理器，close() 为 no-op</span>
+  <span class="c1">// 防止健康探针意外关闭活跃的 QMD 管理器</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="_8">全局清理</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">closeAllMemorySearchManagers</span><span class="p">()</span>  <span class="c1">// 释放 QMD manager 缓存，同时调用 closeAllMemoryIndexManagers()</span>
+</code></pre></div>
+
+<hr />
+<h2 id="4-memoryindexmanager">4. MemoryIndexManager 主管理器</h2>
+<p><strong>文件</strong>: <code>extensions/memory-core/src/memory/manager.ts</code></p>
+<h3 id="_9">类层次</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">MemoryIndexManager</span>
+  <span class="k">extends</span> <span class="nx">MemoryManagerEmbeddingOps</span>
+    <span class="k">extends</span> <span class="nx">MemoryManagerSyncOps</span> <span class="p">(</span><span class="kr">from</span> <span class="nx">manager</span><span class="o">-</span><span class="nx">sync</span><span class="o">-</span><span class="nx">ops</span><span class="p">.</span><span class="nx">ts</span><span class="p">)</span>
+      <span class="k">implements</span> <span class="nx">MemorySearchManager</span>
+</code></pre></div>
+
+<h3 id="_10">核心属性</h3>
 <table>
 <thead>
 <tr>
@@ -150,6 +275,16 @@
 <td><code>provider</code></td>
 <td><code>EmbeddingProvider \| null</code></td>
 <td>活跃嵌入 provider（null = FTS-only 模式）</td>
+</tr>
+<tr>
+<td><code>providerInitPromise</code></td>
+<td><code>Promise&lt;void&gt; \| null</code></td>
+<td>惰性 provider 初始化 Promise</td>
+</tr>
+<tr>
+<td><code>providerInitialized</code></td>
+<td><code>boolean</code></td>
+<td>provider 是否已完成初始化</td>
 </tr>
 <tr>
 <td><code>sources</code></td>
@@ -191,268 +326,203 @@
 <td><code>number</code></td>
 <td>只读 DB 错误追踪</td>
 </tr>
-<tr>
-<td><code>readonlyRecoverySuccesses</code></td>
-<td><code>number</code></td>
-<td>只读恢复成功次数</td>
-</tr>
-<tr>
-<td><code>readonlyRecoveryFailures</code></td>
-<td><code>number</code></td>
-<td>只读恢复失败次数</td>
-</tr>
-<tr>
-<td><code>readonlyRecoveryLastError</code></td>
-<td><code>string \| undefined</code></td>
-<td>最近一次只读恢复错误信息</td>
-</tr>
 </tbody>
 </table>
-<h3 id="单例缓存">单例缓存</h3>
-<pre><code class="language-typescript">// 缓存 key: ${agentId}:${workspaceDir}:${JSON.stringify(settings)}
-const INDEX_CACHE = new Map&lt;string, MemoryIndexManager&gt;()
+<h3 id="_11">单例缓存</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// 通过 resolveSingletonManagedCache 维护全局缓存</span>
+<span class="kd">const</span> <span class="p">{</span> <span class="nx">cache</span>: <span class="kt">INDEX_CACHE</span><span class="p">,</span> <span class="nx">pending</span>: <span class="kt">INDEX_CACHE_PENDING</span> <span class="p">}</span> <span class="o">=</span>
+  <span class="nx">resolveSingletonManagedCache</span><span class="o">&lt;</span><span class="nx">MemoryIndexManager</span><span class="o">&gt;</span><span class="p">(</span><span class="nx">MEMORY_INDEX_MANAGER_CACHE_KEY</span><span class="p">);</span>
 
-static async get(params): Promise&lt;MemoryIndexManager | null&gt; {
-  // 单例模式，相同配置复用实例
-  // 构造时异步创建嵌入 provider
-  // 未启用记忆搜索返回 null
-}
-</code></pre>
-<h3 id="核心方法">核心方法</h3>
-<h4 id="searchquery-opts-promise"><code>search(query, opts?): Promise&lt;MemorySearchResult[]&gt;</code></h4>
+<span class="c1">// 缓存 key: ${agentId}:${workspaceDir}:${JSON.stringify(settings)}:${purpose}</span>
+<span class="k">static</span> <span class="k">async</span> <span class="nx">get</span><span class="p">(</span><span class="nx">params</span><span class="p">)</span><span class="o">:</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="nx">MemoryIndexManager</span> <span class="o">|</span> <span class="kc">null</span><span class="o">&gt;</span> <span class="p">{</span>
+  <span class="c1">// 单例模式，相同配置复用实例</span>
+  <span class="c1">// status 查询 bypass 缓存（避免与 full 管理器冲突）</span>
+  <span class="c1">// 通过 getOrCreateManagedCacheEntry() 保证并发安全</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="_12">核心方法</h3>
+<h4 id="searchquery-opts-promisememorysearchresult"><code>search(query, opts?): Promise&lt;MemorySearchResult[]&gt;</code></h4>
+<p><strong>搜索预检（preflight）</strong>：</p>
+<div class="codehilite"><pre><span></span><code>resolveMemorySearchPreflight({ query, hasIndexedContent })
+  → 空查询 → shouldSearch: false
+  → 无索引内容 → shouldSearch: false, shouldInitializeProvider: false
+  → 正常 → shouldSearch: true, shouldInitializeProvider: true
+</code></pre></div>
+
 <p><strong>FTS-only 模式</strong>（无 provider）：</p>
-<pre><code>1. extractKeywords(query) → 提取关键词
-2. 对每个关键词分别执行独立搜索（非 expandQueryForFts()）
-3. 合并结果，保留每个 chunk 的最高分
-4. 按 minScore 过滤
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="mf">1.</span><span class="w"> </span><span class="n">extractKeywords</span><span class="p">(</span><span class="n">query</span><span class="p">)</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="n">提取关键词</span><span class="w"></span>
+<span class="mf">2.</span><span class="w"> </span><span class="n">对每个关键词分别执行独立搜索</span><span class="w"></span>
+<span class="mf">3.</span><span class="w"> </span><span class="n">合并结果</span><span class="err">，</span><span class="n">保留每个</span><span class="w"> </span><span class="n">chunk</span><span class="w"> </span><span class="n">的最高分</span><span class="w"></span>
+<span class="mf">4.</span><span class="w"> </span><span class="n">按</span><span class="w"> </span><span class="n">minScore</span><span class="w"> </span><span class="n">过滤</span><span class="w"></span>
+</code></pre></div>
+
 <p><strong>混合模式</strong>（有 provider）：</p>
-<pre><code>1. embedQueryWithTimeout(query) → 生成查询嵌入
-2. 并行搜索：searchVector() + searchKeyword()
-3. mergeHybridResults() 合并：
-   - vectorWeight * vectorScore + textWeight * textScore
-   - 可选 MMR 重排序（多样性）
-   - 可选时间衰减（近期性）
-4. 降级：如果无向量结果但有关键词结果，放宽 minScore 到 textWeight 阈值
-</code></pre>
-<h4 id="syncparams-promise"><code>sync(params?): Promise&lt;void&gt;</code></h4>
-<pre><code>1. 通过 this.syncing Promise 去重并发同步
-2. runSyncWithReadonlyRecovery():
-   a. 尝试同步
-   b. 只读错误：关闭 DB → 重新打开 → 重试
-   c. 追踪 attempts/successes/failures 用于状态报告
-</code></pre>
-<h4 id="status-memoryproviderstatus"><code>status(): MemoryProviderStatus</code></h4>
-<pre><code class="language-typescript">{
-  files: number,
-  chunks: number,
-  provider: string,           // top-level（无 providerInfo 包装）
-  model: string,              // top-level
-  backend: string,
-  dirty: boolean,
-  workspaceDir: string,
-  dbPath: string,
-  requestedProvider: string,
-  sources: string[],
-  extraPaths: string[],
-  sourceCounts: Record&lt;string, number&gt;,
-  cache: object,
-  fallback: object,
-  vector: object,
-  fts: object,                // top-level（不在 custom 内）
-  batch: object,              // top-level（不在 custom 内）
-  custom: {
-    searchMode: &quot;hybrid&quot; | &quot;fts-only&quot;,
-    providerUnavailableReason?: string,
-    readonlyRecovery: { attempts, successes, failures, lastError }
-  }
-}
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="mf">1.</span><span class="w"> </span><span class="n">embedQueryWithTimeout</span><span class="p">(</span><span class="n">query</span><span class="p">)</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="n">生成查询嵌入</span><span class="w"></span>
+<span class="mf">2.</span><span class="w"> </span><span class="n">并行搜索</span><span class="err">：</span><span class="n">searchVector</span><span class="p">()</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">searchKeyword</span><span class="p">()</span><span class="w"></span>
+<span class="mf">3.</span><span class="w"> </span><span class="n">mergeHybridResults</span><span class="p">()</span><span class="w"> </span><span class="n">合并</span><span class="w"></span>
+<span class="mf">4.</span><span class="w"> </span><span class="n">降级</span><span class="err">：</span><span class="n">无向量结果但有关键词结果</span><span class="err">，</span><span class="n">放宽</span><span class="w"> </span><span class="n">minScore</span><span class="w"></span>
+</code></pre></div>
+
+<h4 id="syncparams-promisevoid"><code>sync(params?): Promise&lt;void&gt;</code></h4>
+<div class="codehilite"><pre><span></span><code><span class="mf">1.</span><span class="w"> </span><span class="n">通过</span><span class="w"> </span><span class="n">this</span><span class="mf">.</span><span class="n">syncing</span><span class="w"> </span><span class="n">Promise</span><span class="w"> </span><span class="n">去重并发同步</span><span class="w"></span>
+<span class="mf">2.</span><span class="w"> </span><span class="kr">run</span><span class="n">SyncWithReadonlyRecovery</span><span class="p">():</span><span class="w"></span>
+<span class="w">   </span><span class="n">a</span><span class="mf">.</span><span class="w"> </span><span class="n">尝试同步</span><span class="w"></span>
+<span class="w">   </span><span class="n">b</span><span class="mf">.</span><span class="w"> </span><span class="n">只读错误</span><span class="err">：</span><span class="n">关闭</span><span class="w"> </span><span class="n">DB</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="n">重新打开</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="n">重试</span><span class="w"></span>
+<span class="w">   </span><span class="n">c</span><span class="mf">.</span><span class="w"> </span><span class="n">追踪</span><span class="w"> </span><span class="n">attempts</span><span class="o">/</span><span class="n">successes</span><span class="o">/</span><span class="n">failures</span><span class="w"></span>
+</code></pre></div>
+
 <hr />
-<h2 id="4-sqlite-存储-schema">4. SQLite 存储 Schema</h2>
-<p><strong>文件</strong>: <code>src/memory/memory-schema.ts</code> (96 行)</p>
-<h3 id="meta-表">meta 表</h3>
-<pre><code class="language-sql">CREATE TABLE IF NOT EXISTS meta (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
--- 存储: memory_index_meta_v1 → JSON { model, provider, sources, chunkTokens, chunkOverlap, vectorDims }
-</code></pre>
-<h3 id="files-表">files 表</h3>
-<pre><code class="language-sql">CREATE TABLE IF NOT EXISTS files (
-  path TEXT PRIMARY KEY,
-  source TEXT NOT NULL DEFAULT 'memory',
-  hash TEXT NOT NULL,
-  mtime INTEGER NOT NULL,
-  size INTEGER NOT NULL
-);
-</code></pre>
-<h3 id="chunks-表">chunks 表</h3>
-<pre><code class="language-sql">CREATE TABLE IF NOT EXISTS chunks (
-  id TEXT PRIMARY KEY,           -- hash(source:path:startLine:endLine:hash:model)
-  path TEXT NOT NULL,
-  source TEXT NOT NULL DEFAULT 'memory',
-  start_line INTEGER NOT NULL,
-  end_line INTEGER NOT NULL,
-  hash TEXT NOT NULL,
-  model TEXT NOT NULL,
-  text TEXT NOT NULL,
-  embedding TEXT NOT NULL,       -- JSON array of floats
-  updated_at INTEGER NOT NULL
-);
-CREATE INDEX idx_chunks_path ON chunks(path);
-CREATE INDEX idx_chunks_source ON chunks(source);
-</code></pre>
-<h3 id="chunks-vec-虚表sqlite-vec-扩展">chunks_vec 虚表（sqlite-vec 扩展）</h3>
-<pre><code class="language-sql">CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec USING vec0(
-  id TEXT PRIMARY KEY,
-  embedding FLOAT[{dimensions}]
-);
--- 支持 vec_distance_cosine() 函数
--- 运行时可选加载，不可用则降级到客户端计算
-</code></pre>
-<h3 id="chunks-fts-虚表fts5-全文搜索">chunks_fts 虚表（FTS5 全文搜索）</h3>
-<pre><code class="language-sql">CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
-  text,
-  id UNINDEXED,
-  path UNINDEXED,
-  source UNINDEXED,
-  model UNINDEXED,
-  start_line UNINDEXED,
-  end_line UNINDEXED
-);
--- 支持 bm25() 排名函数
-</code></pre>
-<h3 id="embedding-cache-表">embedding_cache 表</h3>
-<pre><code class="language-sql">CREATE TABLE IF NOT EXISTS embedding_cache (
-  provider TEXT NOT NULL,
-  model TEXT NOT NULL,
-  provider_key TEXT NOT NULL,    -- provider 配置的哈希
-  hash TEXT NOT NULL,            -- 内容哈希
-  embedding TEXT NOT NULL,       -- JSON embedding
-  dims INTEGER,
-  updated_at INTEGER NOT NULL,
-  PRIMARY KEY (provider, model, provider_key, hash)
-);
-CREATE INDEX idx_embedding_cache_updated_at ON embedding_cache(updated_at);
-</code></pre>
+<h2 id="5-sqlite-schema">5. SQLite 存储 Schema</h2>
+<p><strong>文件</strong>: <code>extensions/memory-core/src/memory/</code> 相关文件</p>
+<h3 id="meta">meta 表</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">CREATE</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="k">IF</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">EXISTS</span><span class="w"> </span><span class="n">meta</span><span class="w"> </span><span class="p">(</span><span class="w"></span>
+<span class="w">  </span><span class="k">key</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">PRIMARY</span><span class="w"> </span><span class="k">KEY</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">value</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="w"></span>
+<span class="p">);</span><span class="w"></span>
+<span class="c1">-- 存储: memory_index_meta_v1 → JSON { model, provider, sources, chunkTokens, chunkOverlap, vectorDims }</span>
+</code></pre></div>
+
+<h3 id="files">files 表</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">CREATE</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="k">IF</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">EXISTS</span><span class="w"> </span><span class="n">files</span><span class="w"> </span><span class="p">(</span><span class="w"></span>
+<span class="w">  </span><span class="n">path</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">PRIMARY</span><span class="w"> </span><span class="k">KEY</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="k">source</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="w"> </span><span class="k">DEFAULT</span><span class="w"> </span><span class="s1">&#39;memory&#39;</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">hash</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">mtime</span><span class="w"> </span><span class="nb">INTEGER</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="k">size</span><span class="w"> </span><span class="nb">INTEGER</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="w"></span>
+<span class="p">);</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="chunks">chunks 表</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">CREATE</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="k">IF</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">EXISTS</span><span class="w"> </span><span class="n">chunks</span><span class="w"> </span><span class="p">(</span><span class="w"></span>
+<span class="w">  </span><span class="n">id</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">PRIMARY</span><span class="w"> </span><span class="k">KEY</span><span class="p">,</span><span class="w">           </span><span class="c1">-- hash(source:path:startLine:endLine:hash:model)</span>
+<span class="w">  </span><span class="n">path</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="k">source</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="w"> </span><span class="k">DEFAULT</span><span class="w"> </span><span class="s1">&#39;memory&#39;</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">start_line</span><span class="w"> </span><span class="nb">INTEGER</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">end_line</span><span class="w"> </span><span class="nb">INTEGER</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">hash</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">model</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="nb">text</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">embedding</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w">       </span><span class="c1">-- JSON array of floats</span>
+<span class="w">  </span><span class="n">updated_at</span><span class="w"> </span><span class="nb">INTEGER</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="w"></span>
+<span class="p">);</span><span class="w"></span>
+<span class="k">CREATE</span><span class="w"> </span><span class="k">INDEX</span><span class="w"> </span><span class="n">idx_chunks_path</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="n">chunks</span><span class="p">(</span><span class="n">path</span><span class="p">);</span><span class="w"></span>
+<span class="k">CREATE</span><span class="w"> </span><span class="k">INDEX</span><span class="w"> </span><span class="n">idx_chunks_source</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="n">chunks</span><span class="p">(</span><span class="k">source</span><span class="p">);</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="chunks_vec-sqlite-vec">chunks_vec 虚表（sqlite-vec 扩展）</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">CREATE</span><span class="w"> </span><span class="n">VIRTUAL</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="k">IF</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">EXISTS</span><span class="w"> </span><span class="n">chunks_vec</span><span class="w"> </span><span class="k">USING</span><span class="w"> </span><span class="n">vec0</span><span class="p">(</span><span class="w"></span>
+<span class="w">  </span><span class="n">id</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">PRIMARY</span><span class="w"> </span><span class="k">KEY</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">embedding</span><span class="w"> </span><span class="nb">FLOAT</span><span class="p">[</span><span class="err">{</span><span class="n">dimensions</span><span class="err">}</span><span class="p">]</span><span class="w"></span>
+<span class="p">);</span><span class="w"></span>
+<span class="c1">-- 支持 vec_distance_cosine() 函数</span>
+</code></pre></div>
+
+<h3 id="chunks_fts-fts5">chunks_fts 虚表（FTS5 全文搜索）</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">CREATE</span><span class="w"> </span><span class="n">VIRTUAL</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="k">IF</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">EXISTS</span><span class="w"> </span><span class="n">chunks_fts</span><span class="w"> </span><span class="k">USING</span><span class="w"> </span><span class="n">fts5</span><span class="p">(</span><span class="w"></span>
+<span class="w">  </span><span class="nb">text</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">id</span><span class="w"> </span><span class="n">UNINDEXED</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">path</span><span class="w"> </span><span class="n">UNINDEXED</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="k">source</span><span class="w"> </span><span class="n">UNINDEXED</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">model</span><span class="w"> </span><span class="n">UNINDEXED</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">start_line</span><span class="w"> </span><span class="n">UNINDEXED</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">end_line</span><span class="w"> </span><span class="n">UNINDEXED</span><span class="w"></span>
+<span class="p">);</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="embedding_cache">embedding_cache 表</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">CREATE</span><span class="w"> </span><span class="k">TABLE</span><span class="w"> </span><span class="k">IF</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">EXISTS</span><span class="w"> </span><span class="n">embedding_cache</span><span class="w"> </span><span class="p">(</span><span class="w"></span>
+<span class="w">  </span><span class="n">provider</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">model</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">provider_key</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">hash</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">embedding</span><span class="w"> </span><span class="nb">TEXT</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">dims</span><span class="w"> </span><span class="nb">INTEGER</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="n">updated_at</span><span class="w"> </span><span class="nb">INTEGER</span><span class="w"> </span><span class="k">NOT</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="k">PRIMARY</span><span class="w"> </span><span class="k">KEY</span><span class="w"> </span><span class="p">(</span><span class="n">provider</span><span class="p">,</span><span class="w"> </span><span class="n">model</span><span class="p">,</span><span class="w"> </span><span class="n">provider_key</span><span class="p">,</span><span class="w"> </span><span class="n">hash</span><span class="p">)</span><span class="w"></span>
+<span class="p">);</span><span class="w"></span>
+</code></pre></div>
+
 <hr />
-<h2 id="5-同步编排-sync-orchestration">5. 同步编排 (Sync Orchestration)</h2>
-<p><strong>文件</strong>: <code>src/memory/manager-sync-ops.ts</code> (1391 行)</p>
-<h3 id="核心常量">核心常量</h3>
-<pre><code class="language-typescript">const VECTOR_TABLE = &quot;chunks_vec&quot;;
-const FTS_TABLE = &quot;chunks_fts&quot;;
-const EMBEDDING_CACHE_TABLE = &quot;embedding_cache&quot;;
-const SESSION_DIRTY_DEBOUNCE_MS = 5000;       // Session 脏标记去抖 5s
-const VECTOR_LOAD_TIMEOUT_MS = 30_000;        // 向量扩展加载超时 30s
-</code></pre>
-<h3 id="文件监听-ensurewatcher">文件监听 (<code>ensureWatcher()</code>)</h3>
+<h2 id="6-sync-orchestration">6. 同步编排 (Sync Orchestration)</h2>
+<p><strong>文件</strong>: <code>extensions/memory-core/src/memory/manager-sync-ops.ts</code></p>
+<h3 id="_13">核心常量</h3>
+<div class="codehilite"><pre><span></span><code><span class="kd">const</span> <span class="nx">VECTOR_TABLE</span> <span class="o">=</span> <span class="s2">&quot;chunks_vec&quot;</span><span class="p">;</span>
+<span class="kd">const</span> <span class="nx">FTS_TABLE</span> <span class="o">=</span> <span class="s2">&quot;chunks_fts&quot;</span><span class="p">;</span>
+<span class="kd">const</span> <span class="nx">SESSION_DIRTY_DEBOUNCE_MS</span> <span class="o">=</span> <span class="mf">5000</span><span class="p">;</span>
+<span class="kd">const</span> <span class="nx">VECTOR_LOAD_TIMEOUT_MS</span> <span class="o">=</span> <span class="mf">30</span><span class="nx">_000</span><span class="p">;</span>
+</code></pre></div>
+
+<h3 id="ensurewatcher">文件监听 (<code>ensureWatcher()</code>)</h3>
 <p><strong>条件</strong>: <code>sources.has("memory")</code> &amp;&amp; <code>sync.watch</code> 启用</p>
 <p><strong>监听目标</strong>:</p>
-<pre><code>MEMORY.md, memory.md, memory/**/*.md, + 额外路径
-</code></pre>
-<p><strong>忽略模式</strong>:</p>
-<pre><code>.git, node_modules, .pnpm-store, .venv, venv, .tox, __pycache__
-</code></pre>
+<div class="codehilite"><pre><span></span><code>MEMORY.md, memory.md, memory/**/*.md, + 额外路径
+</code></pre></div>
+
 <p><strong>行为</strong>: 文件变更 → <code>this.dirty = true</code> → 调度 <code>sync()</code>（去抖 <code>watchDebounceMs</code>，默认 1500ms）</p>
-<h3 id="session-事件监听-ensuresessionlistener">Session 事件监听 (<code>ensureSessionListener()</code>)</h3>
-<pre><code>订阅 onSessionTranscriptUpdate()
-  → 对每个更新的 session 文件：
-    1. 验证是否属于当前 agent
-    2. updateSessionDelta() 计算增量 bytes/messages
-    3. 达到阈值 → sessionsDirty = true → 排队 sync
-</code></pre>
-<h3 id="session-增量批处理-processsessiondeltabatch">Session 增量批处理 (<code>processSessionDeltaBatch()</code>)</h3>
-<pre><code>去抖 5s
-追踪每个 session: { lastSize, pendingBytes, pendingMessages }
-增量字节计算: `newSize - lastSize`（通过 `fs.stat` 获取文件大小）
-触发条件: pendingBytes &gt;= deltaBytes OR pendingMessages &gt;= deltaMessages
-</code></pre>
-<h3 id="同步主流程-runsync">同步主流程 (<code>runSync()</code>)</h3>
-<pre><code>Phase 1: 确保向量扩展已加载
+<h3 id="session-ensuresessionlistener">Session 事件监听 (<code>ensureSessionListener()</code>)</h3>
+<div class="codehilite"><pre><span></span><code>订阅 onSessionTranscriptUpdate()
+  → 验证是否属于当前 agent
+  → updateSessionDelta() 计算增量 bytes/messages
+  → 达到阈值 → sessionsDirty = true → 排队 sync
+</code></pre></div>
+
+<h3 id="runsync">同步主流程 (<code>runSync()</code>)</h3>
+<div class="codehilite"><pre><span></span><code>Phase 1: 确保向量扩展已加载
 
 Phase 2: 读取元数据，判断是否需要完整重建索引
 
 Phase 3: 完整重建索引触发条件：
-  - force=true 参数
+  - force=true
   - 无元数据（首次运行）
-  - Provider 变更
-  - Model 变更
-  - Chunk token/overlap 配置变更
-  - 向量维度变更（向量现在可用）
-  - providerKey 变更
-  - sources 变更
+  - Provider/Model/Chunk 配置/向量维度/sources 变更
 
 Phase 4: 运行安全/不安全重建索引 OR 增量同步
-</code></pre>
-<h3 id="安全重建索引-runsafereindex">安全重建索引 (<code>runSafeReindex()</code>)</h3>
-<pre><code>原子交换策略：
+</code></pre></div>
+
+<h3 id="runsafereindex">安全重建索引 (<code>runSafeReindex()</code>)</h3>
+<div class="codehilite"><pre><span></span><code>原子交换策略：
 1. 创建临时数据库
 2. 在临时 DB 中运行完整同步
-3. 关闭两个 DB
-4. 原子交换: original.db → original.db.backup-UUID, temp.db → original.db
-5. 清理备份
-6. 重新打开主 DB
-失败时: 恢复原始文件，清理临时文件
-</code></pre>
-<h3 id="不安全重建索引-rununsafereindex">不安全重建索引 (<code>runUnsafeReindex()</code>)</h3>
-<pre><code>仅测试使用 (OPENCLAW_TEST_MEMORY_UNSAFE_REINDEX=1 且需要 OPENCLAW_TEST_FAST=1)
-直接截断表，无原子交换
-</code></pre>
-<h3 id="记忆文件同步-syncmemoryfiles">记忆文件同步 (<code>syncMemoryFiles()</code>)</h3>
-<pre><code>跳过 FTS-only 模式（无嵌入）
-列出所有记忆文件
-对每个文件: 检查 hash → 未变则跳过（除非完整重建）
-运行索引（可配置并发）
-移除不在活跃集中的过期条目
-</code></pre>
-<h3 id="session-文件同步-syncsessionfiles">Session 文件同步 (<code>syncSessionFiles()</code>)</h3>
-<pre><code>与记忆文件同步类似，但:
-- source = &quot;sessions&quot;
-- 通过 buildSessionEntry() 从 JSONL 读取
-- 提取 + 合并消息，编辑敏感数据
-- 通过 lineMap 重映射行号
-</code></pre>
+3. 原子交换: original.db → original.db.backup-UUID, temp.db → original.db
+4. 清理备份
+5. 重新打开主 DB
+</code></pre></div>
+
+<h3 id="session-enqueuememorytargetedsessionsync">靶向 Session 同步 (<code>enqueueMemoryTargetedSessionSync()</code>)</h3>
+<p>新增的靶向同步机制，允许仅同步特定 session 文件而非全量 session 扫描：</p>
+<div class="codehilite"><pre><span></span><code><span class="nx">enqueueMemoryTargetedSessionSync</span><span class="p">(</span><span class="nx">manager</span><span class="p">,</span> <span class="nx">sessionFiles</span><span class="p">)</span>
+  <span class="err">→</span> <span class="nx">去重排队</span>
+  <span class="err">→</span> <span class="nx">仅处理指定的</span> <span class="nx">session</span> <span class="nx">文件</span>
+  <span class="err">→</span> <span class="nx">减少不必要的全量扫描</span>
+</code></pre></div>
+
 <hr />
-<h2 id="6-嵌入操作-embedding-operations">6. 嵌入操作 (Embedding Operations)</h2>
-<p><strong>文件</strong>: <code>src/memory/manager-embedding-ops.ts</code> (925 行)</p>
-<h3 id="核心常量-1">核心常量</h3>
-<pre><code class="language-typescript">EMBEDDING_BATCH_MAX_TOKENS = 8000      // 单批最大 UTF-8 字节数 (通过 estimateUtf8Bytes())
-EMBEDDING_INDEX_CONCURRENCY = 4        // 索引并发度
-EMBEDDING_RETRY_MAX_ATTEMPTS = 3       // 最大重试次数
-EMBEDDING_RETRY_BASE_DELAY_MS = 500    // 基础重试延迟
-EMBEDDING_RETRY_MAX_DELAY_MS = 8000    // 最大重试延迟
-EMBEDDING_QUERY_TIMEOUT_REMOTE_MS = 60_000     // 远程查询超时 60s
-EMBEDDING_QUERY_TIMEOUT_LOCAL_MS = 5 * 60_000  // 本地查询超时 5min
-EMBEDDING_BATCH_TIMEOUT_REMOTE_MS = 2 * 60_000  // 远程批量超时 2min
-EMBEDDING_BATCH_TIMEOUT_LOCAL_MS = 10 * 60_000   // 本地批量超时 10min
-</code></pre>
-<h3 id="文件索引流程-indexfile">文件索引流程 (<code>indexFile()</code>)</h3>
-<pre><code>1. 读取文件内容（或使用提供的内容用于 sessions）
-2. chunkMarkdown() 分块
-3. 过滤空 chunk
-4. 强制限制每个嵌入 provider 的最大输入 token
-5. 为 session 文件重映射 chunk 行号（JSONL → 内容）
-6. 生成嵌入：
-   - 批量启用 → embedChunksWithBatch() (OpenAI/Gemini/Voyage 批量)
-   - 否则 → embedChunksInBatches() (常规 API 调用 + 重试)
-7. 确保向量扩展已加载
-8. 单事务内：删除旧 chunks/vectors/FTS → 插入新条目
-9. 更新 files 表的 hash
-</code></pre>
-<h3 id="批量嵌入-embedchunksinbatches">批量嵌入 (<code>embedChunksInBatches()</code>)</h3>
-<pre><code>1. loadEmbeddingCache() 加载缓存的嵌入
-2. 缺失的按 EMBEDDING_BATCH_MAX_TOKENS 分组（基于 estimateUtf8Bytes() UTF-8 字节数，非 token 估算）
-3. 每组调用 embedBatchWithRetry()
-4. Upsert 缓存条目（hash + dims）
-</code></pre>
-<h3 id="嵌入缓存加载-loadembeddingcache">嵌入缓存加载 (<code>loadEmbeddingCache()</code>)</h3>
-<pre><code>查询 embedding_cache 表:
-  Key: (provider, model, provider_key, hash)
-  Value: JSON embedding 字符串
-按 400 个 hash 分批查询，避免 SQL 参数溢出
-</code></pre>
-<h3 id="provider-批量路由-embedchunkswithbatch">Provider 批量路由 (<code>embedChunksWithBatch()</code>)</h3>
+<h2 id="7-embedding-operations">7. 嵌入操作 (Embedding Operations)</h2>
+<p><strong>文件</strong>: <code>extensions/memory-core/src/memory/manager-embedding-ops.ts</code></p>
+<h3 id="_14">核心常量</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">EMBEDDING_BATCH_MAX_TOKENS</span> <span class="o">=</span> <span class="mf">8000</span>
+<span class="nx">EMBEDDING_INDEX_CONCURRENCY</span> <span class="o">=</span> <span class="mf">4</span>
+<span class="nx">EMBEDDING_RETRY_MAX_ATTEMPTS</span> <span class="o">=</span> <span class="mf">3</span>
+<span class="nx">EMBEDDING_RETRY_BASE_DELAY_MS</span> <span class="o">=</span> <span class="mf">500</span>
+<span class="nx">EMBEDDING_RETRY_MAX_DELAY_MS</span> <span class="o">=</span> <span class="mf">8000</span>
+<span class="nx">EMBEDDING_QUERY_TIMEOUT_REMOTE_MS</span> <span class="o">=</span> <span class="mf">60</span><span class="nx">_000</span>
+<span class="nx">EMBEDDING_QUERY_TIMEOUT_LOCAL_MS</span> <span class="o">=</span> <span class="mf">5</span> <span class="o">*</span> <span class="mf">60</span><span class="nx">_000</span>
+<span class="nx">EMBEDDING_BATCH_TIMEOUT_REMOTE_MS</span> <span class="o">=</span> <span class="mf">2</span> <span class="o">*</span> <span class="mf">60</span><span class="nx">_000</span>
+<span class="nx">EMBEDDING_BATCH_TIMEOUT_LOCAL_MS</span> <span class="o">=</span> <span class="mf">10</span> <span class="o">*</span> <span class="mf">60</span><span class="nx">_000</span>
+</code></pre></div>
+
+<h3 id="indexfile">文件索引流程 (<code>indexFile()</code>)</h3>
+<div class="codehilite"><pre><span></span><code><span class="mf">1.</span><span class="w"> </span><span class="n">读取文件内容</span><span class="w"></span>
+<span class="mf">2.</span><span class="w"> </span><span class="n">chunkMarkdown</span><span class="p">()</span><span class="w"> </span><span class="n">分块</span><span class="w"></span>
+<span class="mf">3.</span><span class="w"> </span><span class="n">过滤空</span><span class="w"> </span><span class="n">chunk</span><span class="w"></span>
+<span class="mf">4.</span><span class="w"> </span><span class="n">强制限制每个嵌入</span><span class="w"> </span><span class="n">provider</span><span class="w"> </span><span class="n">的最大输入</span><span class="w"> </span><span class="kr">to</span><span class="n">ken</span><span class="w"></span>
+<span class="mf">5.</span><span class="w"> </span><span class="n">生成嵌入</span><span class="err">（</span><span class="n">批量或逐个</span><span class="err">）</span><span class="w"></span>
+<span class="mf">6.</span><span class="w"> </span><span class="n">单事务内</span><span class="err">：</span><span class="n">删除旧</span><span class="w"> </span><span class="n">chunks</span><span class="o">/</span><span class="n">vectors</span><span class="o">/</span><span class="n">FTS</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="n">插入新条目</span><span class="w"></span>
+<span class="mf">7.</span><span class="w"> </span><span class="n">更新</span><span class="w"> </span><span class="n">files</span><span class="w"> </span><span class="n">表的</span><span class="w"> </span><span class="n">hash</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="provider-embedchunkswithbatch">Provider 批量路由 (<code>embedChunksWithBatch()</code>)</h3>
 <table>
 <thead>
 <tr>
@@ -479,186 +549,81 @@ EMBEDDING_BATCH_TIMEOUT_LOCAL_MS = 10 * 60_000   // 本地批量超时 10min
 </tr>
 </tbody>
 </table>
-<h3 id="重试策略-embedbatchwithretry">重试策略 (<code>embedBatchWithRetry()</code>)</h3>
-<pre><code class="language-typescript">// 指数退避 + 抖动
-Max 3 retries (attempts 0, 1, 2)
-Delay: [500ms, 1000ms, 2000ms] with 0~+20% jitter (1 + Math.random() * 0.2)
-Retryable errors: rate limit, 5xx, cloudflare, &quot;resource has been exhausted&quot;, &quot;too many requests&quot;, &quot;429&quot;, &quot;tokens per day&quot;
-Timeout: 60s (remote), 5min (local)
-</code></pre>
-<h3 id="查询嵌入-embedquerywithtimeout">查询嵌入 (<code>embedQueryWithTimeout()</code>)</h3>
-<pre><code>单次嵌入调用 + 超时（无重试）
-Timeout: 60s (remote), 5min (local)
-</code></pre>
-<h3 id="批量失败处理">批量失败处理</h3>
-<pre><code class="language-typescript">recordBatchFailure(params) {
-  batchFailureCount++
-  if (batchFailureCount &gt;= BATCH_FAILURE_LIMIT(2)) {
-    disableBatch()  // 或 forceDisable=true 立即禁用
-  }
-  storeErrorMessage + providerName
-}
-</code></pre>
-<h3 id="缓存裁剪">缓存裁剪</h3>
-<pre><code class="language-typescript">pruneEmbeddingCacheIfNeeded() {
-  if (cacheSize &gt; maxEntries) {
-    // 按 updated_at 删除最旧的条目
-    // 仅保留 maxEntries 行
-  }
-}
-</code></pre>
-<h3 id="provider-key-计算">Provider Key 计算</h3>
-<pre><code class="language-typescript">computeProviderKey(): string {
-  // OpenAI: hash({ baseUrl, model, headers (no auth key) })
-  // Gemini: 同上，过滤 X-Goog-Api-Key
-  // 其他: hash({ provider, model })
-  // 允许配置未变时复用缓存
-}
-</code></pre>
+<h3 id="_15">重试策略</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// 指数退避 + 抖动</span>
+<span class="nx">Max</span> <span class="mf">3</span> <span class="nx">retries</span>
+<span class="nx">Delay</span><span class="o">:</span> <span class="p">[</span><span class="mf">500</span><span class="nx">ms</span><span class="p">,</span> <span class="mf">1000</span><span class="nx">ms</span><span class="p">,</span> <span class="mf">2000</span><span class="nx">ms</span><span class="p">]</span> <span class="kd">with</span> <span class="mf">0</span><span class="o">~+</span><span class="mf">20</span><span class="o">%</span> <span class="nx">jitter</span>
+<span class="nx">Retryable</span>: <span class="kt">rate</span> <span class="nx">limit</span><span class="p">,</span> <span class="mf">5</span><span class="nx">xx</span><span class="p">,</span> <span class="nx">cloudflare</span><span class="p">,</span> <span class="s2">&quot;resource exhausted&quot;</span><span class="p">,</span> <span class="s2">&quot;429&quot;</span>
+</code></pre></div>
+
+<h3 id="_16">嵌入缓存</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">loadEmbeddingCache</span><span class="p">()</span>     <span class="c1">// 按 400 个 hash 分批查询</span>
+<span class="nx">pruneEmbeddingCacheIfNeeded</span><span class="p">()</span>  <span class="c1">// 按 updated_at 删除最旧条目</span>
+<span class="nx">computeProviderKey</span><span class="p">()</span>     <span class="c1">// 基于 provider 配置的稳定哈希</span>
+</code></pre></div>
+
 <hr />
-<h2 id="7-向量搜索与关键词搜索">7. 向量搜索与关键词搜索</h2>
-<p><strong>文件</strong>: <code>src/memory/manager-search.ts</code> (191 行)</p>
-<blockquote>
-<p>注意：<code>searchKeyword</code> 和 <code>searchVector</code> 函数由 MemoryIndexManager 使用。</p>
-</blockquote>
-<h3 id="向量搜索-searchvector">向量搜索 (<code>searchVector()</code>)</h3>
+<h2 id="8">8. 向量搜索与关键词搜索</h2>
+<p><strong>文件</strong>: <code>extensions/memory-core/src/memory/manager-search.ts</code></p>
+<h3 id="searchvector">向量搜索 (<code>searchVector()</code>)</h3>
 <p><strong>路径 A</strong>：sqlite-vec 扩展可用</p>
-<pre><code class="language-sql">SELECT c.id, c.path, ...
-FROM chunks_vec v
-JOIN chunks c ON c.id = v.id
-WHERE c.model = ?
-  AND source IN (...)
-ORDER BY vec_distance_cosine(v.embedding, ?) ASC
-LIMIT ?
-</code></pre>
-<ul>
-<li>余弦距离 (0-2) 转换为分数: <code>score = 1 - distance</code></li>
-</ul>
-<p><strong>路径 B</strong>：扩展不可用（降级）</p>
-<pre><code>1. listChunks() 加载所有 chunks 和 embeddings
-2. 客户端计算余弦相似度
-3. 排序，取 top K
-注意: 降级路径较慢但保持搜索可用
-</code></pre>
-<h3 id="关键词搜索-searchkeyword">关键词搜索 (<code>searchKeyword()</code>)</h3>
-<pre><code class="language-sql">SELECT id, path, ...
-FROM chunks_fts
-WHERE chunks_fts MATCH ?
-  AND source IN (...)
-  -- 条件性 model 过滤：providerModel 为 undefined 时不添加 model 过滤
-ORDER BY bm25(...) ASC
-LIMIT ?
-</code></pre>
-<p><strong>BM25 分数转换</strong>:</p>
-<pre><code class="language-typescript">bm25RankToScore(rank: number): number {
-  return rank &lt; 0
-    ? (-rank) / (1 + (-rank))
-    : 1 / (1 + rank)
-}
-// 将 SQLite BM25 rank 映射到 [0,1] 分数
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="k">SELECT</span><span class="w"> </span><span class="k">c</span><span class="p">.</span><span class="n">id</span><span class="p">,</span><span class="w"> </span><span class="k">c</span><span class="p">.</span><span class="n">path</span><span class="p">,</span><span class="w"> </span><span class="p">...</span><span class="w"></span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">chunks_vec</span><span class="w"> </span><span class="n">v</span><span class="w"></span>
+<span class="k">JOIN</span><span class="w"> </span><span class="n">chunks</span><span class="w"> </span><span class="k">c</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="k">c</span><span class="p">.</span><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">v</span><span class="p">.</span><span class="n">id</span><span class="w"></span>
+<span class="k">WHERE</span><span class="w"> </span><span class="k">c</span><span class="p">.</span><span class="n">model</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="o">?</span><span class="w"></span>
+<span class="w">  </span><span class="k">AND</span><span class="w"> </span><span class="k">source</span><span class="w"> </span><span class="k">IN</span><span class="w"> </span><span class="p">(...)</span><span class="w"></span>
+<span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">vec_distance_cosine</span><span class="p">(</span><span class="n">v</span><span class="p">.</span><span class="n">embedding</span><span class="p">,</span><span class="w"> </span><span class="o">?</span><span class="p">)</span><span class="w"> </span><span class="k">ASC</span><span class="w"></span>
+<span class="k">LIMIT</span><span class="w"> </span><span class="o">?</span><span class="w"></span>
+</code></pre></div>
+
+<p><strong>路径 B</strong>：扩展不可用（降级到客户端计算）</p>
+<h3 id="searchkeyword">关键词搜索 (<code>searchKeyword()</code>)</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">SELECT</span><span class="w"> </span><span class="n">id</span><span class="p">,</span><span class="w"> </span><span class="n">path</span><span class="p">,</span><span class="w"> </span><span class="p">...</span><span class="w"></span>
+<span class="k">FROM</span><span class="w"> </span><span class="n">chunks_fts</span><span class="w"></span>
+<span class="k">WHERE</span><span class="w"> </span><span class="n">chunks_fts</span><span class="w"> </span><span class="k">MATCH</span><span class="w"> </span><span class="o">?</span><span class="w"></span>
+<span class="w">  </span><span class="k">AND</span><span class="w"> </span><span class="k">source</span><span class="w"> </span><span class="k">IN</span><span class="w"> </span><span class="p">(...)</span><span class="w"></span>
+<span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="n">bm25</span><span class="p">(...)</span><span class="w"> </span><span class="k">ASC</span><span class="w"></span>
+<span class="k">LIMIT</span><span class="w"> </span><span class="o">?</span><span class="w"></span>
+</code></pre></div>
+
+<p><strong>BM25 分数转换</strong>: <code>bm25RankToScore(rank) → [0,1]</code></p>
 <hr />
-<h2 id="8-混合评分算法-hybrid-scoring">8. 混合评分算法 (Hybrid Scoring)</h2>
-<p><strong>文件</strong>: <code>src/memory/hybrid.ts</code> (155 行)</p>
-<h3 id="fts-查询构建">FTS 查询构建</h3>
-<pre><code class="language-typescript">buildFtsQuery(raw: string): string | null {
-  // 按 Unicode 字母/数字/下划线分词
-  // 引用每个 token
-  // AND 连接: &quot;token1&quot; AND &quot;token2&quot;
-  // 无 token 返回 null
-}
-</code></pre>
-<h3 id="混合合并-mergehybridresults">混合合并 (<code>mergeHybridResults()</code>)</h3>
-<pre><code>Phase 1: 按 ID 合并
-  - 合并向量 (vectorScore) + 关键词 (textScore) 结果
-  - 关键词片段优先于向量片段
-  - 缺失的分数初始化为 0
+<h2 id="9-hybrid-scoring">9. 混合评分算法 (Hybrid Scoring)</h2>
+<p><strong>文件</strong>: <code>extensions/memory-core/src/memory/hybrid.ts</code></p>
+<h3 id="mergehybridresults">混合合并 (<code>mergeHybridResults()</code>)</h3>
+<div class="codehilite"><pre><span></span><code>Phase 1: 按 ID 合并向量 + 关键词结果
+Phase 2: score = vectorWeight * vectorScore + textWeight * textScore
+Phase 3: 应用时间衰减（常青文件免疫）
+Phase 4: 应用 MMR 重排序（可选）
+</code></pre></div>
 
-Phase 2: 计算加权分数
-  score = vectorWeight * vectorScore + textWeight * textScore
-
-Phase 3: 应用时间衰减（如启用）
-  - 从文件路径解析日期: memory/YYYY-MM-DD.md
-  - 或从工作区提取 mtime
-  - &quot;常青&quot;文件 (MEMORY.md 等非日期文件) → 无衰减
-  - 指数衰减: score *= exp(-lambda * ageInDays)
-
-排序: 按最终分数降序（在时间衰减之后、MMR 之前）
-
-Phase 4: 应用 MMR（如启用，可选重排序）
-  - 迭代选择，平衡相关性 + 多样性
-  - Score = lambda * relevance - (1-lambda) * maxSimilarityToSelected
-</code></pre>
 <hr />
-<h2 id="9-时间衰减-temporal-decay">9. 时间衰减 (Temporal Decay)</h2>
-<p><strong>文件</strong>: <code>src/memory/temporal-decay.ts</code> (167 行)</p>
-<h3 id="衰减公式">衰减公式</h3>
-<pre><code class="language-typescript">lambda = ln(2) / halfLifeDays
-multiplier = exp(-lambda * ageInDays)
-// 在 ageInDays = halfLifeDays 时: multiplier ≈ 0.5
-</code></pre>
-<h3 id="日期解析">日期解析</h3>
-<pre><code class="language-typescript">// 模块私有函数（未导出）
-parseMemoryDateFromPath(filePath): Date | null {
-  // 正则: /(?:^|\/)memory\/(\d{4})-(\d{2})-(\d{2})\.md$/
-  // 验证: 年、月、日是合法日历值
-  // 返回 UTC 日期
-}
-</code></pre>
-<h3 id="常青文件检测">常青文件检测</h3>
-<pre><code class="language-typescript">// 模块私有函数（未导出）
-isEvergreenMemoryPath(filePath): boolean {
-  // true: MEMORY.md, memory.md, 非日期的 memory/* 文件
-  // false: memory/YYYY-MM-DD.md 文件
-}
-</code></pre>
-<h3 id="应用衰减">应用衰减</h3>
-<pre><code class="language-typescript">applyTemporalDecayToHybridResults(params) {
-  for each result:
-    1. 从路径或 mtime 提取时间戳
-    2. 常青文件跳过
-    3. 计算天数年龄
-    4. 应用衰减乘数
-  // 缓存时间戳 Promise 避免冗余 FS stat
-}
-</code></pre>
-<hr />
-<h2 id="10-最大边际相关性-mmr">10. 最大边际相关性 (MMR)</h2>
-<p><strong>文件</strong>: <code>src/memory/mmr.ts</code> (214 行)</p>
-<h3 id="算法公式">算法公式</h3>
-<pre><code>MMR_score = λ * relevance - (1-λ) * max_similarity_to_selected
-</code></pre>
-<h3 id="核心算法-mmrrerank">核心算法 (<code>mmrRerank()</code>)</h3>
-<pre><code>早期退出: disabled 或 ≤1 个条目
-Lambda 钳制到 [0,1]
-Lambda=1: 仅按相关性排序
+<h2 id="10-temporal-decay">10. 时间衰减 (Temporal Decay)</h2>
+<p><strong>文件</strong>: <code>extensions/memory-core/src/memory/temporal-decay.ts</code></p>
+<h3 id="_17">衰减公式</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">lambda</span> <span class="o">=</span> <span class="nx">ln</span><span class="p">(</span><span class="mf">2</span><span class="p">)</span> <span class="o">/</span> <span class="nx">halfLifeDays</span>
+<span class="nx">multiplier</span> <span class="o">=</span> <span class="nx">exp</span><span class="p">(</span><span class="o">-</span><span class="nx">lambda</span> <span class="o">*</span> <span class="nx">ageInDays</span><span class="p">)</span>
+<span class="c1">// halfLifeDays 天时: multiplier ≈ 0.5</span>
+</code></pre></div>
 
-1. 归一化分数到 [0,1]（与相似度公平比较）
-2. 预分词所有条目（效率优化）
-3. 迭代选择:
-   a. 对每个候选：
-      - 计算归一化相关性
-      - 计算与已选条目的最大 Jaccard 相似度
-      - Score = λ * norm_relevance - (1-λ) * max_sim
-   b. 选择最高 MMR 分数（相同分数按原始分数打破平局）
-   c. 移到已选集，从候选中移除
-</code></pre>
-<h3 id="相似度计算">相似度计算</h3>
-<pre><code class="language-typescript">jaccardSimilarity(setA, setB): number {
-  return |A ∩ B| / |A ∪ B|  // 基于 token 集合
-}
+<h3 id="_18">常青文件检测</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">isEvergreenMemoryPath</span><span class="p">(</span><span class="nx">filePath</span><span class="p">)</span><span class="o">:</span> <span class="kt">boolean</span>
+  <span class="c1">// true: MEMORY.md, memory.md, 非日期的 memory/* 文件</span>
+  <span class="c1">// false: memory/YYYY-MM-DD.md 文件</span>
+</code></pre></div>
 
-textSimilarity(contentA, contentB): number {
-  // 分词两段文本，计算 Jaccard 相似度
-}
-</code></pre>
 <hr />
-<h2 id="11-查询扩展-query-expansion">11. 查询扩展 (Query Expansion)</h2>
-<p><strong>文件</strong>: <code>src/memory/query-expansion.ts</code> (810 行)</p>
-<h3 id="多语言停用词">多语言停用词</h3>
-<p>支持语言: EN, ES, PT, AR, KO, JA, ZH</p>
-<p>覆盖: 冠词、代词、常见动词、介词、时间引用、模糊名词</p>
-<h3 id="分词器-tokenize">分词器 (<code>tokenize()</code>)</h3>
+<h2 id="11-mmr">11. 最大边际相关性 (MMR)</h2>
+<p><strong>文件</strong>: <code>extensions/memory-core/src/memory/mmr.ts</code></p>
+<h3 id="_19">算法</h3>
+<div class="codehilite"><pre><span></span><code>MMR_score = λ * relevance - (1-λ) * max_similarity_to_selected
+</code></pre></div>
+
+<p>相似度基于 Jaccard token 集合比较。</p>
+<hr />
+<h2 id="12-query-expansion">12. 查询扩展 (Query Expansion)</h2>
+<p><strong>文件</strong>: 相关逻辑分布在 <code>manager-search.ts</code> 和 <code>hybrid.ts</code></p>
+<h3 id="_20">多语言支持</h3>
 <table>
 <thead>
 <tr>
@@ -669,7 +634,7 @@ textSimilarity(contentA, contentB): number {
 <tbody>
 <tr>
 <td>日语 (汉字/假名/平假名)</td>
-<td>提取脚本特定块 + bigrams</td>
+<td>脚本块 + bigrams</td>
 </tr>
 <tr>
 <td>中文 (CJK)</td>
@@ -685,133 +650,101 @@ textSimilarity(contentA, contentB): number {
 </tr>
 </tbody>
 </table>
-<h3 id="关键词提取-extractkeywords">关键词提取 (<code>extractKeywords()</code>)</h3>
-<pre><code>1. 分词查询
-2. 过滤: 停用词、短 token (&lt;3字符 for 英语)、纯数字、纯标点
-3. 去重
-4. 返回数组
-</code></pre>
-<h3 id="fts-查询扩展-expandqueryforfts">FTS 查询扩展 (<code>expandQueryForFts()</code>)</h3>
-<pre><code>提取关键词
-构建: original OR keyword1 OR keyword2...
-用于向量 provider 不可用时
-</code></pre>
+<h3 id="_21">关键词提取</h3>
+<div class="codehilite"><pre><span></span><code><span class="mf">1.</span><span class="w"> </span><span class="n">分词查询</span><span class="w"></span>
+<span class="mf">2.</span><span class="w"> </span><span class="n">过滤</span><span class="p">:</span><span class="w"> </span><span class="n">停用词</span><span class="err">、</span><span class="n">短</span><span class="w"> </span><span class="kr">to</span><span class="n">ken</span><span class="err">、</span><span class="n">纯数字</span><span class="err">、</span><span class="n">纯标点</span><span class="w"></span>
+<span class="mf">3.</span><span class="w"> </span><span class="n">去重</span><span class="w"></span>
+<span class="mf">4.</span><span class="w"> </span><span class="n">返回数组</span><span class="w"></span>
+</code></pre></div>
+
 <hr />
-<h2 id="12-文件扫描与分块-chunking">12. 文件扫描与分块 (Chunking)</h2>
-<p><strong>文件</strong>: <code>src/memory/internal.ts</code> (482 行)</p>
-<h3 id="类型定义">类型定义</h3>
-<pre><code class="language-typescript">type MemoryFileEntry = { path, absPath, mtimeMs, size, hash }
-type MemoryChunk = { startLine, endLine, text, hash }
-</code></pre>
-<h3 id="文件扫描-listmemoryfiles">文件扫描 (<code>listMemoryFiles()</code>)</h3>
-<pre><code>遍历: MEMORY.md, memory.md, memory/**/*.md, + 额外路径
-按 realpath 去重
-跳过符号链接
-</code></pre>
-<h3 id="文件条目构建-buildfileentry">文件条目构建 (<code>buildFileEntry()</code>)</h3>
-<pre><code>stat + 读取文件
-SHA256 哈希内容
-相对路径归一化
-</code></pre>
-<h3 id="markdown-分块-chunkmarkdown">Markdown 分块 (<code>chunkMarkdown()</code>)</h3>
-<pre><code>Token 估算: chunk.text.length / 4（启发式）
+<h2 id="13-chunking">13. 文件扫描与分块 (Chunking)</h2>
+<h3 id="markdown-chunkmarkdown">Markdown 分块 (<code>chunkMarkdown()</code>)</h3>
+<div class="codehilite"><pre><span></span><code>Token 估算: chunk.text.length / 4（启发式）
 
 算法:
-1. 初始化空当前 chunk, currentChars = 0
-2. 对每一行:
-   - 如果添加当前行会超过 maxChars (tokens * 4): 刷新当前 chunk, 开始新 chunk
-   - 将行添加到当前 chunk
-3. 维护重叠: 从上一个 chunk 末尾回溯 overlapChars
-4. 追踪每个 chunk 的行号
+1. 逐行构建 chunk，超过 maxChars 时刷新
+2. 维护重叠: 从上一个 chunk 末尾回溯 overlapChars
+3. 追踪每个 chunk 的行号
 输出: Array of { startLine, endLine, text, hash }
-</code></pre>
-<h3 id="余弦相似度">余弦相似度</h3>
-<pre><code class="language-typescript">cosineSimilarity(vec1, vec2): number {
-  return dot(vec1, vec2) / (magnitude(vec1) * magnitude(vec2))
-  // 处理零向量
-}
-</code></pre>
+</code></pre></div>
+
 <hr />
-<h2 id="13-session-转录集成">13. Session 转录集成</h2>
-<p><strong>文件</strong>: <code>src/memory/session-files.ts</code> (131 行)</p>
-<h3 id="session-文件条目">Session 文件条目</h3>
-<pre><code class="language-typescript">type SessionFileEntry = {
-  path: string;         // &quot;sessions/sessionId.jsonl&quot;
-  absPath: string;
-  mtimeMs: number;
-  size: number;
-  hash: string;
-  content: string;      // 合并的 &quot;User: ...\nAssistant: ...&quot; 文本
-  lineMap: number[];    // 将内容行映射到 JSONL 行号
-}
-</code></pre>
-<h3 id="构建流程-buildsessionentry">构建流程 (<code>buildSessionEntry()</code>)</h3>
-<pre><code>1. 逐行读取 JSONL 文件
-2. 解析 JSON，过滤 type === &quot;message&quot;
-3. 提取 message.content (字符串或文本块数组)
-4. 归一化: 折叠空白
-5. 编辑敏感数据: redactSensitiveText(text, { mode: &quot;tools&quot; })
-6. 合并: &quot;User: ...\nAssistant: ...&quot;
-7. 计算 hash 用于变更检测：hashText(content + &quot;\n&quot; + lineMap.join(&quot;,&quot;))（包含 lineMap）
-8. 返回含 lineMap 的条目（用于 chunk 行号重映射）
-</code></pre>
-<h3 id="session-文件列表">Session 文件列表</h3>
-<pre><code class="language-typescript">listSessionFilesForAgent(agentId) {
-  // 列出 agent session 转录目录下的 .jsonl 文件
-  // 通过 resolveSessionTranscriptsDirForAgent(agentId)
-}
-</code></pre>
+<h2 id="14-session">14. Session 转录集成</h2>
+<p><strong>文件</strong>: 逻辑在 <code>extensions/memory-core/src/memory/</code> 相关文件</p>
+<h3 id="buildsessionentry">构建流程 (<code>buildSessionEntry()</code>)</h3>
+<div class="codehilite"><pre><span></span><code><span class="mf">1.</span><span class="w"> </span><span class="n">逐行读取</span><span class="w"> </span><span class="n">JSONL</span><span class="err">，</span><span class="n">解析</span><span class="w"> </span><span class="n">type</span><span class="w"> </span><span class="o">===</span><span class="w"> </span><span class="s">&quot;message&quot;</span><span class="w"></span>
+<span class="mf">2.</span><span class="w"> </span><span class="n">编辑敏感数据</span><span class="p">:</span><span class="w"> </span><span class="n">redactSensitiveText</span><span class="p">(</span><span class="n">text</span><span class="p">,</span><span class="w"> </span><span class="err">{</span><span class="w"> </span><span class="n">mode</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tools&quot;</span><span class="w"> </span><span class="err">}</span><span class="p">)</span><span class="w"></span>
+<span class="mf">3.</span><span class="w"> </span><span class="n">合并</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;User: ...\nAssistant: ...&quot;</span><span class="w"></span>
+<span class="mf">4.</span><span class="w"> </span><span class="n">计算</span><span class="w"> </span><span class="n">hash</span><span class="err">（</span><span class="n">含</span><span class="w"> </span><span class="n">lineMap</span><span class="err">），</span><span class="n">用于变更检测</span><span class="w"></span>
+</code></pre></div>
+
 <hr />
-<h2 id="14-agent-记忆工具接口">14. Agent 记忆工具接口</h2>
-<p><strong>文件</strong>: <code>src/agents/tools/memory-tool.ts</code> (271 行)</p>
-<h3 id="memory-search-工具">memory_search 工具</h3>
-<p><strong>Schema</strong>:</p>
-<pre><code class="language-typescript">{ query: string, maxResults?: number, minScore?: number }
-</code></pre>
+<h2 id="15-agent">15. Agent 记忆工具接口</h2>
+<p><strong>文件</strong>: <code>extensions/memory-core/src/tools.ts</code></p>
+<h3 id="memory_search">memory_search 工具</h3>
+<p><strong>Schema</strong>: <code>{ query: string, maxResults?: number, minScore?: number }</code></p>
 <p><strong>执行流程</strong>:</p>
-<pre><code>1. 解析 memory manager
-2. manager.search(query, { maxResults, minScore, sessionKey })
-3. 装饰引用（如启用）
-4. 按最大注入字符数钳制（QMD 后端）
-5. 返回结果 + provider/model/fallback/mode 元数据
-</code></pre>
-<p><strong>降级</strong>: 如果 manager 不可用，返回 <code>{ disabled: true, error }</code></p>
-<h3 id="memory-get-工具">memory_get 工具</h3>
-<p><strong>Schema</strong>:</p>
-<pre><code class="language-typescript">{ path: string, from?: number, lines?: number }
-</code></pre>
-<p><strong>执行</strong>: 调用 <code>manager.readFile()</code> 带可选范围</p>
-<p><strong>用途</strong>: 精细化搜索结果到特定行范围</p>
-<h3 id="引用-citations">引用 (Citations)</h3>
-<pre><code>模式: &quot;on&quot; (始终) | &quot;off&quot; (从不) | &quot;auto&quot; (智能检测)
-格式: memory/path.md#L10-L15
-如启用则追加到片段
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="mf">1.</span><span class="w"> </span><span class="n">获取</span><span class="w"> </span><span class="n">memory</span><span class="w"> </span><span class="n">manager</span><span class="w"> </span><span class="p">(</span><span class="n">通过</span><span class="w"> </span><span class="kr">get</span><span class="n">MemoryManagerContext</span><span class="p">)</span><span class="w"></span>
+<span class="mf">2.</span><span class="w"> </span><span class="n">搜索预检</span><span class="w"> </span><span class="p">(</span><span class="n">resolveMemorySearchPreflight</span><span class="p">)</span><span class="w"></span>
+<span class="mf">3.</span><span class="w"> </span><span class="n">manager</span><span class="mf">.</span><span class="n">search</span><span class="p">(</span><span class="n">query</span><span class="p">,</span><span class="w"> </span><span class="err">{</span><span class="w"> </span><span class="n">maxResults</span><span class="p">,</span><span class="w"> </span><span class="n">minScore</span><span class="p">,</span><span class="w"> </span><span class="n">sessionKey</span><span class="w"> </span><span class="err">}</span><span class="p">)</span><span class="w"></span>
+<span class="mf">4.</span><span class="w"> </span><span class="n">装饰引用</span><span class="err">（</span><span class="n">如启用</span><span class="err">）</span><span class="w"></span>
+<span class="mf">5.</span><span class="w"> </span><span class="n">搜索语料库补充</span><span class="w"> </span><span class="p">(</span><span class="n">searchMemoryCorpusSupplements</span><span class="p">)</span><span class="w"> </span><span class="err">—</span><span class="w"> </span><span class="n">Wiki</span><span class="w"> </span><span class="n">等</span><span class="w"></span>
+<span class="mf">6.</span><span class="w"> </span><span class="n">追踪</span><span class="w"> </span><span class="n">recall</span><span class="w"> </span><span class="p">(</span><span class="n">queueShortTermRecallTracking</span><span class="p">)</span><span class="w"></span>
+<span class="mf">7.</span><span class="w"> </span><span class="n">返回结果</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">元数据</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="memory_get">memory_get 工具</h3>
+<p><strong>Schema</strong>: <code>{ path: string, from?: number, lines?: number }</code></p>
+<p>支持 <code>corpus</code> 参数，可读取 wiki 语料库的内容。</p>
+<h3 id="corpus">Corpus 补充搜索</h3>
+<p>memory_search 现在会自动搜索已注册的 corpus 补充（如 memory-wiki），合并结果返回给 agent：</p>
+<div class="codehilite"><pre><span></span><code><span class="nx">searchMemoryCorpusSupplements</span><span class="p">(</span><span class="nx">supplements</span><span class="p">,</span> <span class="p">{</span> <span class="nx">query</span><span class="p">,</span> <span class="nx">maxResults</span><span class="p">,</span> <span class="nx">agentSessionKey</span> <span class="p">})</span>
+  <span class="err">→</span> <span class="nx">对每个补充执行</span> <span class="nx">search</span><span class="p">()</span>
+  <span class="err">→</span> <span class="nx">合并结果到主搜索结果中</span>
+</code></pre></div>
+
+<h3 id="recall">Recall 追踪</h3>
+<p>每次 memory_search 调用后，异步记录 recall 事件到短期存储：</p>
+<div class="codehilite"><pre><span></span><code><span class="nx">queueShortTermRecallTracking</span><span class="p">({</span>
+  <span class="nx">workspaceDir</span><span class="p">,</span> <span class="nx">query</span><span class="p">,</span> <span class="nx">rawResults</span><span class="p">,</span> <span class="nx">surfacedResults</span><span class="p">,</span> <span class="nx">timezone</span>
+<span class="p">})</span>
+  <span class="err">→</span> <span class="nx">recordShortTermRecalls</span><span class="p">()</span> <span class="err">（</span><span class="nx">best</span><span class="o">-</span><span class="nx">effort</span><span class="err">，</span><span class="nx">不阻塞主流程</span><span class="err">）</span>
+</code></pre></div>
+
 <hr />
-<h2 id="15-记忆刷写-memory-flush">15. 记忆刷写 (Memory Flush)</h2>
-<h3 id="触发条件">触发条件</h3>
-<p>当 total tokens 超过 <code>context window - reserve - soft threshold</code> 时触发</p>
-<h3 id="刷写流程">刷写流程</h3>
-<pre><code>1. 创建 memory/YYYY-MM-DD.md 文件
-2. Append-only（永不覆盖现有内容）
-3. 尊重工作区引导文件 (MEMORY.md, SOUL.md, TOOLS.md)
-4. 默认软阈值: 4000 tokens
-</code></pre>
-<h3 id="session-记忆钩子">Session 记忆钩子</h3>
-<p><code>/new</code> 和 <code>/reset</code> 命令触发：</p>
-<pre><code>1. 提取当前 session 最近 15 条消息
-2. 使用 LLM 生成描述性 slug
-3. 保存到 memory/YYYY-MM-DD-{slug}.md 含对话摘要
-</code></pre>
+<h2 id="16-memory-flush">16. 记忆刷写 (Memory Flush)</h2>
+<p><strong>文件</strong>: <code>extensions/memory-core/src/flush-plan.ts</code></p>
+<h3 id="_22">刷写计划解析</h3>
+<p>完全由 memory-core 插件拥有，通过 <code>registerMemoryCapability({ flushPlanResolver })</code> 注册：</p>
+<div class="codehilite"><pre><span></span><code><span class="nx">buildMemoryFlushPlan</span><span class="p">({</span> <span class="nx">cfg</span><span class="p">,</span> <span class="nx">nowMs</span> <span class="p">})</span><span class="o">:</span> <span class="nx">MemoryFlushPlan</span> <span class="o">|</span> <span class="kc">null</span>
+  <span class="err">→</span> <span class="nx">解析</span> <span class="nx">pluginConfig</span><span class="p">.</span><span class="nx">flush</span> <span class="nx">配置</span>
+  <span class="err">→</span> <span class="nx">构建日期路径</span>: <span class="kt">memory</span><span class="o">/</span><span class="nx">YYYY</span><span class="o">-</span><span class="nx">MM</span><span class="o">-</span><span class="nx">DD</span><span class="p">.</span><span class="nx">md</span><span class="err">（</span><span class="nx">支持时区</span><span class="err">）</span>
+  <span class="err">→</span> <span class="nx">默认值</span>:
+    <span class="kt">softThresholdTokens</span> <span class="o">=</span> <span class="mf">4000</span>
+    <span class="nx">forceFlushTranscriptBytes</span> <span class="o">=</span> <span class="mf">2</span><span class="nx">MB</span>
+    <span class="nx">reserveTokensFloor</span> <span class="o">=</span> <span class="nx">DEFAULT_PI_COMPACTION_RESERVE_TOKENS_FLOOR</span>
+</code></pre></div>
+
+<h3 id="_23">刷写提示词</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">DEFAULT_MEMORY_FLUSH_PROMPT</span> <span class="o">=</span> <span class="p">[</span>
+  <span class="s2">&quot;Pre-compaction memory flush.&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;Store durable memories only in memory/YYYY-MM-DD.md&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;Treat workspace bootstrap files as read-only&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;APPEND new content only, do not overwrite&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;Do NOT create timestamped variant files&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;If nothing to store, reply with {SILENT_REPLY_TOKEN}&quot;</span><span class="p">,</span>
+<span class="p">].</span><span class="nx">join</span><span class="p">(</span><span class="s2">&quot; &quot;</span><span class="p">);</span>
+</code></pre></div>
+
 <hr />
-<h2 id="16-session-存储">16. Session 存储</h2>
+<h2 id="17-session">17. Session 存储</h2>
 <p><strong>文件</strong>: <code>src/config/sessions/store.ts</code></p>
-<h3 id="存储位置">存储位置</h3>
-<pre><code>~/.openclaw/agents/{agentId}/sessions/sessions.json
-</code></pre>
-<h3 id="缓存">缓存</h3>
-<p>45 秒 TTL（可配置）</p>
-<h3 id="session-条目字段-sessionentry">Session 条目字段 (SessionEntry)</h3>
+<h3 id="_24">存储位置</h3>
+<div class="codehilite"><pre><span></span><code>~/.openclaw/agents/{agentId}/sessions/sessions.json
+</code></pre></div>
+
+<h3 id="session-sessionentry">Session 条目字段 (SessionEntry)</h3>
 <table>
 <thead>
 <tr>
@@ -837,14 +770,6 @@ SHA256 哈希内容
 <td>模型覆盖</td>
 </tr>
 <tr>
-<td><code>modelProvider</code></td>
-<td>模型提供商</td>
-</tr>
-<tr>
-<td><code>authProfileOverride</code></td>
-<td>认证配置覆盖</td>
-</tr>
-<tr>
 <td><code>totalTokens</code></td>
 <td>Token 总计</td>
 </tr>
@@ -857,67 +782,56 @@ SHA256 哈希内容
 <td>记忆刷写压缩次数</td>
 </tr>
 <tr>
-<td><code>label</code></td>
-<td>标签</td>
-</tr>
-<tr>
-<td><code>displayName</code></td>
-<td>显示名称</td>
+<td><code>label</code> / <code>displayName</code></td>
+<td>标签与显示名称</td>
 </tr>
 <tr>
 <td><code>channel</code></td>
 <td>来源 Channel</td>
 </tr>
 <tr>
-<td><code>origin</code></td>
-<td>来源信息</td>
-</tr>
-<tr>
 <td><code>deliveryContext</code></td>
-<td>交付上下文 (channel, user, thread ID)</td>
+<td>交付上下文</td>
 </tr>
 <tr>
 <td><code>skillsSnapshot</code></td>
 <td>技能快照</td>
 </tr>
-<tr>
-<td><code>systemPromptReport</code></td>
-<td>系统提示词审计报告</td>
-</tr>
-<tr>
-<td><code>acp</code></td>
-<td>Agent Coding Protocol 元数据</td>
-</tr>
 </tbody>
 </table>
-<h3 id="jsonl-转录格式">JSONL 转录格式</h3>
-<pre><code class="language-json">{&quot;type&quot;:&quot;session&quot;,&quot;version&quot;:&quot;...&quot;, &quot;id&quot;:&quot;...&quot;, &quot;timestamp&quot;:&quot;...&quot;, &quot;cwd&quot;:&quot;...&quot;}
-{&quot;type&quot;:&quot;message&quot;, &quot;message&quot;:{&quot;role&quot;:&quot;user&quot;, &quot;content&quot;:&quot;question text&quot;}}
-{&quot;type&quot;:&quot;message&quot;, &quot;message&quot;:{&quot;role&quot;:&quot;assistant&quot;, &quot;content&quot;:[{&quot;type&quot;:&quot;text&quot;,&quot;text&quot;:&quot;answer&quot;}]}}
-</code></pre>
 <hr />
-<h2 id="17-嵌入提供商-embedding-providers">17. 嵌入提供商 (Embedding Providers)</h2>
-<p><strong>文件</strong>: <code>src/memory/embeddings.ts</code> 及相关文件</p>
-<h3 id="provider-注册表">Provider 注册表</h3>
-<pre><code class="language-typescript">type EmbeddingProviderId = &quot;openai&quot; | &quot;local&quot; | &quot;gemini&quot; | &quot;voyage&quot; | &quot;mistral&quot; | &quot;ollama&quot;
-type EmbeddingProviderRequest = EmbeddingProviderId | &quot;auto&quot;
-type EmbeddingProviderFallback = EmbeddingProviderId | &quot;none&quot;
-</code></pre>
-<h3 id="auto-选择策略">Auto 选择策略</h3>
-<pre><code>考虑: openai, gemini, voyage, mistral (Ollama 排除)
-逐个检查 API key 可用性
-选择第一个可用的
-</code></pre>
-<h3 id="provider-接口">Provider 接口</h3>
-<pre><code class="language-typescript">type EmbeddingProvider = {
-  id: string;
-  model: string;
-  maxInputTokens?: number;
-  embedQuery: (text: string) =&gt; Promise&lt;number[]&gt;;
-  embedBatch: (texts: string[]) =&gt; Promise&lt;number[][]&gt;;
-}
-</code></pre>
-<h3 id="provider-实现">Provider 实现</h3>
+<h2 id="18-embedding-providers">18. 嵌入提供商 (Embedding Providers)</h2>
+<p><strong>文件</strong>: <code>src/memory-host-sdk/host/embeddings*.ts</code> 及 <code>src/plugins/memory-embedding-providers.ts</code></p>
+<h3 id="provider">Provider 注册表（适配器模式）</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// extensions/memory-core/src/memory/embeddings.ts — 插件层使用开放字符串</span>
+<span class="kr">type</span> <span class="nx">EmbeddingProviderId</span> <span class="o">=</span> <span class="kt">string</span>
+
+<span class="c1">// src/memory-host-sdk/host/embeddings*.ts — Host SDK 层定义封闭联合</span>
+<span class="c1">// &quot;openai&quot; | &quot;local&quot; | &quot;gemini&quot; | &quot;voyage&quot; | &quot;mistral&quot; | &quot;ollama&quot; | &quot;bedrock&quot;</span>
+
+<span class="kr">type</span> <span class="nx">EmbeddingProviderRequest</span> <span class="o">=</span> <span class="nx">EmbeddingProviderId</span> <span class="o">|</span> <span class="s2">&quot;auto&quot;</span>
+<span class="kr">type</span> <span class="nx">EmbeddingProviderFallback</span> <span class="o">=</span> <span class="nx">EmbeddingProviderId</span> <span class="o">|</span> <span class="s2">&quot;none&quot;</span>
+</code></pre></div>
+
+<h3 id="auto">Auto 选择策略</h3>
+<div class="codehilite"><pre><span></span><code><span class="mf">1.</span><span class="w"> </span><span class="n">调用</span><span class="w"> </span><span class="kr">list</span><span class="n">AutoSelectAdapters</span><span class="p">()</span><span class="err">，</span><span class="n">按</span><span class="w"> </span><span class="n">autoSelectPriority</span><span class="w"> </span><span class="n">升序过滤并排序适配器</span><span class="w"></span>
+<span class="w">   </span><span class="err">（</span><span class="n">local</span><span class="o">=</span><span class="mf">10</span><span class="p">,</span><span class="w"> </span><span class="kr">open</span><span class="n">ai</span><span class="o">=</span><span class="mf">20</span><span class="p">,</span><span class="w"> </span><span class="n">gemini</span><span class="o">=</span><span class="mf">30</span><span class="p">,</span><span class="w"> </span><span class="n">voyage</span><span class="o">=</span><span class="mf">40</span><span class="p">,</span><span class="w"> </span><span class="n">mistral</span><span class="o">=</span><span class="mf">50</span><span class="err">）</span><span class="w"></span>
+<span class="mf">2.</span><span class="w"> </span><span class="n">依次对每个适配器调用</span><span class="w"> </span><span class="n">create</span><span class="p">()</span><span class="err">，</span><span class="n">捕获</span><span class="w"> </span><span class="n">isMissingApiKeyError</span><span class="w"> </span><span class="n">跳过无</span><span class="w"> </span><span class="n">key</span><span class="w"> </span><span class="n">的提供商</span><span class="w"></span>
+<span class="mf">3.</span><span class="w"> </span><span class="n">选择第一个成功创建的</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="provider_1">Provider 接口</h3>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">EmbeddingProvider</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">id</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">model</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">maxInputTokens?</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="nx">embedQuery</span><span class="o">:</span> <span class="p">(</span><span class="nx">text</span>: <span class="kt">string</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="kt">number</span><span class="p">[]</span><span class="o">&gt;</span><span class="p">;</span>
+  <span class="nx">embedBatch</span><span class="o">:</span> <span class="p">(</span><span class="nx">texts</span>: <span class="kt">string</span><span class="p">[])</span> <span class="p">=&gt;</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="kt">number</span><span class="p">[][]</span><span class="o">&gt;</span><span class="p">;</span>
+  <span class="nx">embedBatchInputs</span><span class="o">?:</span> <span class="p">(</span><span class="nx">inputs</span>: <span class="kt">EmbeddingInput</span><span class="p">[])</span> <span class="p">=&gt;</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="kt">number</span><span class="p">[][]</span><span class="o">&gt;</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="provider_2">Provider 实现</h3>
 <table>
 <thead>
 <tr>
@@ -957,115 +871,702 @@ type EmbeddingProviderFallback = EmbeddingProviderId | &quot;none&quot;
 <td><code>embeddings.ts</code> + <code>node-llama.ts</code></td>
 <td>node-llama-cpp 嵌入式推理</td>
 </tr>
+<tr>
+<td><strong>Bedrock</strong></td>
+<td><code>embeddings-bedrock.ts</code></td>
+<td><strong>新增</strong> AWS Bedrock API</td>
+</tr>
 </tbody>
 </table>
-<h3 id="降级机制">降级机制</h3>
-<pre><code>降级通过配置的 fallback 字段指定 (如 fallback: &quot;gemini&quot;)
-fallback 在 createEmbeddingProvider 期间激活（provider 创建失败时）：
+<h3 id="bedrock">Bedrock 嵌入提供商（新增）</h3>
+<p><strong>文件</strong>: <code>src/memory-host-sdk/host/embeddings-bedrock.ts</code></p>
+<p>支持多个模型家族：</p>
+<table>
+<thead>
+<tr>
+<th>Family</th>
+<th>模型示例</th>
+<th>特性</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>titan-v2</strong></td>
+<td><code>amazon.titan-embed-text-v2:0</code></td>
+<td>默认模型，8192 token，可选维度 [256, 512, 1024]</td>
+</tr>
+<tr>
+<td><strong>titan-v1</strong></td>
+<td><code>amazon.titan-embed-text-v1</code></td>
+<td>8000 token，1536 维</td>
+</tr>
+<tr>
+<td><strong>cohere-v3</strong></td>
+<td><code>cohere.embed-english-v3</code></td>
+<td>512 token，1024 维，原生批量</td>
+</tr>
+<tr>
+<td><strong>cohere-v4</strong></td>
+<td><code>cohere.embed-v4:0</code></td>
+<td>128K token，可选维度，原生批量</td>
+</tr>
+<tr>
+<td><strong>nova</strong></td>
+<td><code>amazon.nova-2-multimodal-embeddings-v1:0</code></td>
+<td>8192 token，可选维度</td>
+</tr>
+<tr>
+<td><strong>twelvelabs</strong></td>
+<td><code>twelvelabs.marengo-embed-*</code></td>
+<td>512 token</td>
+</tr>
+</tbody>
+</table>
+<p><strong>AWS SDK 惰性加载</strong>：仅在使用时 <code>import("@aws-sdk/client-bedrock-runtime")</code></p>
+<p><strong>凭证检测</strong>：</p>
+<div class="codehilite"><pre><span></span><code><span class="nx">hasAwsCredentials</span><span class="p">(</span><span class="nx">env</span><span class="p">)</span><span class="o">:</span>
+  <span class="mf">1.</span> <span class="nx">检查</span> <span class="nx">AWS_ACCESS_KEY_ID</span> <span class="o">+</span> <span class="nx">AWS_SECRET_ACCESS_KEY</span>
+  <span class="mf">2.</span> <span class="nx">检查</span> <span class="nx">AWS_PROFILE</span> <span class="o">/</span> <span class="nx">AWS_BEARER_TOKEN_BEDROCK</span> <span class="nx">等环境变量</span>
+  <span class="mf">3.</span> <span class="nx">尝试</span> <span class="nx">defaultProvider</span><span class="p">({</span> <span class="nx">timeout</span>: <span class="kt">1000</span> <span class="p">})</span>
+</code></pre></div>
+
+<p><strong>区域解析</strong>：baseUrl 解析 → provider config → AWS_REGION → AWS_DEFAULT_REGION → "us-east-1"</p>
+<h3 id="_25">降级机制</h3>
+<div class="codehilite"><pre><span></span><code>降级通过 fallback 字段配置:
   1. 尝试创建主 provider
-  2. 主 provider 失败且配置了 fallback 且 fallback ≠ 主 provider：尝试创建 fallback provider
-  3. 两者均因认证错误失败 → provider=null，降级为 FTS-only 模式
+  2. 主 provider 失败且有 fallback：尝试 fallback
+  3. 两者均因认证错误失败 → FTS-only 模式
   4. 非认证错误则抛出异常
-确保 MemoryIndexManager 生命周期内使用一致的 provider
-</code></pre>
+</code></pre></div>
+
 <hr />
-<h2 id="18-配置解析与默认值">18. 配置解析与默认值</h2>
-<p><strong>文件</strong>: <code>src/agents/memory-search.ts</code> (366 行)</p>
-<blockquote>
-<p>注意：以下默认值均已通过代码验证。</p>
-</blockquote>
-<h3 id="默认值">默认值</h3>
-<pre><code class="language-typescript">DEFAULT_OPENAI_MODEL = &quot;text-embedding-3-small&quot;
-DEFAULT_GEMINI_MODEL = &quot;gemini-embedding-001&quot;
-DEFAULT_VOYAGE_MODEL = &quot;voyage-4-large&quot;
-DEFAULT_MISTRAL_MODEL = &quot;mistral-embed&quot;
-DEFAULT_OLLAMA_MODEL = &quot;nomic-embed-text&quot;
+<h2 id="19">19. 配置解析与默认值</h2>
+<p><strong>文件</strong>: <code>extensions/memory-core/src/memory/provider-adapters.ts</code> (per-provider defaults), <code>extensions/memory-core/src/memory/search-manager.ts</code> (search defaults)</p>
+<h3 id="_26">默认值</h3>
+<p>Per-provider 嵌入模型默认值既由各适配器的 <code>defaultModel</code> 字段定义（见 <code>provider-adapters.ts</code>），也以 <code>DEFAULT_*_MODEL</code> 常量形式存在于 <code>src/memory-host-sdk/host/embeddings-*.ts</code> 各文件中（如 <code>DEFAULT_OPENAI_EMBEDDING_MODEL</code>、<code>DEFAULT_GEMINI_EMBEDDING_MODEL</code>、<code>DEFAULT_VOYAGE_EMBEDDING_MODEL</code>、<code>DEFAULT_MISTRAL_EMBEDDING_MODEL</code>、<code>DEFAULT_LOCAL_MODEL</code>、<code>DEFAULT_OLLAMA_EMBEDDING_MODEL</code>、<code>DEFAULT_BEDROCK_EMBEDDING_MODEL</code>）。这些常量分散在各 per-provider 文件中，而非集中在 <code>memory-search.ts</code>。</p>
+<div class="codehilite"><pre><span></span><code><span class="c1">// search/chunk 默认值:</span>
 
-DEFAULT_CHUNK_TOKENS = 400              // 每块 400 token
-DEFAULT_CHUNK_OVERLAP = 80              // 重叠 80 token
+<span class="nx">DEFAULT_CHUNK_TOKENS</span> <span class="o">=</span> <span class="mf">400</span>
+<span class="nx">DEFAULT_CHUNK_OVERLAP</span> <span class="o">=</span> <span class="mf">80</span>
 
-DEFAULT_WATCH_DEBOUNCE_MS = 1500        // 监听去抖 1.5s
-DEFAULT_SESSION_DELTA_BYTES = 100_000   // Session 增量阈值 100KB
-DEFAULT_SESSION_DELTA_MESSAGES = 50     // Session 增量消息数 50
+<span class="nx">DEFAULT_MAX_RESULTS</span> <span class="o">=</span> <span class="mf">6</span>
+<span class="nx">DEFAULT_MIN_SCORE</span> <span class="o">=</span> <span class="mf">0.35</span>
 
-DEFAULT_MAX_RESULTS = 6                 // 最大结果数 6
-DEFAULT_MIN_SCORE = 0.35               // 最低分数 0.35
+<span class="nx">DEFAULT_HYBRID_VECTOR_WEIGHT</span> <span class="o">=</span> <span class="mf">0.7</span>
+<span class="nx">DEFAULT_HYBRID_TEXT_WEIGHT</span> <span class="o">=</span> <span class="mf">0.3</span>
+<span class="nx">DEFAULT_HYBRID_CANDIDATE_MULTIPLIER</span> <span class="o">=</span> <span class="mf">4</span>
 
-DEFAULT_HYBRID_VECTOR_WEIGHT = 0.7     // 向量权重 70%
-DEFAULT_HYBRID_TEXT_WEIGHT = 0.3       // 文本权重 30%
-DEFAULT_HYBRID_CANDIDATE_MULTIPLIER = 4 // 候选倍数 4x
+<span class="nx">DEFAULT_MMR_LAMBDA</span> <span class="o">=</span> <span class="mf">0.7</span>
+<span class="nx">DEFAULT_TEMPORAL_DECAY_HALF_LIFE_DAYS</span> <span class="o">=</span> <span class="mf">30</span>
+</code></pre></div>
 
-DEFAULT_MMR_LAMBDA = 0.7               // MMR lambda 0.7
-DEFAULT_TEMPORAL_DECAY_HALF_LIFE_DAYS = 30  // 时间衰减半衰期 30 天
-</code></pre>
-<h3 id="完整配置结构">完整配置结构</h3>
-<pre><code class="language-typescript">{
-  enabled: boolean,
-  sources: (&quot;memory&quot; | &quot;sessions&quot;)[],
-  extraPaths: string[],
-  provider: &quot;openai&quot; | &quot;local&quot; | &quot;gemini&quot; | &quot;voyage&quot; | &quot;mistral&quot; | &quot;ollama&quot; | &quot;auto&quot;,
-  remote: {
-    baseUrl?: string,
-    apiKey?: SecretInput,
-    headers?: Record&lt;string, string&gt;,
-    batch: { enabled, wait (boolean), concurrency, pollIntervalMs, timeoutMinutes }
-  },
-  experimental: { sessionMemory: boolean },
-  fallback: EmbeddingProviderId | &quot;none&quot;,
-  model: string,
-  local: { modelPath?, modelCacheDir? },
-  store: {
-    driver: &quot;sqlite&quot;,
-    path: string,
-    vector: { enabled, extensionPath }
-  },
-  chunking: { tokens: number, overlap: number },
-  sync: {
-    onSessionStart: boolean,
-    onSearch: boolean,
-    watch: boolean,
-    watchDebounceMs: number,
-    intervalMinutes: number,
-    sessions: { deltaBytes: number, deltaMessages: number }
-  },
-  query: {
-    maxResults: number,
-    minScore: number,
-    hybrid: {
-      enabled: boolean,
-      vectorWeight: number,
-      textWeight: number,
-      candidateMultiplier: number,
-      mmr: { enabled, lambda },
-      temporalDecay: { enabled, halfLifeDays }
-    }
-  },
-  cache: { enabled: boolean, maxEntries?: number }
-}
-</code></pre>
-<h3 id="合并逻辑">合并逻辑</h3>
-<pre><code>Agent 级覆盖 &gt; 全局默认
-Provider 特定模型选择
-Sources 归一化: 尊重 session memory 实验性标志
-权重归一化: vectorWeight + textWeight &gt; 1 时按比例缩放
-钳制: chunking overlap, scores [0,1], MMR lambda [0,1], concurrency [1,20]
-</code></pre>
+<h3 id="_27">完整配置结构</h3>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span>
+  <span class="nx">enabled</span>: <span class="kt">boolean</span><span class="p">,</span>
+  <span class="nx">sources</span><span class="o">:</span> <span class="p">(</span><span class="s2">&quot;memory&quot;</span> <span class="o">|</span> <span class="s2">&quot;sessions&quot;</span><span class="p">)[],</span>
+  <span class="nx">extraPaths</span>: <span class="kt">string</span><span class="p">[],</span>
+  <span class="nx">provider</span>: <span class="kt">EmbeddingProviderId</span> <span class="o">|</span> <span class="s2">&quot;auto&quot;</span><span class="p">,</span>
+  <span class="nx">remote</span><span class="o">:</span> <span class="p">{</span>
+    <span class="nx">baseUrl?</span>: <span class="kt">string</span><span class="p">,</span>
+    <span class="nx">apiKey?</span>: <span class="kt">SecretInput</span><span class="p">,</span>
+    <span class="nx">headers?</span>: <span class="kt">Record</span><span class="o">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="kt">string</span><span class="o">&gt;</span><span class="p">,</span>
+    <span class="nx">batch</span><span class="o">:</span> <span class="p">{</span> <span class="nx">enabled</span><span class="p">,</span> <span class="nx">wait</span><span class="p">,</span> <span class="nx">concurrency</span><span class="p">,</span> <span class="nx">pollIntervalMs</span><span class="p">,</span> <span class="nx">timeoutMinutes</span> <span class="p">}</span>
+  <span class="p">},</span>
+  <span class="nx">experimental</span><span class="o">:</span> <span class="p">{</span> <span class="nx">sessionMemory</span>: <span class="kt">boolean</span> <span class="p">},</span>
+  <span class="nx">fallback</span>: <span class="kt">EmbeddingProviderFallback</span><span class="p">,</span>
+  <span class="nx">model</span>: <span class="kt">string</span><span class="p">,</span>
+  <span class="nx">local</span><span class="o">:</span> <span class="p">{</span> <span class="nx">modelPath</span><span class="o">?</span><span class="p">,</span> <span class="nx">modelCacheDir</span><span class="o">?</span> <span class="p">},</span>
+  <span class="nx">store</span><span class="o">:</span> <span class="p">{</span>
+    <span class="nx">driver</span><span class="o">:</span> <span class="s2">&quot;sqlite&quot;</span><span class="p">,</span>
+    <span class="nx">path</span>: <span class="kt">string</span><span class="p">,</span>
+    <span class="nx">vector</span><span class="o">:</span> <span class="p">{</span> <span class="nx">enabled</span><span class="p">,</span> <span class="nx">extensionPath</span> <span class="p">}</span>
+  <span class="p">},</span>
+  <span class="nx">chunking</span><span class="o">:</span> <span class="p">{</span> <span class="nx">tokens</span><span class="p">,</span> <span class="nx">overlap</span> <span class="p">},</span>
+  <span class="nx">sync</span><span class="o">:</span> <span class="p">{</span>
+    <span class="nx">onSessionStart</span>: <span class="kt">boolean</span><span class="p">,</span>
+    <span class="nx">onSearch</span>: <span class="kt">boolean</span><span class="p">,</span>
+    <span class="nx">watch</span>: <span class="kt">boolean</span><span class="p">,</span>
+    <span class="nx">watchDebounceMs</span>: <span class="kt">number</span><span class="p">,</span>
+    <span class="nx">intervalMinutes</span>: <span class="kt">number</span><span class="p">,</span>
+    <span class="nx">sessions</span><span class="o">:</span> <span class="p">{</span> <span class="nx">deltaBytes</span><span class="p">,</span> <span class="nx">deltaMessages</span> <span class="p">}</span>
+  <span class="p">},</span>
+  <span class="nx">query</span><span class="o">:</span> <span class="p">{</span>
+    <span class="nx">maxResults</span><span class="p">,</span> <span class="nx">minScore</span><span class="p">,</span>
+    <span class="nx">hybrid</span><span class="o">:</span> <span class="p">{</span>
+      <span class="nx">enabled</span><span class="p">,</span> <span class="nx">vectorWeight</span><span class="p">,</span> <span class="nx">textWeight</span><span class="p">,</span> <span class="nx">candidateMultiplier</span><span class="p">,</span>
+      <span class="nx">mmr</span><span class="o">:</span> <span class="p">{</span> <span class="nx">enabled</span><span class="p">,</span> <span class="nx">lambda</span> <span class="p">},</span>
+      <span class="nx">temporalDecay</span><span class="o">:</span> <span class="p">{</span> <span class="nx">enabled</span><span class="p">,</span> <span class="nx">halfLifeDays</span> <span class="p">}</span>
+    <span class="p">}</span>
+  <span class="p">},</span>
+  <span class="nx">cache</span><span class="o">:</span> <span class="p">{</span> <span class="nx">enabled</span><span class="p">,</span> <span class="nx">maxEntries</span><span class="o">?</span> <span class="p">},</span>
+  <span class="nx">qmd</span><span class="o">:</span> <span class="p">{</span>                          <span class="c1">// 新增: per-agent QMD 配置</span>
+    <span class="nx">extraCollections?</span>: <span class="kt">MemoryQmdIndexPath</span><span class="p">[]</span>  <span class="c1">// per-agent 额外集合</span>
+  <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="qmd-per-agent-extra-collections">QMD Per-Agent Extra Collections（新增）</h3>
+<p>支持在 <code>agents.defaults.memorySearch.qmd.extraCollections</code> 和 <code>agents.list[].memorySearch.qmd.extraCollections</code> 配置额外的 QMD 索引集合：</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">MemoryQmdIndexPath</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">path</span>: <span class="kt">string</span><span class="p">;</span>     <span class="c1">// 集合根路径</span>
+  <span class="nx">name?</span>: <span class="kt">string</span><span class="p">;</span>    <span class="c1">// 可选集合名称</span>
+  <span class="nx">pattern?</span>: <span class="kt">string</span><span class="p">;</span> <span class="c1">// 文件匹配模式，默认 &quot;**/*.md&quot;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p>解析逻辑合并全局默认 + agent 级配置 + QMD 专有路径，生成去重的 <code>ResolvedQmdCollection[]</code>：</p>
+<div class="codehilite"><pre><span></span><code><span class="kd">const</span> <span class="nx">allQmdPaths</span> <span class="o">=</span> <span class="p">[</span>
+  <span class="p">...(</span><span class="nx">qmdCfg</span><span class="o">?</span><span class="p">.</span><span class="nx">paths</span> <span class="o">??</span> <span class="p">[]),</span>         <span class="c1">// QMD 专有路径</span>
+  <span class="p">...</span><span class="nx">searchExtraPaths</span><span class="p">,</span>               <span class="c1">// memorySearch.extraPaths 转换</span>
+  <span class="p">...</span><span class="nx">mergedExtraCollections</span><span class="p">,</span>         <span class="c1">// per-agent extraCollections</span>
+<span class="p">];</span>
+</code></pre></div>
+
 <hr />
-<h2 id="19-qmd-后端">19. QMD 后端</h2>
-<p><strong>文件</strong>: <code>src/memory/qmd-manager.ts</code></p>
-<h3 id="替代后端">替代后端</h3>
-<pre><code>通过外部 qmd 工具提供更高级的搜索能力
+<h2 id="20-qmd">20. QMD 后端</h2>
+<p><strong>文件</strong>: <code>extensions/memory-core/src/memory/qmd-manager.ts</code></p>
+<h3 id="_28">替代后端</h3>
+<div class="codehilite"><pre><span></span><code>通过外部 qmd 工具提供更高级的搜索能力
 可选 mcporter 集成 (MCP)
-</code></pre>
-<h3 id="与内建后端的关系">与内建后端的关系</h3>
-<pre><code>FallbackMemoryManager:
-  primary = QMD manager
-  fallback = builtin MemoryIndexManager
+搜索模式: &quot;search&quot; (默认, 快) | &quot;vsearch&quot; | &quot;query&quot; (慢, 含重排序)
+</code></pre></div>
 
-  search() 失败时自动切换到 fallback
-</code></pre>
+<h3 id="_29">集合解析</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">resolveMemoryBackendConfig</span><span class="p">()</span> <span class="nx">生成的集合</span>:
+  <span class="kt">1.</span> <span class="nx">默认集合</span> <span class="p">(</span><span class="nx">includeDefaultMemory</span><span class="o">=</span><span class="kc">true</span><span class="p">)</span><span class="o">:</span>
+     <span class="o">-</span> <span class="nx">memory</span><span class="o">-</span><span class="nx">root</span><span class="o">-</span><span class="p">{</span><span class="nx">agentId</span><span class="p">}</span><span class="o">:</span> <span class="nx">MEMORY</span><span class="p">.</span><span class="nx">md</span>
+     <span class="o">-</span> <span class="nx">memory</span><span class="o">-</span><span class="nx">alt</span><span class="o">-</span><span class="p">{</span><span class="nx">agentId</span><span class="p">}</span><span class="o">:</span> <span class="nx">memory</span><span class="p">.</span><span class="nx">md</span>
+     <span class="o">-</span> <span class="nx">memory</span><span class="o">-</span><span class="nx">dir</span><span class="o">-</span><span class="p">{</span><span class="nx">agentId</span><span class="p">}</span><span class="o">:</span> <span class="nx">memory</span><span class="cm">/**/</span><span class="o">*</span><span class="p">.</span><span class="nx">md</span>
+  <span class="mf">2.</span> <span class="nx">自定义路径集合</span> <span class="p">(</span><span class="nx">qmd</span><span class="p">.</span><span class="nx">paths</span> <span class="o">+</span> <span class="nx">extraPaths</span> <span class="o">+</span> <span class="nx">extraCollections</span><span class="p">)</span>
+  <span class="mf">3.</span> <span class="nx">每个集合</span><span class="o">:</span> <span class="p">{</span> <span class="nx">name</span><span class="p">,</span> <span class="nx">path</span><span class="p">,</span> <span class="nx">pattern</span><span class="p">,</span> <span class="nx">kind</span><span class="o">:</span> <span class="s2">&quot;memory&quot;</span><span class="o">|</span><span class="s2">&quot;custom&quot;</span><span class="o">|</span><span class="s2">&quot;sessions&quot;</span> <span class="p">}</span>
+</code></pre></div>
+
 <hr />
-<h2 id="20-关键设计模式总结">20. 关键设计模式总结</h2>
+<h2 id="21-sleep-phases-dreaming">21. 睡眠阶段与梦境衰老 (Sleep Phases &amp; Dreaming)</h2>
+<h3 id="_30">三阶段睡眠模型</h3>
+<p><strong>文件</strong>: <code>src/memory-host-sdk/dreaming.ts</code> (配置), <code>extensions/memory-core/src/dreaming-phases.ts</code> (执行)</p>
+<p>记忆系统引入了仿生物学的三阶段睡眠整合模型：</p>
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>类比</th>
+<th>频率</th>
+<th>目的</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Light Sleep</strong></td>
+<td>浅睡眠</td>
+<td>每 6 小时</td>
+<td>快速扫描近期记忆，去重、session 语料摄入</td>
+</tr>
+<tr>
+<td><strong>Deep Sleep</strong></td>
+<td>深度睡眠</td>
+<td>每日凌晨 3 点</td>
+<td>短期记忆提升（promotion），recall 统计分析</td>
+</tr>
+<tr>
+<td><strong>REM Sleep</strong></td>
+<td>快速眼动</td>
+<td>每周日凌晨 5 点</td>
+<td>跨记忆模式发现，概念标签提取</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_31">配置模型</h3>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">MemoryDreamingConfig</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">enabled</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">frequency</span>: <span class="kt">string</span><span class="p">;</span>           <span class="c1">// cron 表达式，默认 &quot;0 3 * * *&quot;</span>
+  <span class="nx">timezone?</span>: <span class="kt">string</span><span class="p">;</span>           <span class="c1">// 时区</span>
+  <span class="nx">verboseLogging</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">storage</span><span class="o">:</span> <span class="p">{</span>
+    <span class="nx">mode</span><span class="o">:</span> <span class="s2">&quot;inline&quot;</span> <span class="o">|</span> <span class="s2">&quot;separate&quot;</span> <span class="o">|</span> <span class="s2">&quot;both&quot;</span><span class="p">;</span>  <span class="c1">// 存储模式</span>
+    <span class="nx">separateReports</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="p">};</span>
+  <span class="nx">execution</span><span class="o">:</span> <span class="p">{</span>
+    <span class="nx">defaults</span>: <span class="kt">MemoryDreamingExecutionConfig</span><span class="p">;</span>
+  <span class="p">};</span>
+  <span class="nx">phases</span><span class="o">:</span> <span class="p">{</span>
+    <span class="nx">light</span>: <span class="kt">MemoryLightDreamingConfig</span><span class="p">;</span>
+    <span class="nx">deep</span>: <span class="kt">MemoryDeepDreamingConfig</span><span class="p">;</span>
+    <span class="nx">rem</span>: <span class="kt">MemoryRemDreamingConfig</span><span class="p">;</span>
+  <span class="p">};</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="_32">执行配置</h3>
+<p>每个阶段有独立的执行参数：</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">MemoryDreamingExecutionConfig</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">speed</span><span class="o">:</span> <span class="s2">&quot;fast&quot;</span> <span class="o">|</span> <span class="s2">&quot;balanced&quot;</span> <span class="o">|</span> <span class="s2">&quot;slow&quot;</span><span class="p">;</span>
+  <span class="nx">thinking</span><span class="o">:</span> <span class="s2">&quot;low&quot;</span> <span class="o">|</span> <span class="s2">&quot;medium&quot;</span> <span class="o">|</span> <span class="s2">&quot;high&quot;</span><span class="p">;</span>
+  <span class="nx">budget</span><span class="o">:</span> <span class="s2">&quot;cheap&quot;</span> <span class="o">|</span> <span class="s2">&quot;medium&quot;</span> <span class="o">|</span> <span class="s2">&quot;expensive&quot;</span><span class="p">;</span>
+  <span class="nx">model?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">maxOutputTokens?</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="nx">temperature?</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="nx">timeoutMs?</span>: <span class="kt">number</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>默认 speed</th>
+<th>默认 thinking</th>
+<th>默认 budget</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Light</td>
+<td>fast</td>
+<td>low</td>
+<td>cheap</td>
+</tr>
+<tr>
+<td>Deep</td>
+<td>balanced</td>
+<td>high</td>
+<td>medium</td>
+</tr>
+<tr>
+<td>REM</td>
+<td>slow</td>
+<td>high</td>
+<td>expensive</td>
+</tr>
+</tbody>
+</table>
+<h3 id="light-sleep">Light Sleep 阶段</h3>
+<p><strong>文件</strong>: <code>extensions/memory-core/src/dreaming-phases.ts</code></p>
+<div class="codehilite"><pre><span></span><code>Light Sleep 扫描流程:
+1. 遍历所有工作空间的日期记忆文件 (memory/YYYY-MM-DD.md)
+2. 过滤 lookbackDays (默认 2 天) 范围内的文件
+3. 按 chunk 提取片段 (buildDailySnippetChunks)
+4. 记录 ingestion 状态，跳过已处理的片段
+5. 可选: 摄入 session 语料 (session-corpus/)
+6. 生成 Light Sleep 报告块
+7. 触发 recall 信号记录
+</code></pre></div>
+
+<h3 id="deep-sleep">Deep Sleep 阶段</h3>
+<p><strong>文件</strong>: <code>extensions/memory-core/src/dreaming.ts</code> + <code>short-term-promotion.ts</code></p>
+<div class="codehilite"><pre><span></span><code>Deep Sleep 核心: 短期记忆提升 (Short-Term Promotion)
+1. 读取 short-term-recall.json 中的 recall 追踪条目
+2. 评估每个条目的提升候选分数:
+   score = frequency * 0.24 + relevance * 0.3 + diversity * 0.15
+         + recency * 0.15 + consolidation * 0.1 + conceptual * 0.06
+         + phaseBoost
+3. 过滤: minScore / minRecallCount / minUniqueQueries
+4. 时间衰减: recencyHalfLifeDays (默认 14 天)
+5. maxAgeDays 过期清理 (默认 30 天)
+6. 执行提升: 将高频 recall 片段提升到持久记忆
+7. 记录 promotion 事件到事件日志
+</code></pre></div>
+
+<h3 id="deep-sleep_1">Deep Sleep 恢复机制</h3>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">MemoryDeepDreamingRecoveryConfig</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">enabled</span>: <span class="kt">boolean</span><span class="p">;</span>                    <span class="c1">// 默认 true</span>
+  <span class="nx">triggerBelowHealth</span>: <span class="kt">number</span><span class="p">;</span>         <span class="c1">// 健康度低于 0.35 时触发</span>
+  <span class="nx">lookbackDays</span>: <span class="kt">number</span><span class="p">;</span>               <span class="c1">// 回溯 30 天</span>
+  <span class="nx">maxRecoveredCandidates</span>: <span class="kt">number</span><span class="p">;</span>     <span class="c1">// 最多恢复 20 个候选</span>
+  <span class="nx">minRecoveryConfidence</span>: <span class="kt">number</span><span class="p">;</span>      <span class="c1">// 最低恢复置信度 0.9</span>
+  <span class="nx">autoWriteMinConfidence</span>: <span class="kt">number</span><span class="p">;</span>     <span class="c1">// 自动写入阈值 0.97</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="rem-sleep">REM Sleep 阶段</h3>
+<div class="codehilite"><pre><span></span><code>REM Sleep: 跨记忆模式发现
+1. 回溯 lookbackDays (默认 7 天) 的 memory/daily/deep 记忆
+2. 检测跨记忆条目的重复模式
+3. 提取概念标签 (concept tags)
+4. minPatternStrength 过滤 (默认 0.75)
+5. 生成 REM 报告
+</code></pre></div>
+
+<h3 id="_33">概念标签系统</h3>
+<p><strong>文件</strong>: <code>extensions/memory-core/src/concept-vocabulary.ts</code></p>
+<div class="codehilite"><pre><span></span><code><span class="nx">deriveConceptTags</span><span class="p">(</span><span class="nx">text</span><span class="p">)</span><span class="o">:</span> <span class="kt">string</span><span class="p">[]</span>
+  <span class="err">→</span> <span class="nx">基于多语言词汇的概念提取</span>
+  <span class="err">→</span> <span class="nx">最多</span> <span class="nx">MAX_CONCEPT_TAGS</span> <span class="nx">个标签</span>
+  <span class="err">→</span> <span class="nx">跟踪脚本覆盖</span> <span class="p">(</span><span class="nx">ConceptTagScriptCoverage</span><span class="p">)</span>
+</code></pre></div>
+
+<h3 id="dream-narrative">梦境叙事 (Dream Narrative)</h3>
+<p><strong>文件</strong>: <code>extensions/memory-core/src/dreaming-narrative.ts</code></p>
+<p>通过 subagent 生成诗意的梦境叙事日记：</p>
+<div class="codehilite"><pre><span></span><code><span class="nx">generateAndAppendDreamNarrative</span><span class="p">({</span>
+  <span class="nx">api</span><span class="p">,</span> <span class="nx">phases</span><span class="p">,</span> <span class="nx">workspaceDir</span><span class="p">,</span> <span class="nx">day</span><span class="p">,</span> <span class="nx">timezone</span>
+<span class="p">})</span>
+  <span class="err">→</span> <span class="nx">使用</span> <span class="nx">NARRATIVE_SYSTEM_PROMPT</span><span class="err">（</span><span class="nx">第一人称</span><span class="err">，</span><span class="nx">诗意风格</span><span class="err">）</span>
+  <span class="err">→</span> <span class="nx">输入</span>: <span class="kt">各阶段的</span> <span class="nx">snippets</span><span class="o">/</span><span class="nx">themes</span><span class="o">/</span><span class="nx">promotions</span>
+  <span class="err">→</span> <span class="nx">输出</span>: <span class="kt">追加到日期记忆文件</span>
+</code></pre></div>
+
+<h3 id="cron">Cron 管理</h3>
+<p>dreaming 通过 managed cron job 调度：</p>
+<div class="codehilite"><pre><span></span><code><span class="kd">const</span> <span class="nx">MANAGED_DREAMING_CRON_NAME</span> <span class="o">=</span> <span class="s2">&quot;Memory Dreaming Promotion&quot;</span><span class="p">;</span>
+<span class="kd">const</span> <span class="nx">MANAGED_DREAMING_CRON_TAG</span> <span class="o">=</span> <span class="s2">&quot;[managed-by=memory-core.short-term-promotion]&quot;</span><span class="p">;</span>
+</code></pre></div>
+
+<hr />
+<h2 id="22-memory-wiki">22. Memory Wiki 系统</h2>
+<h3 id="_34">概览</h3>
+<p><strong>扩展</strong>: <code>extensions/memory-wiki/</code></p>
+<p>Memory Wiki 是独立的知识编译与结构化存储系统，将原始记忆文件编译为 wiki 页面，提供 belief-layer 信念追踪：</p>
+<div class="codehilite"><pre><span></span><code>┌──────────────────────────────────────────────────────┐
+│  Wiki Vault (.openclaw-wiki/)                         │
+│  ├── entities/      # 实体页面                        │
+│  ├── concepts/      # 概念页面                        │
+│  ├── syntheses/     # 综合分析页面                    │
+│  ├── sources/       # 源材料页面                      │
+│  ├── reports/       # 报告/仪表盘                     │
+│  ├── _attachments/  # 附件                            │
+│  ├── _views/        # 视图                            │
+│  └── .openclaw-wiki/                                  │
+│      ├── cache/                                       │
+│      │   ├── agent-digest.json  # agent 编译摘要      │
+│      │   └── claims.jsonl       # 信念声明日志        │
+│      └── locks/                 # 并发锁              │
+└──────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<h3 id="_35">插件入口</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// extensions/memory-wiki/index.ts</span>
+<span class="nx">definePluginEntry</span><span class="p">({</span>
+  <span class="nx">id</span><span class="o">:</span> <span class="s2">&quot;memory-wiki&quot;</span><span class="p">,</span>
+  <span class="nx">register</span><span class="p">(</span><span class="nx">api</span><span class="p">)</span> <span class="p">{</span>
+    <span class="nx">api</span><span class="p">.</span><span class="nx">registerMemoryPromptSupplement</span><span class="p">(</span><span class="nx">createWikiPromptSectionBuilder</span><span class="p">(</span><span class="nx">config</span><span class="p">));</span>
+    <span class="nx">api</span><span class="p">.</span><span class="nx">registerMemoryCorpusSupplement</span><span class="p">(</span><span class="nx">createWikiCorpusSupplement</span><span class="p">({</span> <span class="nx">config</span><span class="p">,</span> <span class="nx">appConfig</span> <span class="p">}));</span>
+    <span class="nx">api</span><span class="p">.</span><span class="nx">registerTool</span><span class="p">(</span><span class="nx">createWikiStatusTool</span><span class="p">(...));</span>
+    <span class="nx">api</span><span class="p">.</span><span class="nx">registerTool</span><span class="p">(</span><span class="nx">createWikiLintTool</span><span class="p">(...));</span>
+    <span class="nx">api</span><span class="p">.</span><span class="nx">registerTool</span><span class="p">(</span><span class="nx">createWikiApplyTool</span><span class="p">(...));</span>
+    <span class="nx">api</span><span class="p">.</span><span class="nx">registerTool</span><span class="p">(</span><span class="nx">createWikiSearchTool</span><span class="p">(...));</span>
+    <span class="nx">api</span><span class="p">.</span><span class="nx">registerTool</span><span class="p">(</span><span class="nx">createWikiGetTool</span><span class="p">(...));</span>
+    <span class="nx">api</span><span class="p">.</span><span class="nx">registerCli</span><span class="p">(</span><span class="nx">registerWikiCli</span><span class="p">);</span>
+  <span class="p">},</span>
+<span class="p">});</span>
+</code></pre></div>
+
+<h3 id="wiki">Wiki 工具</h3>
+<table>
+<thead>
+<tr>
+<th>工具</th>
+<th>功能</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>wiki_status</code></td>
+<td>查看 vault 状态</td>
+</tr>
+<tr>
+<td><code>wiki_lint</code></td>
+<td>检查页面健康度</td>
+</tr>
+<tr>
+<td><code>wiki_apply</code></td>
+<td>应用变更/编译</td>
+</tr>
+<tr>
+<td><code>wiki_search</code></td>
+<td>搜索 wiki 内容（支持 shared/local 后端）</td>
+</tr>
+<tr>
+<td><code>wiki_get</code></td>
+<td>读取特定页面</td>
+</tr>
+</tbody>
+</table>
+<h3 id="wiki_1">Wiki 页面结构</h3>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">WikiPageKind</span> <span class="o">=</span> <span class="s2">&quot;entity&quot;</span> <span class="o">|</span> <span class="s2">&quot;concept&quot;</span> <span class="o">|</span> <span class="s2">&quot;source&quot;</span> <span class="o">|</span> <span class="s2">&quot;synthesis&quot;</span> <span class="o">|</span> <span class="s2">&quot;report&quot;</span><span class="p">;</span>
+
+<span class="kr">type</span> <span class="nx">WikiPageSummary</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">absolutePath</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">relativePath</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">kind</span>: <span class="kt">WikiPageKind</span><span class="p">;</span>
+  <span class="nx">title</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">id?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">sourceIds</span>: <span class="kt">string</span><span class="p">[];</span>
+  <span class="nx">claims</span>: <span class="kt">WikiClaim</span><span class="p">[];</span>
+  <span class="nx">contradictions</span>: <span class="kt">string</span><span class="p">[];</span>
+  <span class="nx">questions</span>: <span class="kt">string</span><span class="p">[];</span>
+  <span class="nx">confidence?</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="nx">updatedAt?</span>: <span class="kt">string</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="belief-layer">Belief-Layer: 信念声明追踪</h3>
+<p>Wiki 的核心创新是 belief-layer（信念层），每个页面可以包含结构化的 claims（信念声明）：</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">WikiClaim</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">id?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">text</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">status?</span>: <span class="kt">string</span><span class="p">;</span>             <span class="c1">// &quot;confirmed&quot; | &quot;contested&quot; | &quot;refuted&quot; | &quot;superseded&quot;</span>
+  <span class="nx">confidence?</span>: <span class="kt">number</span><span class="p">;</span>         <span class="c1">// 0-1 置信度</span>
+  <span class="nx">evidence</span>: <span class="kt">WikiClaimEvidence</span><span class="p">[];</span>
+  <span class="nx">updatedAt?</span>: <span class="kt">string</span><span class="p">;</span>
+<span class="p">};</span>
+
+<span class="kr">type</span> <span class="nx">WikiClaimEvidence</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">sourceId?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">path?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">lines?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">weight?</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="nx">note?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">updatedAt?</span>: <span class="kt">string</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="claim">Claim 健康度评估</h3>
+<p><strong>文件</strong>: <code>extensions/memory-wiki/src/claim-health.ts</code></p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">WikiFreshnessLevel</span> <span class="o">=</span> <span class="s2">&quot;fresh&quot;</span> <span class="o">|</span> <span class="s2">&quot;aging&quot;</span> <span class="o">|</span> <span class="s2">&quot;stale&quot;</span> <span class="o">|</span> <span class="s2">&quot;unknown&quot;</span><span class="p">;</span>
+
+<span class="nx">WIKI_AGING_DAYS</span> <span class="o">=</span> <span class="mf">30</span><span class="p">;</span>   <span class="c1">// 30 天后标记为 aging</span>
+<span class="nx">WIKI_STALE_DAYS</span> <span class="o">=</span> <span class="mf">90</span><span class="p">;</span>   <span class="c1">// 90 天后标记为 stale</span>
+
+<span class="nx">assessClaimFreshness</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span> <span class="nx">page</span><span class="p">,</span> <span class="nx">claim</span><span class="p">,</span> <span class="nx">now</span><span class="o">?</span> <span class="p">})</span>  <span class="err">→</span> <span class="nx">WikiFreshness</span>
+<span class="nx">assessPageFreshness</span><span class="p">(</span><span class="nx">page</span><span class="p">,</span> <span class="nx">now</span><span class="p">)</span>       <span class="err">→</span> <span class="nx">WikiFreshness</span>
+<span class="nx">buildClaimContradictionClusters</span><span class="p">()</span>    <span class="err">→</span> <span class="nx">矛盾检测</span>
+<span class="nx">collectWikiClaimHealth</span><span class="p">()</span>             <span class="err">→</span> <span class="nx">全面健康评估</span>
+</code></pre></div>
+
+<h3 id="wiki-compile">Wiki 编译 (Compile)</h3>
+<p><strong>文件</strong>: <code>extensions/memory-wiki/src/compile.ts</code></p>
+<div class="codehilite"><pre><span></span><code><span class="err">编译流程</span><span class="o">:</span><span class="w"></span>
+<span class="mi">1</span><span class="o">.</span><span class="w"> </span><span class="err">扫描所有页面目录</span><span class="w"> </span><span class="o">(</span><span class="n">entities</span><span class="o">,</span><span class="w"> </span><span class="n">concepts</span><span class="o">,</span><span class="w"> </span><span class="n">sources</span><span class="o">,</span><span class="w"> </span><span class="n">syntheses</span><span class="o">,</span><span class="w"> </span><span class="n">reports</span><span class="o">)</span><span class="w"></span>
+<span class="mi">2</span><span class="o">.</span><span class="w"> </span><span class="err">解析每个页面的</span><span class="w"> </span><span class="n">frontmatter</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">body</span><span class="w"></span>
+<span class="mi">3</span><span class="o">.</span><span class="w"> </span><span class="err">提取</span><span class="w"> </span><span class="n">WikiPageSummary</span><span class="w"></span>
+<span class="mi">4</span><span class="o">.</span><span class="w"> </span><span class="err">生成</span><span class="w"> </span><span class="n">agent</span><span class="o">-</span><span class="n">digest</span><span class="o">.</span><span class="na">json</span><span class="err">（</span><span class="n">agent</span><span class="w"> </span><span class="err">可读的编译摘要）</span><span class="w"></span>
+<span class="mi">5</span><span class="o">.</span><span class="w"> </span><span class="err">生成</span><span class="w"> </span><span class="n">claims</span><span class="o">.</span><span class="na">jsonl</span><span class="err">（所有</span><span class="w"> </span><span class="n">claim</span><span class="w"> </span><span class="err">的</span><span class="w"> </span><span class="n">JSONL</span><span class="w"> </span><span class="err">索引）</span><span class="w"></span>
+<span class="mi">6</span><span class="o">.</span><span class="w"> </span><span class="err">更新索引页面</span><span class="w"> </span><span class="o">(</span><span class="n">_views</span><span class="o">/</span><span class="n">index</span><span class="o">.</span><span class="na">md</span><span class="o">)</span><span class="w"></span>
+<span class="mi">7</span><span class="o">.</span><span class="w"> </span><span class="err">更新仪表盘</span><span class="w"> </span><span class="o">(</span><span class="n">reports</span><span class="o">/</span><span class="n">open</span><span class="o">-</span><span class="n">questions</span><span class="o">.</span><span class="na">md</span><span class="w"> </span><span class="err">等</span><span class="o">)</span><span class="w"></span>
+<span class="mi">8</span><span class="o">.</span><span class="w"> </span><span class="err">可选</span><span class="o">:</span><span class="w"> </span><span class="err">创建反向链接</span><span class="w"> </span><span class="o">(</span><span class="n">backlinks</span><span class="o">)</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="wiki-bridge">Wiki Bridge: 记忆桥接</h3>
+<p><strong>文件</strong>: <code>extensions/memory-wiki/src/bridge.ts</code></p>
+<p>Bridge 将 memory-core 的公开产物导入到 wiki vault：</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">BridgeArtifact</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">syncKey</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">artifactType</span><span class="o">:</span> <span class="s2">&quot;markdown&quot;</span> <span class="o">|</span> <span class="s2">&quot;memory-events&quot;</span><span class="p">;</span>
+  <span class="nx">workspaceDir</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">relativePath</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">absolutePath</span>: <span class="kt">string</span><span class="p">;</span>
+<span class="p">};</span>
+
+<span class="nx">shouldImportArtifact</span><span class="p">(</span><span class="nx">artifact</span><span class="p">,</span> <span class="nx">bridgeConfig</span><span class="p">)</span><span class="o">:</span>
+  <span class="o">-</span> <span class="s2">&quot;memory-root&quot;</span> <span class="err">→</span> <span class="nx">bridgeConfig</span><span class="p">.</span><span class="nx">indexMemoryRoot</span>
+  <span class="o">-</span> <span class="s2">&quot;daily-note&quot;</span> <span class="err">→</span> <span class="nx">bridgeConfig</span><span class="p">.</span><span class="nx">indexDailyNotes</span>
+  <span class="o">-</span> <span class="s2">&quot;dream-report&quot;</span> <span class="err">→</span> <span class="nx">bridgeConfig</span><span class="p">.</span><span class="nx">indexDreamReports</span>
+  <span class="o">-</span> <span class="s2">&quot;event-log&quot;</span> <span class="err">→</span> <span class="nx">bridgeConfig</span><span class="p">.</span><span class="nx">followMemoryEvents</span>
+</code></pre></div>
+
+<h3 id="wiki-prompt">Wiki Prompt 补充</h3>
+<p><strong>文件</strong>: <code>extensions/memory-wiki/src/prompt-section.ts</code></p>
+<p>读取 <code>agent-digest.json</code>，注入到 System Prompt：</p>
+<div class="codehilite"><pre><span></span><code><span class="mf">1.</span><span class="w"> </span><span class="n">读取编译摘要</span><span class="w"></span>
+<span class="mf">2.</span><span class="w"> </span><span class="n">按</span><span class="w"> </span><span class="n">rankPromptDigestPage</span><span class="p">()</span><span class="w"> </span><span class="n">排序页面</span><span class="w"></span>
+<span class="mf">3.</span><span class="w"> </span><span class="n">取</span><span class="w"> </span><span class="kr">to</span><span class="n">p</span><span class="w"> </span><span class="mf">4</span><span class="w"> </span><span class="n">页面</span><span class="err">，</span><span class="n">每页最多</span><span class="w"> </span><span class="mf">2</span><span class="w"> </span><span class="n">个</span><span class="w"> </span><span class="n">claim</span><span class="w"></span>
+<span class="mf">4.</span><span class="w"> </span><span class="n">构建</span><span class="w"> </span><span class="n">prompt</span><span class="w"> </span><span class="n">段落</span><span class="err">，</span><span class="n">含</span><span class="w"> </span><span class="kr">cont</span><span class="n">radictions</span><span class="err">、</span><span class="n">questions</span><span class="err">、</span><span class="kr">to</span><span class="n">pClaims</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="wiki-corpus">Wiki Corpus 补充</h3>
+<p><strong>文件</strong>: <code>extensions/memory-wiki/src/corpus-supplement.ts</code></p>
+<p>通过 <code>api.registerMemoryCorpusSupplement()</code> 注册，使 memory_search 工具可以搜索 wiki 内容：</p>
+<div class="codehilite"><pre><span></span><code><span class="nx">createWikiCorpusSupplement</span><span class="p">({</span> <span class="nx">config</span><span class="p">,</span> <span class="nx">appConfig</span> <span class="p">})</span>
+  <span class="err">→</span> <span class="nx">search</span>: <span class="kt">调用</span> <span class="nx">searchMemoryWiki</span> <span class="p">(</span><span class="nx">local</span> <span class="nx">corpus</span><span class="p">)</span>
+  <span class="err">→</span> <span class="nx">get</span>: <span class="kt">调用</span> <span class="nx">getMemoryWikiPage</span>
+</code></pre></div>
+
+<h3 id="wiki_2">Wiki 搜索</h3>
+<p><strong>文件</strong>: <code>extensions/memory-wiki/src/query.ts</code></p>
+<p>支持两种后端：
+- <code>"local"</code>: 本地文件系统扫描 + digest 匹配
+- <code>"shared"</code>: 通过 <code>getActiveMemorySearchManager</code> 使用主搜索引擎</p>
+<p>支持两种语料库：
+- <code>"wiki"</code>: 仅 wiki vault
+- <code>"memory"</code>: 仅主记忆系统
+- <code>"all"</code>: 合并两者</p>
+<h3 id="wiki_3">Wiki 配置</h3>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">MemoryWikiPluginConfig</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">vaultMode</span><span class="o">?:</span> <span class="s2">&quot;isolated&quot;</span> <span class="o">|</span> <span class="s2">&quot;bridge&quot;</span> <span class="o">|</span> <span class="s2">&quot;unsafe-local&quot;</span><span class="p">;</span>
+  <span class="nx">vault</span><span class="o">?:</span> <span class="p">{</span> <span class="nx">path</span><span class="o">?</span><span class="p">,</span> <span class="nx">renderMode</span><span class="o">?:</span> <span class="s2">&quot;native&quot;</span> <span class="o">|</span> <span class="s2">&quot;obsidian&quot;</span> <span class="p">};</span>
+  <span class="nx">obsidian</span><span class="o">?:</span> <span class="p">{</span> <span class="nx">enabled</span><span class="o">?</span><span class="p">,</span> <span class="nx">useOfficialCli</span><span class="o">?</span><span class="p">,</span> <span class="nx">vaultName</span><span class="o">?</span><span class="p">,</span> <span class="nx">openAfterWrites</span><span class="o">?</span> <span class="p">};</span>
+  <span class="nx">bridge</span><span class="o">?:</span> <span class="p">{</span>
+    <span class="nx">enabled</span><span class="o">?</span><span class="p">,</span> <span class="nx">readMemoryArtifacts</span><span class="o">?</span><span class="p">,</span> <span class="nx">indexDreamReports</span><span class="o">?</span><span class="p">,</span>
+    <span class="nx">indexDailyNotes</span><span class="o">?</span><span class="p">,</span> <span class="nx">indexMemoryRoot</span><span class="o">?</span><span class="p">,</span> <span class="nx">followMemoryEvents</span><span class="o">?</span>
+  <span class="p">};</span>
+  <span class="nx">unsafeLocal</span><span class="o">?:</span> <span class="p">{</span> <span class="nx">allowPrivateMemoryCoreAccess</span><span class="o">?</span><span class="p">,</span> <span class="nx">paths</span><span class="o">?</span> <span class="p">};</span>
+  <span class="nx">ingest</span><span class="o">?:</span> <span class="p">{</span> <span class="nx">autoCompile</span><span class="o">?</span><span class="p">,</span> <span class="nx">maxConcurrentJobs</span><span class="o">?</span><span class="p">,</span> <span class="nx">allowUrlIngest</span><span class="o">?</span> <span class="p">};</span>
+  <span class="nx">search</span><span class="o">?:</span> <span class="p">{</span> <span class="nx">backend</span><span class="o">?:</span> <span class="s2">&quot;shared&quot;</span> <span class="o">|</span> <span class="s2">&quot;local&quot;</span><span class="p">,</span> <span class="nx">corpus</span><span class="o">?:</span> <span class="s2">&quot;wiki&quot;</span> <span class="o">|</span> <span class="s2">&quot;memory&quot;</span> <span class="o">|</span> <span class="s2">&quot;all&quot;</span> <span class="p">};</span>
+  <span class="nx">context</span><span class="o">?:</span> <span class="p">{</span> <span class="nx">includeCompiledDigestPrompt</span><span class="o">?</span> <span class="p">};</span>
+  <span class="nx">render</span><span class="o">?:</span> <span class="p">{</span> <span class="nx">preserveHumanBlocks</span><span class="o">?</span><span class="p">,</span> <span class="nx">createBacklinks</span><span class="o">?</span><span class="p">,</span> <span class="nx">createDashboards</span><span class="o">?</span> <span class="p">};</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<hr />
+<h2 id="23-memory-event-journal">23. 记忆事件日志 (Memory Event Journal)</h2>
+<p><strong>文件</strong>: <code>src/memory-host-sdk/events.ts</code></p>
+<h3 id="_36">事件日志路径</h3>
+<div class="codehilite"><pre><span></span><code>{workspace}/memory/.dreams/events.jsonl
+</code></pre></div>
+
+<h3 id="_37">事件类型</h3>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">MemoryHostEvent</span> <span class="o">=</span>
+  <span class="o">|</span> <span class="nx">MemoryHostRecallRecordedEvent</span>     <span class="c1">// 记忆被 recall 时</span>
+  <span class="o">|</span> <span class="nx">MemoryHostPromotionAppliedEvent</span>   <span class="c1">// 短期记忆被提升时</span>
+  <span class="o">|</span> <span class="nx">MemoryHostDreamCompletedEvent</span>     <span class="c1">// dreaming 阶段完成时</span>
+</code></pre></div>
+
+<h3 id="recall_1">Recall 事件</h3>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">MemoryHostRecallRecordedEvent</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="kr">type</span><span class="o">:</span> <span class="s2">&quot;memory.recall.recorded&quot;</span><span class="p">;</span>
+  <span class="nx">timestamp</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">query</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">resultCount</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="nx">results</span>: <span class="kt">Array</span><span class="o">&lt;</span><span class="p">{</span>
+    <span class="nx">path</span>: <span class="kt">string</span><span class="p">;</span>
+    <span class="nx">startLine</span>: <span class="kt">number</span><span class="p">;</span>
+    <span class="nx">endLine</span>: <span class="kt">number</span><span class="p">;</span>
+    <span class="nx">score</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="p">}</span><span class="o">&gt;</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="promotion">Promotion 事件</h3>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">MemoryHostPromotionAppliedEvent</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="kr">type</span><span class="o">:</span> <span class="s2">&quot;memory.promotion.applied&quot;</span><span class="p">;</span>
+  <span class="nx">timestamp</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">memoryPath</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">applied</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="nx">candidates</span>: <span class="kt">Array</span><span class="o">&lt;</span><span class="p">{</span>
+    <span class="nx">key</span>: <span class="kt">string</span><span class="p">;</span> <span class="nx">path</span>: <span class="kt">string</span><span class="p">;</span>
+    <span class="nx">startLine</span>: <span class="kt">number</span><span class="p">;</span> <span class="nx">endLine</span>: <span class="kt">number</span><span class="p">;</span>
+    <span class="nx">score</span>: <span class="kt">number</span><span class="p">;</span> <span class="nx">recallCount</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="p">}</span><span class="o">&gt;</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="dream">Dream 完成事件</h3>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">MemoryHostDreamCompletedEvent</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="kr">type</span><span class="o">:</span> <span class="s2">&quot;memory.dream.completed&quot;</span><span class="p">;</span>
+  <span class="nx">timestamp</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">phase</span><span class="o">:</span> <span class="s2">&quot;light&quot;</span> <span class="o">|</span> <span class="s2">&quot;deep&quot;</span> <span class="o">|</span> <span class="s2">&quot;rem&quot;</span><span class="p">;</span>
+  <span class="nx">inlinePath?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">reportPath?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">lineCount</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="nx">storageMode</span><span class="o">:</span> <span class="s2">&quot;inline&quot;</span> <span class="o">|</span> <span class="s2">&quot;separate&quot;</span> <span class="o">|</span> <span class="s2">&quot;both&quot;</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="api">读写 API</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">appendMemoryHostEvent</span><span class="p">(</span><span class="nx">workspaceDir</span><span class="p">,</span> <span class="nx">event</span><span class="p">)</span>  <span class="c1">// 追加事件</span>
+<span class="nx">readMemoryHostEvents</span><span class="p">({</span> <span class="nx">workspaceDir</span><span class="p">,</span> <span class="nx">limit</span><span class="o">?</span> <span class="p">})</span>  <span class="c1">// 读取事件（支持 tail limit）</span>
+</code></pre></div>
+
+<hr />
+<h2 id="24-memory-plugin-state">24. 插件状态管理 (Memory Plugin State)</h2>
+<p><strong>文件</strong>: <code>src/plugins/memory-state.ts</code></p>
+<h3 id="_38">单例状态</h3>
+<p>模块级单例管理所有记忆插件注册：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1">// 核心能力注册</span>
+<span class="nx">registerMemoryCapability</span><span class="p">(</span><span class="nx">capability</span><span class="p">)</span>    <span class="c1">// 注册完整能力（prompt/flush/runtime/artifacts）</span>
+<span class="nx">getMemoryCapabilityRegistration</span><span class="p">()</span>
+
+<span class="c1">// Prompt 构建</span>
+<span class="nx">registerMemoryPromptSection</span><span class="p">(</span><span class="nx">builder</span><span class="p">)</span>    <span class="c1">// 注册 System Prompt 记忆段落</span>
+<span class="nx">buildMemoryPromptSection</span><span class="p">(</span><span class="nx">params</span><span class="p">)</span>        <span class="c1">// 构建段落</span>
+<span class="nx">registerMemoryPromptSupplement</span><span class="p">(</span><span class="nx">supplement</span><span class="p">)</span>  <span class="c1">// 注册补充（如 wiki）</span>
+<span class="nx">listMemoryPromptSupplements</span><span class="p">()</span>
+
+<span class="c1">// Corpus 补充</span>
+<span class="nx">registerMemoryCorpusSupplement</span><span class="p">(</span><span class="nx">supplement</span><span class="p">)</span>
+<span class="nx">listMemoryCorpusSupplements</span><span class="p">()</span>
+
+<span class="c1">// Flush 计划</span>
+<span class="nx">registerMemoryFlushPlanResolver</span><span class="p">(</span><span class="nx">resolver</span><span class="p">)</span>
+<span class="nx">resolveMemoryFlushPlan</span><span class="p">(</span><span class="nx">params</span><span class="p">)</span>
+
+<span class="c1">// 运行时</span>
+<span class="nx">registerMemoryRuntime</span><span class="p">(</span><span class="nx">runtime</span><span class="p">)</span>
+<span class="nx">getMemoryRuntime</span><span class="p">()</span>
+<span class="nx">hasMemoryRuntime</span><span class="p">()</span>
+
+<span class="c1">// 公开产物</span>
+<span class="nx">listActiveMemoryPublicArtifacts</span><span class="p">()</span>
+</code></pre></div>
+
+<h3 id="_39">状态快照与恢复</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">clearMemoryPluginState</span><span class="p">()</span>    <span class="c1">// 清除所有状态</span>
+<span class="nx">restoreMemoryPluginState</span><span class="p">(</span><span class="nx">snapshot</span><span class="p">)</span>  <span class="c1">// 从快照恢复（用于测试和插件重载）</span>
+<span class="nx">_resetMemoryPluginState</span><span class="p">()</span>   <span class="c1">// 完全重置（仅测试）</span>
+</code></pre></div>
+
+<h3 id="_40">公开产物</h3>
+<p>memory-core 通过 <code>publicArtifacts.listArtifacts</code> 暴露产物给其他插件（如 wiki bridge）：</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">MemoryPluginPublicArtifact</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">kind</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">workspaceDir</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">relativePath</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">absolutePath</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">agentIds</span>: <span class="kt">string</span><span class="p">[];</span>
+  <span class="nx">contentType</span><span class="o">:</span> <span class="s2">&quot;markdown&quot;</span> <span class="o">|</span> <span class="s2">&quot;json&quot;</span> <span class="o">|</span> <span class="s2">&quot;text&quot;</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<hr />
+<h2 id="25">25. 性能优化</h2>
+<h3 id="sqlite">SQLite 热路径优化</h3>
+<p><strong><code>perf(memory): builtin sqlite hot-path follow-ups</code></strong></p>
+<ul>
+<li>管理器分拆为更细粒度的模块：<code>manager-batch-state.ts</code>、<code>manager-cache.ts</code>、<code>manager-db.ts</code>、<code>manager-embedding-cache.ts</code>、<code>manager-embedding-policy.ts</code>、<code>manager-fts-state.ts</code>、<code>manager-reindex-state.ts</code>、<code>manager-source-state.ts</code>、<code>manager-status-state.ts</code>、<code>manager-sync-control.ts</code>、<code>manager-vector-write.ts</code></li>
+<li>减少模块加载开销，按需导入</li>
+</ul>
+<h3 id="_41">空记忆搜索存在性探针</h3>
+<p><strong><code>perf(sqlite): use existence probes for empty memory search</code></strong></p>
+<div class="codehilite"><pre><span></span><code><span class="nx">resolveMemorySearchPreflight</span><span class="p">({</span> <span class="nx">query</span><span class="p">,</span> <span class="nx">hasIndexedContent</span> <span class="p">})</span>
+  <span class="err">→</span> <span class="nx">空查询或无索引内容时直接跳过</span>
+  <span class="err">→</span> <span class="nx">避免不必要的</span> <span class="nx">provider</span> <span class="nx">初始化和数据库查询</span>
+</code></pre></div>
+
+<p>新增 <code>manager-search-preflight.ts</code>，在搜索之前检查是否有意义：
+- 空白查询 → 不搜索
+- 无索引内容 → 不搜索，不初始化 provider</p>
+<h3 id="provider_3">惰性 Provider 初始化</h3>
+<p><strong><code>perf(memory): avoid eager provider init on empty search</code></strong></p>
+<div class="codehilite"><pre><span></span><code><span class="err">旧行为</span><span class="o">:</span><span class="w"> </span><span class="n">MemoryIndexManager</span><span class="w"> </span><span class="err">构造时立即创建</span><span class="w"> </span><span class="n">EmbeddingProvider</span><span class="w"></span>
+<span class="err">新行为</span><span class="o">:</span><span class="w"></span>
+<span class="w">  </span><span class="o">-</span><span class="w"> </span><span class="n">providerInitPromise</span><span class="w"> </span><span class="err">延迟初始化</span><span class="w"></span>
+<span class="w">  </span><span class="o">-</span><span class="w"> </span><span class="err">仅在首次</span><span class="w"> </span><span class="n">search</span><span class="o">()</span><span class="w"> </span><span class="err">需要嵌入时触发</span><span class="w"></span>
+<span class="w">  </span><span class="o">-</span><span class="w"> </span><span class="n">status</span><span class="w"> </span><span class="err">查询不触发</span><span class="w"> </span><span class="n">provider</span><span class="w"> </span><span class="err">初始化</span><span class="w"></span>
+<span class="w">  </span><span class="o">-</span><span class="w"> </span><span class="err">空索引不触发</span><span class="w"> </span><span class="n">provider</span><span class="w"> </span><span class="err">初始化</span><span class="w"></span>
+</code></pre></div>
+
+<p>管理器增加了 <code>providerInitialized</code> 标志和 <code>providerInitPromise</code>，实现真正的按需加载。</p>
+<h3 id="_42">管理器缓存优化</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// 新的缓存管理器系统</span>
+<span class="nx">resolveSingletonManagedCache</span><span class="p">(</span><span class="nx">key</span><span class="p">)</span>
+  <span class="err">→</span> <span class="nx">返回</span> <span class="p">{</span> <span class="nx">cache</span><span class="p">,</span> <span class="nx">pending</span> <span class="p">}</span>
+  <span class="err">→</span> <span class="nx">cache</span>: <span class="kt">Map</span> <span class="nx">存储实例</span>
+  <span class="err">→</span> <span class="nx">pending</span>: <span class="kt">Map</span> <span class="nx">存储进行中的创建</span> <span class="nb">Promise</span>
+
+<span class="nx">getOrCreateManagedCacheEntry</span><span class="p">({</span> <span class="nx">cache</span><span class="p">,</span> <span class="nx">pending</span><span class="p">,</span> <span class="nx">key</span><span class="p">,</span> <span class="nx">create</span><span class="p">,</span> <span class="nx">bypassCache</span> <span class="p">})</span>
+  <span class="err">→</span> <span class="nx">并发安全的缓存获取</span><span class="o">/</span><span class="nx">创建</span>
+  <span class="err">→</span> <span class="nx">status</span> <span class="nx">查询</span> <span class="nx">bypass</span> <span class="nx">缓存</span><span class="err">，</span><span class="nx">避免与</span> <span class="nx">full</span> <span class="nx">管理器冲突</span>
+
+<span class="nx">closeManagedCacheEntries</span><span class="p">({</span> <span class="nx">cache</span><span class="p">,</span> <span class="nx">pending</span><span class="p">,</span> <span class="nx">onCloseError</span> <span class="p">})</span>
+  <span class="err">→</span> <span class="nx">批量关闭所有缓存条目</span>
+</code></pre></div>
+
+<h3 id="llm">LLM 超时触发压缩</h3>
+<p><strong><code>fix: trigger compaction on LLM timeout with high context usage</code></strong></p>
+<p>当 LLM 因上下文过长超时时，触发记忆压缩（compaction），而非仅记录错误。</p>
+<hr />
+<h2 id="26">26. 关键设计模式总结</h2>
 <table>
 <thead>
 <tr>
@@ -1075,6 +1576,26 @@ Sources 归一化: 尊重 session memory 实验性标志
 </tr>
 </thead>
 <tbody>
+<tr>
+<td><strong>插件化架构</strong></td>
+<td>记忆引擎从核心提取为插件</td>
+<td>memory-core/memory-wiki 通过 Plugin SDK 交互</td>
+</tr>
+<tr>
+<td><strong>适配器注册</strong></td>
+<td>嵌入提供商通过适配器模式注册</td>
+<td>memory-embedding-providers.ts 全局注册表</td>
+</tr>
+<tr>
+<td><strong>能力注册</strong></td>
+<td>插件通过单一 API 注册所有能力</td>
+<td>registerMemoryCapability()</td>
+</tr>
+<tr>
+<td><strong>公开产物</strong></td>
+<td>插件间通过产物清单交换数据</td>
+<td>MemoryPluginPublicArtifact</td>
+</tr>
 <tr>
 <td><strong>FTS-Only 降级</strong></td>
 <td>无嵌入 provider 时降级到纯全文搜索</td>
@@ -1096,6 +1617,16 @@ Sources 归一化: 尊重 session memory 实验性标志
 <td>仅重新索引变更的文件</td>
 </tr>
 <tr>
+<td><strong>搜索预检</strong></td>
+<td>空查询/空索引时跳过搜索和 provider 初始化</td>
+<td>resolveMemorySearchPreflight()</td>
+</tr>
+<tr>
+<td><strong>惰性 Provider</strong></td>
+<td>仅在首次需要时初始化嵌入 provider</td>
+<td>providerInitPromise 延迟加载</td>
+</tr>
+<tr>
 <td><strong>混合评分</strong></td>
 <td><code>α * vec_score + (1-α) * fts_score</code></td>
 <td>可配置权重</td>
@@ -1111,9 +1642,29 @@ Sources 归一化: 尊重 session memory 实验性标志
 <td>Jaccard 相似度</td>
 </tr>
 <tr>
-<td><strong>多层缓存</strong></td>
-<td>Provider 级 + Manager 级 + QMD 降级</td>
-<td>减少重复计算</td>
+<td><strong>三阶段睡眠</strong></td>
+<td>Light/Deep/REM 仿生物学记忆整合</td>
+<td>定时 cron + 概念标签 + recall 统计</td>
+</tr>
+<tr>
+<td><strong>Belief-Layer</strong></td>
+<td>Wiki 页面含结构化信念声明</td>
+<td>claims 健康度 + 矛盾检测</td>
+</tr>
+<tr>
+<td><strong>Corpus 补充</strong></td>
+<td>多语料库统一搜索</td>
+<td>registerMemoryCorpusSupplement()</td>
+</tr>
+<tr>
+<td><strong>事件日志</strong></td>
+<td>结构化记忆事件追踪</td>
+<td>JSONL events.jsonl</td>
+</tr>
+<tr>
+<td><strong>Recall 追踪</strong></td>
+<td>记忆检索频率统计用于提升</td>
+<td>short-term-recall.json</td>
 </tr>
 <tr>
 <td><strong>多语言支持</strong></td>
@@ -1127,112 +1678,64 @@ Sources 归一化: 尊重 session memory 实验性标志
 </tr>
 <tr>
 <td><strong>Provider 降级</strong></td>
-<td>createEmbeddingProvider 期间主 provider 创建失败时切换到 fallback</td>
-<td>配置 fallback 字段 + 认证错误降级 FTS-only + 非认证错误抛异常</td>
+<td>主 provider 失败时切换到 fallback</td>
+<td>配置 fallback 字段</td>
 </tr>
 <tr>
 <td><strong>批量失败保护</strong></td>
 <td>2 次失败后禁用批量</td>
-<td><code>recordBatchFailure()</code></td>
+<td><code>MEMORY_BATCH_FAILURE_LIMIT</code></td>
+</tr>
+<tr>
+<td><strong>多模型 Bedrock</strong></td>
+<td>多家族模型支持 + 惰性 SDK 加载</td>
+<td>titan/cohere/nova/twelvelabs</td>
 </tr>
 </tbody>
 </table>
 <hr />
-<h2 id="附录-a-session-与绑定更新2026-03-18-后新增">附录 A. Session 与绑定更新（2026-03-18 后新增）</h2>
-<h3 id="session-重置模式默认值变更">Session 重置模式默认值变更</h3>
-<p><strong>文件</strong>: <code>src/config/sessions/reset.ts</code> (176 行)</p>
-<p><code>DEFAULT_RESET_MODE</code> 从 <code>"idle"</code> 变更为 <code>"daily"</code>：</p>
-<pre><code class="language-typescript">export const DEFAULT_RESET_MODE: SessionResetMode = &quot;daily&quot;;  // 原为 &quot;idle&quot;
-export const DEFAULT_RESET_AT_HOUR = 4;  // UTC 4:00 AM
-</code></pre>
-<p><strong>变更原因</strong>：每日在 4:00 AM UTC 重置是更好的默认行为，比基于空闲状态的重置更可预测。</p>
-<h3 id="session-绑定适配器能力类型">Session 绑定适配器能力类型</h3>
-<p><strong>文件</strong>: <code>src/infra/outbound/session-binding-service.ts</code> (332 行)</p>
-<p>新增 <code>SessionBindingAdapterCapabilities</code> 类型，替换了原先的 <code>adapterAvailable</code> 字段：</p>
-<pre><code class="language-typescript">type SessionBindingAdapterCapabilities = {
-  placements?: SessionBindingPlacement[];    // &quot;current&quot; | &quot;child&quot;
-  bindSupported?: boolean;
-  unbindSupported?: boolean;
-};
-
-type SessionBindingAdapter = {
-  channel: string;
-  accountId: string;
-  capabilities?: SessionBindingAdapterCapabilities;  // 新结构
-  bind?: (input) =&gt; Promise&lt;SessionBindingRecord | null&gt;;
-  listBySession: (targetSessionKey: string) =&gt; SessionBindingRecord[];
-  resolveByConversation: (ref: ConversationRef) =&gt; SessionBindingRecord | null;
-  touch?: (bindingId: string, at?: number) =&gt; void;
-  unbind?: (input) =&gt; Promise&lt;SessionBindingRecord[]&gt;;
-};
-</code></pre>
-<hr />
-<h2 id="附录-b-记忆系统功能扩展大版本更新后新增">附录 B. 记忆系统功能扩展（大版本更新后新增）</h2>
-<h3 id="记忆插件-system-prompt-段落">记忆插件 System Prompt 段落</h3>
-<p><strong>文件</strong>: <code>src/memory/prompt-section.ts</code> (43 行，新文件)</p>
-<p>插件现在可以注册自定义的 System Prompt 记忆段落，替代默认的 <code>memory_search</code>/<code>memory_get</code> 使用指南：</p>
-<pre><code class="language-typescript">type MemoryPromptSectionBuilder = (params: {
-  availableTools: Set&lt;string&gt;;
-  citationsMode?: MemoryCitationsMode;
-}) =&gt; string[]
-
-function registerMemoryPromptSection(builder: MemoryPromptSectionBuilder): void
-function buildMemoryPromptSection(params): string[]
-function getMemoryPromptSectionBuilder(): MemoryPromptSectionBuilder | undefined
-function clearMemoryPromptSection(): void
-</code></pre>
-<p>模块级单例模式，<code>memory-core</code> 插件通过此接口注入自定义记忆提示词。</p>
-<h3 id="记忆文件读取提取">记忆文件读取提取</h3>
-<p><strong>文件</strong>: <code>src/memory/read-file.ts</code> (97 行，新文件)</p>
-<p>从 manager 中提取独立的文件读取逻辑，减少启动开销：</p>
-<pre><code class="language-typescript">async function readMemoryFile(params: {
-  workspaceDir: string; extraPaths?: string[];
-  relPath: string; from?: number; lines?: number;
-}): Promise&lt;{ text: string; path: string }&gt;
-
-async function readAgentMemoryFile(params: {
-  cfg: OpenClawConfig; agentId: string;
-  relPath: string; from?: number; lines?: number;
-}): Promise&lt;{ text: string; path: string }&gt;
-</code></pre>
-<p>路径安全验证：确保文件在工作空间或允许的额外路径内，强制 <code>.md</code> 扩展名，支持行范围读取。</p>
-<h3 id="记忆搜索管理器状态追踪增强">记忆搜索管理器状态追踪增强</h3>
-<p><strong>文件</strong>: <code>src/memory/search-manager.ts</code> (361 行)</p>
-<p>新增 <code>QmdStatusOnlyManager</code> 类实现轻量级状态查询（不加载完整索引），<code>FallbackMemoryManager</code> 增加 <code>primaryFailed</code> 和 <code>lastError</code> 追踪。返回类型变更为 <code>MemorySearchManagerResult</code>：</p>
-<pre><code class="language-typescript">type MemorySearchManagerResult = {
-  manager: MemorySearchManager | null;
-  error?: string;
-};
-</code></pre>
-<hr />
-<h2 id="存储路径总览">存储路径总览</h2>
-<pre><code>~/.openclaw/
-├── openclaw.json                          # 主配置文件
-├── credentials/                           # OAuth 凭证
-├── memory/
-│   └── {agentId}.sqlite                  # 嵌入索引（每 agent）
-│       ├── meta 表                        # 索引元数据
-│       ├── files 表                       # 文件追踪
-│       ├── chunks 表                      # 文本块 + 嵌入
-│       ├── chunks_vec 虚表                # 向量搜索 (sqlite-vec)
-│       ├── chunks_fts 虚表                # 全文搜索 (FTS5)
-│       └── embedding_cache 表             # 嵌入缓存
-├── agents/
-│   └── {agentId}/
-│       ├── workspace/
-│       │   ├── MEMORY.md                  # 持久化记忆
-│       │   ├── memory/
-│       │   │   ├── YYYY-MM-DD.md          # 日期记忆文件
-│       │   │   └── YYYY-MM-DD-{slug}.md   # Session 摘要
-│       │   ├── AGENTS.md                  # Agent 指令
-│       │   ├── SOUL.md                    # 人格设定
-│       │   └── TOOLS.md                   # 工具说明
-│       └── sessions/
-│           ├── sessions.json              # Session 元数据存储
-│           ├── {sessionId}.jsonl          # Session 转录
-│           └── {sessionId}-topic-{topicId}.jsonl
-└── discord/
-    └── model-picker-preferences.json      # 用户模型偏好
-</code></pre>
+<h2 id="_43">存储路径总览</h2>
+<div class="codehilite"><pre><span></span><code><span class="o">~/.</span><span class="n">openclaw</span><span class="o">/</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">openclaw</span><span class="o">.</span><span class="n">json</span><span class="w">                          </span><span class="c1"># 主配置文件</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">credentials</span><span class="o">/</span><span class="w">                           </span><span class="c1"># OAuth 凭证</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">memory</span><span class="o">/</span><span class="w"></span>
+<span class="err">│</span><span class="w">   </span><span class="err">└──</span><span class="w"> </span><span class="p">{</span><span class="n">agentId</span><span class="p">}</span><span class="o">.</span><span class="n">sqlite</span><span class="w">                  </span><span class="c1"># 嵌入索引（每 agent）</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">├──</span><span class="w"> </span><span class="n">meta</span><span class="w"> </span><span class="err">表</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">├──</span><span class="w"> </span><span class="n">files</span><span class="w"> </span><span class="err">表</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">├──</span><span class="w"> </span><span class="n">chunks</span><span class="w"> </span><span class="err">表</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">├──</span><span class="w"> </span><span class="n">chunks_vec</span><span class="w"> </span><span class="err">虚表</span><span class="w"> </span><span class="p">(</span><span class="n">sqlite</span><span class="o">-</span><span class="n">vec</span><span class="p">)</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">├──</span><span class="w"> </span><span class="n">chunks_fts</span><span class="w"> </span><span class="err">虚表</span><span class="w"> </span><span class="p">(</span><span class="n">FTS5</span><span class="p">)</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">└──</span><span class="w"> </span><span class="n">embedding_cache</span><span class="w"> </span><span class="err">表</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">agents</span><span class="o">/</span><span class="w"></span>
+<span class="err">│</span><span class="w">   </span><span class="err">└──</span><span class="w"> </span><span class="p">{</span><span class="n">agentId</span><span class="p">}</span><span class="o">/</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">├──</span><span class="w"> </span><span class="n">workspace</span><span class="o">/</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">MEMORY</span><span class="o">.</span><span class="n">md</span><span class="w">                  </span><span class="c1"># 持久化记忆</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">memory</span><span class="o">/</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">│</span><span class="w">   </span><span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">YYYY</span><span class="o">-</span><span class="n">MM</span><span class="o">-</span><span class="n">DD</span><span class="o">.</span><span class="n">md</span><span class="w">          </span><span class="c1"># 日期记忆文件</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">│</span><span class="w">   </span><span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">YYYY</span><span class="o">-</span><span class="n">MM</span><span class="o">-</span><span class="n">DD</span><span class="o">-</span><span class="p">{</span><span class="n">slug</span><span class="p">}</span><span class="o">.</span><span class="n">md</span><span class="w">   </span><span class="c1"># Session 摘要</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">│</span><span class="w">   </span><span class="err">│</span><span class="w">   </span><span class="err">└──</span><span class="w"> </span><span class="o">.</span><span class="n">dreams</span><span class="o">/</span><span class="w">               </span><span class="c1"># 梦境系统</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">│</span><span class="w">   </span><span class="err">│</span><span class="w">       </span><span class="err">├──</span><span class="w"> </span><span class="n">events</span><span class="o">.</span><span class="n">jsonl</span><span class="w">       </span><span class="c1"># 事件日志</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">│</span><span class="w">   </span><span class="err">│</span><span class="w">       </span><span class="err">├──</span><span class="w"> </span><span class="n">short</span><span class="o">-</span><span class="n">term</span><span class="o">-</span><span class="n">recall</span><span class="o">.</span><span class="n">json</span><span class="w">  </span><span class="c1"># recall 追踪</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">│</span><span class="w">   </span><span class="err">│</span><span class="w">       </span><span class="err">├──</span><span class="w"> </span><span class="n">phase</span><span class="o">-</span><span class="n">signals</span><span class="o">.</span><span class="n">json</span><span class="w"> </span><span class="c1"># 阶段信号</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">│</span><span class="w">   </span><span class="err">│</span><span class="w">       </span><span class="err">├──</span><span class="w"> </span><span class="n">daily</span><span class="o">-</span><span class="n">ingestion</span><span class="o">.</span><span class="n">json</span><span class="w">  </span><span class="c1"># Light Sleep 状态</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">│</span><span class="w">   </span><span class="err">│</span><span class="w">       </span><span class="err">├──</span><span class="w"> </span><span class="n">session</span><span class="o">-</span><span class="n">ingestion</span><span class="o">.</span><span class="n">json</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">│</span><span class="w">   </span><span class="err">│</span><span class="w">       </span><span class="err">└──</span><span class="w"> </span><span class="n">session</span><span class="o">-</span><span class="n">corpus</span><span class="o">/</span><span class="w">    </span><span class="c1"># Session 语料</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="o">.</span><span class="n">openclaw</span><span class="o">-</span><span class="n">wiki</span><span class="o">/</span><span class="w">            </span><span class="c1"># Wiki Vault (如启用)</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">│</span><span class="w">   </span><span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">cache</span><span class="o">/</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">│</span><span class="w">   </span><span class="err">│</span><span class="w">   </span><span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">agent</span><span class="o">-</span><span class="n">digest</span><span class="o">.</span><span class="n">json</span><span class="w">  </span><span class="c1"># 编译摘要</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">│</span><span class="w">   </span><span class="err">│</span><span class="w">   </span><span class="err">│</span><span class="w">   </span><span class="err">└──</span><span class="w"> </span><span class="n">claims</span><span class="o">.</span><span class="n">jsonl</span><span class="w">       </span><span class="c1"># 信念声明</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">│</span><span class="w">   </span><span class="err">│</span><span class="w">   </span><span class="err">└──</span><span class="w"> </span><span class="n">locks</span><span class="o">/</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">entities</span><span class="o">/</span><span class="w">                  </span><span class="c1"># Wiki 实体页面</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">concepts</span><span class="o">/</span><span class="w">                  </span><span class="c1"># Wiki 概念页面</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">syntheses</span><span class="o">/</span><span class="w">                 </span><span class="c1"># Wiki 综合页面</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">sources</span><span class="o">/</span><span class="w">                   </span><span class="c1"># Wiki 源材料页面</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">reports</span><span class="o">/</span><span class="w">                   </span><span class="c1"># Wiki 报告</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">AGENTS</span><span class="o">.</span><span class="n">md</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">SOUL</span><span class="o">.</span><span class="n">md</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">│</span><span class="w">   </span><span class="err">└──</span><span class="w"> </span><span class="n">TOOLS</span><span class="o">.</span><span class="n">md</span><span class="w"></span>
+<span class="err">│</span><span class="w">       </span><span class="err">└──</span><span class="w"> </span><span class="n">sessions</span><span class="o">/</span><span class="w"></span>
+<span class="err">│</span><span class="w">           </span><span class="err">├──</span><span class="w"> </span><span class="n">sessions</span><span class="o">.</span><span class="n">json</span><span class="w"></span>
+<span class="err">│</span><span class="w">           </span><span class="err">└──</span><span class="w"> </span><span class="p">{</span><span class="n">sessionId</span><span class="p">}</span><span class="o">.</span><span class="n">jsonl</span><span class="w"></span>
+</code></pre></div>
 </body>
 </html>

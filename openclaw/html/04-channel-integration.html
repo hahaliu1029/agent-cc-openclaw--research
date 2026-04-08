@@ -26,8 +26,8 @@
 </head>
 <body>
 <nav><a href="00-index.html">← 索引</a></nav>
-<h1 id="openclaw-聊天工具接入详细分析">OpenClaw 聊天工具接入详细分析</h1>
-<h2 id="目录">目录</h2>
+<h1 id="openclaw">OpenClaw 聊天工具接入详细分析</h1>
+<h2 id="_1">目录</h2>
 <ol>
 <li><a href="#1-架构总览插件化-channel-体系">架构总览：插件化 Channel 体系</a></li>
 <li><a href="#2-channelplugin-核心接口">ChannelPlugin 核心接口</a></li>
@@ -56,37 +56,45 @@
 <li><a href="#25-channel-设置辅助函数统一大版本更新后新增">Channel 设置辅助函数统一</a></li>
 <li><a href="#26-line-channel-迁移大版本更新后新增">LINE Channel 迁移</a></li>
 <li><a href="#27-关键文件索引">关键文件索引</a></li>
+<li><a href="#28-slack-增强功能2026-04-07-更新">Slack 增强功能</a></li>
+<li><a href="#29-matrix-增强功能2026-04-07-更新">Matrix 增强功能</a></li>
+<li><a href="#30-line-出站媒体支持2026-04-07-更新">LINE 出站媒体支持</a></li>
+<li><a href="#31-discord-autothreadname-generated-策略2026-04-07-更新">Discord autoThreadName 'generated' 策略</a></li>
+<li><a href="#32-whatsapp-反应引导级别2026-04-07-更新">WhatsApp 反应引导级别</a></li>
+<li><a href="#33-核心-channel-变更2026-04-07-更新">核心 Channel 变更</a></li>
+<li><a href="#34-关键文件索引补充2026-04-07-更新">关键文件索引补充</a></li>
 </ol>
 <hr />
-<h2 id="1-架构总览插件化-channel-体系">1. 架构总览：插件化 Channel 体系</h2>
+<h2 id="1-channel">1. 架构总览：插件化 Channel 体系</h2>
 <p>OpenClaw 采用统一的插件化架构接入各类聊天工具。每个消息平台（"channel"）通过标准化的 <code>ChannelPlugin</code> 接口集成，核心设计原则：</p>
-<pre><code>┌─────────────────────────────────────────────────────┐
-│  Agent Runtime                                       │
-│  (接收标准化消息 → 生成回复 → 返回标准化输出)         │
-├─────────────────────────────────────────────────────┤
-│  Routing Layer (src/routing/)                        │
-│  (Channel + Account + Peer → Agent + Session)        │
-├─────────────────────────────────────────────────────┤
-│  Channel Abstraction Layer (src/channels/)           │
-│  ├── ChannelPlugin 接口 (统一抽象)                    │
-│  ├── Channel Dock (轻量元数据)                        │
-│  └── 出站交付管线 (分块/格式化/队列)                  │
-├─────────────────────────────────────────────────────┤
-│  Channel Implementations (extensions/)               │
-│  ├── WhatsApp  (Baileys)                             │
-│  ├── Discord   (@buape/carbon)                       │
-│  ├── Telegram  (grammy)                              │
-│  ├── Slack     (@slack/bolt)                          │
-│  ├── Signal    (signal-cli HTTP)                      │
-│  ├── iMessage  (CLI bridge / BlueBubbles)             │
-│  ├── Google Chat (googlechat)                         │
-│  ├── LINE      (@line/bot-sdk)                        │
-│  ├── IRC       (IRC 协议)                             │
-│  ├── Matrix    (@vector-im/matrix-bot-sdk)             │
-│  ├── MS Teams  (@microsoft/agents-hosting)            │
-│  └── 更多...                                          │
-└─────────────────────────────────────────────────────┘
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="err">┌─────────────────────────────────────────────────────┐</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="n">Agent</span><span class="w"> </span><span class="n">Runtime</span><span class="w">                                       </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="p">(</span><span class="err">接收标准化消息</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="err">生成回复</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="err">返回标准化输出</span><span class="p">)</span><span class="w">         </span><span class="err">│</span><span class="w"></span>
+<span class="err">├─────────────────────────────────────────────────────┤</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="n">Routing</span><span class="w"> </span><span class="n">Layer</span><span class="w"> </span><span class="p">(</span><span class="n">src</span><span class="o">/</span><span class="n">routing</span><span class="o">/</span><span class="p">)</span><span class="w">                        </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="p">(</span><span class="n">Channel</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">Account</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">Peer</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="n">Agent</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">Session</span><span class="p">)</span><span class="w">        </span><span class="err">│</span><span class="w"></span>
+<span class="err">├─────────────────────────────────────────────────────┤</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="n">Channel</span><span class="w"> </span><span class="n">Abstraction</span><span class="w"> </span><span class="n">Layer</span><span class="w"> </span><span class="p">(</span><span class="n">src</span><span class="o">/</span><span class="n">channels</span><span class="o">/</span><span class="p">)</span><span class="w">           </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">ChannelPlugin</span><span class="w"> </span><span class="err">接口</span><span class="w"> </span><span class="p">(</span><span class="err">统一抽象</span><span class="p">)</span><span class="w">                    </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">Channel</span><span class="w"> </span><span class="n">Dock</span><span class="w"> </span><span class="p">(</span><span class="err">轻量元数据</span><span class="p">)</span><span class="w">                        </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">└──</span><span class="w"> </span><span class="err">出站交付管线</span><span class="w"> </span><span class="p">(</span><span class="err">分块</span><span class="o">/</span><span class="err">格式化</span><span class="o">/</span><span class="err">队列</span><span class="p">)</span><span class="w">                  </span><span class="err">│</span><span class="w"></span>
+<span class="err">├─────────────────────────────────────────────────────┤</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="n">Channel</span><span class="w"> </span><span class="n">Implementations</span><span class="w"> </span><span class="p">(</span><span class="n">extensions</span><span class="o">/</span><span class="p">)</span><span class="w">               </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">WhatsApp</span><span class="w">  </span><span class="p">(</span><span class="n">Baileys</span><span class="p">)</span><span class="w">                             </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">Discord</span><span class="w">   </span><span class="p">(</span><span class="err">@</span><span class="n">buape</span><span class="o">/</span><span class="n">carbon</span><span class="p">)</span><span class="w">                       </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">Telegram</span><span class="w">  </span><span class="p">(</span><span class="n">grammy</span><span class="p">)</span><span class="w">                              </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">Slack</span><span class="w">     </span><span class="p">(</span><span class="err">@</span><span class="n">slack</span><span class="o">/</span><span class="n">bolt</span><span class="p">)</span><span class="w">                          </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">Signal</span><span class="w">    </span><span class="p">(</span><span class="k">signal</span><span class="o">-</span><span class="n">cli</span><span class="w"> </span><span class="n">HTTP</span><span class="p">)</span><span class="w">                      </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">iMessage</span><span class="w">  </span><span class="p">(</span><span class="n">CLI</span><span class="w"> </span><span class="n">bridge</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">BlueBubbles</span><span class="p">)</span><span class="w">             </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">Google</span><span class="w"> </span><span class="n">Chat</span><span class="w"> </span><span class="p">(</span><span class="n">googlechat</span><span class="p">)</span><span class="w">                         </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">LINE</span><span class="w">      </span><span class="p">(</span><span class="err">@</span><span class="n">line</span><span class="o">/</span><span class="n">bot</span><span class="o">-</span><span class="n">sdk</span><span class="p">)</span><span class="w">                        </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">IRC</span><span class="w">       </span><span class="p">(</span><span class="n">IRC</span><span class="w"> </span><span class="err">协议</span><span class="p">)</span><span class="w">                             </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">Matrix</span><span class="w">    </span><span class="p">(</span><span class="err">@</span><span class="n">vector</span><span class="o">-</span><span class="n">im</span><span class="o">/</span><span class="n">matrix</span><span class="o">-</span><span class="n">bot</span><span class="o">-</span><span class="n">sdk</span><span class="p">)</span><span class="w">             </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">MS</span><span class="w"> </span><span class="n">Teams</span><span class="w">  </span><span class="p">(</span><span class="err">@</span><span class="n">microsoft</span><span class="o">/</span><span class="n">agents</span><span class="o">-</span><span class="n">hosting</span><span class="p">)</span><span class="w">            </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">└──</span><span class="w"> </span><span class="err">更多</span><span class="o">...</span><span class="w">                                          </span><span class="err">│</span><span class="w"></span>
+<span class="err">└─────────────────────────────────────────────────────┘</span><span class="w"></span>
+</code></pre></div>
+
 <p><strong>核心理念</strong>：
 - 所有 channel 暴露相同的 <code>sendText</code>/<code>sendMedia</code>/<code>sendPoll</code> 接口
 - 认证流程解耦（每个 channel 独立处理 token/QR 码/webhook）
@@ -94,88 +102,91 @@
 - 每个 channel 支持多账号
 - 第三方可通过插件 SDK 扩展</p>
 <hr />
-<h2 id="2-channelplugin-核心接口">2. ChannelPlugin 核心接口</h2>
+<h2 id="2-channelplugin">2. ChannelPlugin 核心接口</h2>
 <p><strong>文件</strong>: <code>src/channels/plugins/types.plugin.ts</code> (85 行)</p>
-<pre><code class="language-typescript">export type ChannelPlugin&lt;ResolvedAccount = any, Probe = unknown, Audit = unknown&gt; = {
-  // 基础信息
-  id: ChannelId;                          // 唯一标识 (如 &quot;whatsapp&quot;, &quot;discord&quot;)
-  meta: ChannelMeta;                      // 显示名称、描述
-  capabilities: ChannelCapabilities;      // 支持的功能列表
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kr">type</span> <span class="nx">ChannelPlugin</span><span class="o">&lt;</span><span class="nx">ResolvedAccount</span> <span class="o">=</span> <span class="nx">any</span><span class="p">,</span> <span class="nx">Probe</span> <span class="o">=</span> <span class="nx">unknown</span><span class="p">,</span> <span class="nx">Audit</span> <span class="o">=</span> <span class="nx">unknown</span><span class="o">&gt;</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="c1">// 基础信息</span>
+  <span class="nx">id</span>: <span class="kt">ChannelId</span><span class="p">;</span>                          <span class="c1">// 唯一标识 (如 &quot;whatsapp&quot;, &quot;discord&quot;)</span>
+  <span class="nx">meta</span>: <span class="kt">ChannelMeta</span><span class="p">;</span>                      <span class="c1">// 显示名称、描述</span>
+  <span class="nx">capabilities</span>: <span class="kt">ChannelCapabilities</span><span class="p">;</span>      <span class="c1">// 支持的功能列表</span>
 
-  // 默认配置
-  defaults?: {
-    queue?: { debounceMs?: number }        // 消息队列去抖
-  };
-  reload?: { configPrefixes: string[] };  // 热重载监听的配置前缀
+  <span class="c1">// 默认配置</span>
+  <span class="nx">defaults</span><span class="o">?:</span> <span class="p">{</span>
+    <span class="nx">queue</span><span class="o">?:</span> <span class="p">{</span> <span class="nx">debounceMs?</span>: <span class="kt">number</span> <span class="p">}</span>        <span class="c1">// 消息队列去抖</span>
+  <span class="p">};</span>
+  <span class="nx">reload</span><span class="o">?:</span> <span class="p">{</span> <span class="nx">configPrefixes</span>: <span class="kt">string</span><span class="p">[]</span> <span class="p">};</span>  <span class="c1">// 热重载监听的配置前缀</span>
 
-  // 适配器（每个适配器负责一个关注面）
-  setupWizard?: ChannelSetupWizardAdapter; // 设置向导
-  config: ChannelConfigAdapter&lt;ResolvedAccount&gt;;  // 账号配置管理
-  configSchema?: ChannelConfigSchema;     // 配置 Schema 验证
-  setup?: ChannelSetupAdapter;            // 初始化设置
-  pairing?: ChannelPairingAdapter;        // 设备配对
-  security?: ChannelSecurityAdapter&lt;ResolvedAccount&gt;;  // 安全策略
-  groups?: ChannelGroupAdapter;           // 群组管理
-  mentions?: ChannelMentionAdapter;       // @提及处理
-  outbound?: ChannelOutboundAdapter;      // 出站消息交付
-  status?: ChannelStatusAdapter&lt;ResolvedAccount, Probe, Audit&gt;;  // 状态探测
-  gateway?: ChannelGatewayAdapter&lt;ResolvedAccount&gt;;  // 网关集成
-  auth?: ChannelAuthAdapter;              // 认证流程
-  elevated?: ChannelElevatedAdapter;      // 提升权限
-  commands?: ChannelCommandAdapter;       // 原生命令 (如 Discord slash commands)
-  streaming?: ChannelStreamingAdapter;    // 流式响应
-  threading?: ChannelThreadingAdapter;    // 线程/话题
-  messaging?: ChannelMessagingAdapter;    // 消息收发核心
-  agentPrompt?: ChannelAgentPromptAdapter;  // Agent 提示词补充
-  directory?: ChannelDirectoryAdapter;    // 用户/群组目录
-  resolver?: ChannelResolverAdapter;      // ID 解析
-  actions?: ChannelMessageActionAdapter;  // 消息操作（反应等）
-  heartbeat?: ChannelHeartbeatAdapter;    // 心跳检查
-  agentTools?: ChannelAgentToolFactory | ChannelAgentTool[];  // Agent 工具
-  gatewayMethods?: string[];              // 网关 RPC 方法
-};
-</code></pre>
-<h3 id="关键能力声明-channelcapabilities">关键能力声明 (<code>ChannelCapabilities</code>)</h3>
-<pre><code class="language-typescript">{
-  chatTypes: (&quot;direct&quot; | &quot;group&quot; | &quot;channel&quot; | &quot;thread&quot;)[],
-  polls?: boolean,         // 是否支持投票
-  reactions?: boolean,     // 是否支持表情反应
-  media?: boolean,         // 是否支持媒体
-  threads?: boolean,       // 是否支持线程
-  blockStreaming?: boolean, // 是否阻塞流式（合并后再发送）
-  edit?: boolean,          // 是否支持编辑已发送消息
-  unsend?: boolean,        // 是否支持撤回消息
-  reply?: boolean,         // 是否支持引用回复
-  effects?: boolean,       // 是否支持消息特效
-  groupManagement?: boolean, // 是否支持群组管理操作
-  nativeCommands?: boolean,  // 是否支持原生命令（如 slash commands）
-}
-</code></pre>
+  <span class="c1">// 适配器（每个适配器负责一个关注面）</span>
+  <span class="nx">setupWizard?</span>: <span class="kt">ChannelSetupWizardAdapter</span><span class="p">;</span> <span class="c1">// 设置向导</span>
+  <span class="nx">config</span>: <span class="kt">ChannelConfigAdapter</span><span class="o">&lt;</span><span class="nx">ResolvedAccount</span><span class="o">&gt;</span><span class="p">;</span>  <span class="c1">// 账号配置管理</span>
+  <span class="nx">configSchema?</span>: <span class="kt">ChannelConfigSchema</span><span class="p">;</span>     <span class="c1">// 配置 Schema 验证</span>
+  <span class="nx">setup?</span>: <span class="kt">ChannelSetupAdapter</span><span class="p">;</span>            <span class="c1">// 初始化设置</span>
+  <span class="nx">pairing?</span>: <span class="kt">ChannelPairingAdapter</span><span class="p">;</span>        <span class="c1">// 设备配对</span>
+  <span class="nx">security?</span>: <span class="kt">ChannelSecurityAdapter</span><span class="o">&lt;</span><span class="nx">ResolvedAccount</span><span class="o">&gt;</span><span class="p">;</span>  <span class="c1">// 安全策略</span>
+  <span class="nx">groups?</span>: <span class="kt">ChannelGroupAdapter</span><span class="p">;</span>           <span class="c1">// 群组管理</span>
+  <span class="nx">mentions?</span>: <span class="kt">ChannelMentionAdapter</span><span class="p">;</span>       <span class="c1">// @提及处理</span>
+  <span class="nx">outbound?</span>: <span class="kt">ChannelOutboundAdapter</span><span class="p">;</span>      <span class="c1">// 出站消息交付</span>
+  <span class="nx">status?</span>: <span class="kt">ChannelStatusAdapter</span><span class="o">&lt;</span><span class="nx">ResolvedAccount</span><span class="p">,</span> <span class="nx">Probe</span><span class="p">,</span> <span class="nx">Audit</span><span class="o">&gt;</span><span class="p">;</span>  <span class="c1">// 状态探测</span>
+  <span class="nx">gateway?</span>: <span class="kt">ChannelGatewayAdapter</span><span class="o">&lt;</span><span class="nx">ResolvedAccount</span><span class="o">&gt;</span><span class="p">;</span>  <span class="c1">// 网关集成</span>
+  <span class="nx">auth?</span>: <span class="kt">ChannelAuthAdapter</span><span class="p">;</span>              <span class="c1">// 认证流程</span>
+  <span class="nx">elevated?</span>: <span class="kt">ChannelElevatedAdapter</span><span class="p">;</span>      <span class="c1">// 提升权限</span>
+  <span class="nx">commands?</span>: <span class="kt">ChannelCommandAdapter</span><span class="p">;</span>       <span class="c1">// 原生命令 (如 Discord slash commands)</span>
+  <span class="nx">streaming?</span>: <span class="kt">ChannelStreamingAdapter</span><span class="p">;</span>    <span class="c1">// 流式响应</span>
+  <span class="nx">threading?</span>: <span class="kt">ChannelThreadingAdapter</span><span class="p">;</span>    <span class="c1">// 线程/话题</span>
+  <span class="nx">messaging?</span>: <span class="kt">ChannelMessagingAdapter</span><span class="p">;</span>    <span class="c1">// 消息收发核心</span>
+  <span class="nx">agentPrompt?</span>: <span class="kt">ChannelAgentPromptAdapter</span><span class="p">;</span>  <span class="c1">// Agent 提示词补充</span>
+  <span class="nx">directory?</span>: <span class="kt">ChannelDirectoryAdapter</span><span class="p">;</span>    <span class="c1">// 用户/群组目录</span>
+  <span class="nx">resolver?</span>: <span class="kt">ChannelResolverAdapter</span><span class="p">;</span>      <span class="c1">// ID 解析</span>
+  <span class="nx">actions?</span>: <span class="kt">ChannelMessageActionAdapter</span><span class="p">;</span>  <span class="c1">// 消息操作（反应等）</span>
+  <span class="nx">heartbeat?</span>: <span class="kt">ChannelHeartbeatAdapter</span><span class="p">;</span>    <span class="c1">// 心跳检查</span>
+  <span class="nx">agentTools?</span>: <span class="kt">ChannelAgentToolFactory</span> <span class="o">|</span> <span class="nx">ChannelAgentTool</span><span class="p">[];</span>  <span class="c1">// Agent 工具</span>
+  <span class="nx">gatewayMethods?</span>: <span class="kt">string</span><span class="p">[];</span>              <span class="c1">// 网关 RPC 方法</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="channelcapabilities">关键能力声明 (<code>ChannelCapabilities</code>)</h3>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span>
+  <span class="nx">chatTypes</span><span class="o">:</span> <span class="p">(</span><span class="s2">&quot;direct&quot;</span> <span class="o">|</span> <span class="s2">&quot;group&quot;</span> <span class="o">|</span> <span class="s2">&quot;channel&quot;</span> <span class="o">|</span> <span class="s2">&quot;thread&quot;</span><span class="p">)[],</span>
+  <span class="nx">polls?</span>: <span class="kt">boolean</span><span class="p">,</span>         <span class="c1">// 是否支持投票</span>
+  <span class="nx">reactions?</span>: <span class="kt">boolean</span><span class="p">,</span>     <span class="c1">// 是否支持表情反应</span>
+  <span class="nx">media?</span>: <span class="kt">boolean</span><span class="p">,</span>         <span class="c1">// 是否支持媒体</span>
+  <span class="nx">threads?</span>: <span class="kt">boolean</span><span class="p">,</span>       <span class="c1">// 是否支持线程</span>
+  <span class="nx">blockStreaming?</span>: <span class="kt">boolean</span><span class="p">,</span> <span class="c1">// 是否阻塞流式（合并后再发送）</span>
+  <span class="nx">edit?</span>: <span class="kt">boolean</span><span class="p">,</span>          <span class="c1">// 是否支持编辑已发送消息</span>
+  <span class="nx">unsend?</span>: <span class="kt">boolean</span><span class="p">,</span>        <span class="c1">// 是否支持撤回消息</span>
+  <span class="nx">reply?</span>: <span class="kt">boolean</span><span class="p">,</span>         <span class="c1">// 是否支持引用回复</span>
+  <span class="nx">effects?</span>: <span class="kt">boolean</span><span class="p">,</span>       <span class="c1">// 是否支持消息特效</span>
+  <span class="nx">groupManagement?</span>: <span class="kt">boolean</span><span class="p">,</span> <span class="c1">// 是否支持群组管理操作</span>
+  <span class="nx">nativeCommands?</span>: <span class="kt">boolean</span><span class="p">,</span>  <span class="c1">// 是否支持原生命令（如 slash commands）</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <blockquote>
 <p>注意：<code>reload</code> 属性除了 <code>configPrefixes</code> 之外，还可包含可选的 <code>noopPrefixes?</code> 字段，用于声明不触发重载的配置前缀。</p>
 </blockquote>
 <hr />
-<h2 id="3-channel-dock-元数据注册">3. Channel Dock 元数据注册</h2>
+<h2 id="3-channel-dock">3. Channel Dock 元数据注册</h2>
 <p><strong>文件</strong>: <code>src/channels/dock.ts</code> (636 行)</p>
 <p>Dock 是轻量级的 channel 元数据系统，不需要加载完整插件就能获取 channel 信息：</p>
-<pre><code class="language-typescript">export type ChannelDock = {
-  id: ChannelId;
-  capabilities: ChannelCapabilities;
-  commands?: ChannelCommandAdapter;
-  outbound?: {
-    textChunkLimit?: number;     // 单条消息字符限制
-  };
-  streaming?: ChannelDockStreaming;
-  elevated?: ChannelElevatedAdapter;
-  config?: Pick&lt;ChannelConfigAdapter&lt;unknown&gt;,
-    &quot;resolveAllowFrom&quot; | &quot;formatAllowFrom&quot; | &quot;resolveDefaultTo&quot;&gt;;
-  groups?: ChannelGroupAdapter;
-  mentions?: ChannelMentionAdapter;
-  threading?: ChannelThreadingAdapter;
-  agentPrompt?: ChannelAgentPromptAdapter;
-};
-</code></pre>
-<h3 id="内建-dock-注册表">内建 Dock 注册表</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kr">type</span> <span class="nx">ChannelDock</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">id</span>: <span class="kt">ChannelId</span><span class="p">;</span>
+  <span class="nx">capabilities</span>: <span class="kt">ChannelCapabilities</span><span class="p">;</span>
+  <span class="nx">commands?</span>: <span class="kt">ChannelCommandAdapter</span><span class="p">;</span>
+  <span class="nx">outbound</span><span class="o">?:</span> <span class="p">{</span>
+    <span class="nx">textChunkLimit?</span>: <span class="kt">number</span><span class="p">;</span>     <span class="c1">// 单条消息字符限制</span>
+  <span class="p">};</span>
+  <span class="nx">streaming?</span>: <span class="kt">ChannelDockStreaming</span><span class="p">;</span>
+  <span class="nx">elevated?</span>: <span class="kt">ChannelElevatedAdapter</span><span class="p">;</span>
+  <span class="nx">config?</span>: <span class="kt">Pick</span><span class="o">&lt;</span><span class="nx">ChannelConfigAdapter</span><span class="o">&lt;</span><span class="nx">unknown</span><span class="o">&gt;</span><span class="p">,</span>
+    <span class="s2">&quot;resolveAllowFrom&quot;</span> <span class="o">|</span> <span class="s2">&quot;formatAllowFrom&quot;</span> <span class="o">|</span> <span class="s2">&quot;resolveDefaultTo&quot;</span><span class="o">&gt;</span><span class="p">;</span>
+  <span class="nx">groups?</span>: <span class="kt">ChannelGroupAdapter</span><span class="p">;</span>
+  <span class="nx">mentions?</span>: <span class="kt">ChannelMentionAdapter</span><span class="p">;</span>
+  <span class="nx">threading?</span>: <span class="kt">ChannelThreadingAdapter</span><span class="p">;</span>
+  <span class="nx">agentPrompt?</span>: <span class="kt">ChannelAgentPromptAdapter</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="dock">内建 Dock 注册表</h3>
 <table>
 <thead>
 <tr>
@@ -243,37 +254,39 @@
 </tbody>
 </table>
 <hr />
-<h2 id="4-whatsapp-接入详解">4. WhatsApp 接入详解</h2>
+<h2 id="4-whatsapp">4. WhatsApp 接入详解</h2>
 <p><strong>文件</strong>: <code>extensions/whatsapp/src/channel.ts</code> (442 行)</p>
-<h3 id="底层库">底层库</h3>
+<h3 id="_2">底层库</h3>
 <p>使用 <strong>Baileys</strong> —— WhatsApp Web 非官方逆向工程库，通过模拟 WhatsApp Web 客户端协议实现：
 - 多设备协议支持
 - QR 码扫描认证
 - 端到端加密消息
 - 媒体上传/下载
 - 群组管理</p>
-<h3 id="认证流程">认证流程</h3>
-<pre><code class="language-typescript">auth: {
-  login: async ({ cfg, accountId, runtime, verbose }) =&gt; {
-    const resolvedAccountId = accountId?.trim()
-      || resolveDefaultWhatsAppAccountId(cfg);
-    // 调用 Baileys 的 Web 登录流程
-    // 显示 QR 码供用户扫描
-    await getWhatsAppRuntime().channel.whatsapp.loginWeb(
-      Boolean(verbose),
-      undefined,     // 自定义选项
-      runtime,       // 插件运行时
-      resolvedAccountId,
-    );
-  },
-}
-</code></pre>
+<h3 id="_3">认证流程</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">auth</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">login</span>: <span class="kt">async</span> <span class="p">({</span> <span class="nx">cfg</span><span class="p">,</span> <span class="nx">accountId</span><span class="p">,</span> <span class="nx">runtime</span><span class="p">,</span> <span class="nx">verbose</span> <span class="p">})</span> <span class="p">=&gt;</span> <span class="p">{</span>
+    <span class="kd">const</span> <span class="nx">resolvedAccountId</span> <span class="o">=</span> <span class="nx">accountId</span><span class="o">?</span><span class="p">.</span><span class="nx">trim</span><span class="p">()</span>
+      <span class="o">||</span> <span class="nx">resolveDefaultWhatsAppAccountId</span><span class="p">(</span><span class="nx">cfg</span><span class="p">);</span>
+    <span class="c1">// 调用 Baileys 的 Web 登录流程</span>
+    <span class="c1">// 显示 QR 码供用户扫描</span>
+    <span class="k">await</span> <span class="nx">getWhatsAppRuntime</span><span class="p">().</span><span class="nx">channel</span><span class="p">.</span><span class="nx">whatsapp</span><span class="p">.</span><span class="nx">loginWeb</span><span class="p">(</span>
+      <span class="nb">Boolean</span><span class="p">(</span><span class="nx">verbose</span><span class="p">),</span>
+      <span class="kc">undefined</span><span class="p">,</span>     <span class="c1">// 自定义选项</span>
+      <span class="nx">runtime</span><span class="p">,</span>       <span class="c1">// 插件运行时</span>
+      <span class="nx">resolvedAccountId</span><span class="p">,</span>
+    <span class="p">);</span>
+  <span class="p">},</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p><strong>Session 持久化</strong>：</p>
-<pre><code class="language-typescript">// 每个账号独立的 authDir 存储 Baileys session
-isConfigured: async (account) =&gt;
-  await getWhatsAppRuntime().channel.whatsapp.webAuthExists(account.authDir),
-</code></pre>
-<h3 id="消息地址格式">消息地址格式</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// 每个账号独立的 authDir 存储 Baileys session</span>
+<span class="nx">isConfigured</span>: <span class="kt">async</span> <span class="p">(</span><span class="nx">account</span><span class="p">)</span> <span class="p">=&gt;</span>
+  <span class="k">await</span> <span class="nx">getWhatsAppRuntime</span><span class="p">().</span><span class="nx">channel</span><span class="p">.</span><span class="nx">whatsapp</span><span class="p">.</span><span class="nx">webAuthExists</span><span class="p">(</span><span class="nx">account</span><span class="p">.</span><span class="nx">authDir</span><span class="p">),</span>
+</code></pre></div>
+
+<h3 id="_4">消息地址格式</h3>
 <table>
 <thead>
 <tr>
@@ -300,72 +313,77 @@ isConfigured: async (account) =&gt;
 </tr>
 </tbody>
 </table>
-<h3 id="出站消息交付">出站消息交付</h3>
-<pre><code class="language-typescript">outbound: {
-  deliveryMode: &quot;gateway&quot;,  // 通过网关队列交付（非直接发送）
-  textChunkLimit: 4000,     // 4000 字符限制
-  // 支持文本、媒体、投票
-  sendText: async (params) =&gt; {
-    return sendMessageWhatsApp(to, text, { cfg, replyTo, accountId });
-  },
-  sendMedia: async (params) =&gt; {
-    return sendMessageWhatsApp(to, { mediaUrl, mediaLocalRoots, ... });
-  },
-  sendPoll: async (params) =&gt; {
-    return sendPollWhatsApp(to, { question, options, ... });
-  },
-}
-</code></pre>
+<h3 id="_5">出站消息交付</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">outbound</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">deliveryMode</span><span class="o">:</span> <span class="s2">&quot;gateway&quot;</span><span class="p">,</span>  <span class="c1">// 通过网关队列交付（非直接发送）</span>
+  <span class="nx">textChunkLimit</span>: <span class="kt">4000</span><span class="p">,</span>     <span class="c1">// 4000 字符限制</span>
+  <span class="c1">// 支持文本、媒体、投票</span>
+  <span class="nx">sendText</span>: <span class="kt">async</span> <span class="p">(</span><span class="nx">params</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="p">{</span>
+    <span class="k">return</span> <span class="nx">sendMessageWhatsApp</span><span class="p">(</span><span class="nx">to</span><span class="p">,</span> <span class="nx">text</span><span class="p">,</span> <span class="p">{</span> <span class="nx">cfg</span><span class="p">,</span> <span class="nx">replyTo</span><span class="p">,</span> <span class="nx">accountId</span> <span class="p">});</span>
+  <span class="p">},</span>
+  <span class="nx">sendMedia</span>: <span class="kt">async</span> <span class="p">(</span><span class="nx">params</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="p">{</span>
+    <span class="k">return</span> <span class="nx">sendMessageWhatsApp</span><span class="p">(</span><span class="nx">to</span><span class="p">,</span> <span class="p">{</span> <span class="nx">mediaUrl</span><span class="p">,</span> <span class="nx">mediaLocalRoots</span><span class="p">,</span> <span class="p">...</span> <span class="p">});</span>
+  <span class="p">},</span>
+  <span class="nx">sendPoll</span>: <span class="kt">async</span> <span class="p">(</span><span class="nx">params</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="p">{</span>
+    <span class="k">return</span> <span class="nx">sendPollWhatsApp</span><span class="p">(</span><span class="nx">to</span><span class="p">,</span> <span class="p">{</span> <span class="nx">question</span><span class="p">,</span> <span class="nx">options</span><span class="p">,</span> <span class="p">...</span> <span class="p">});</span>
+  <span class="p">},</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p><strong>Gateway 模式特点</strong>：
 - 消息进入 <code>delivery-queue</code> 队列
 - Write-ahead log 保证崩溃恢复
 - 异步交付 → 状态回调</p>
-<h3 id="群组策略">群组策略</h3>
-<pre><code class="language-typescript">groups: {
-  resolveRequireMention: resolveWhatsAppGroupRequireMention,
-    // 群组中是否需要 @提及才响应
-  resolveToolPolicy: resolveWhatsAppGroupToolPolicy,
-    // 群组中的工具执行策略
-  resolveGroupIntroHint: resolveWhatsAppGroupIntroHint,
-    // 群组入门提示
-}
-</code></pre>
-<h3 id="提及处理">提及处理</h3>
-<pre><code class="language-typescript">mentions: {
-  resolveStripPatterns: resolveWhatsAppMentionStripPatterns,
-  // WhatsApp 使用原始电话号码作为提及
-  // 需要剥离号码模式以提取纯文本消息
-}
-</code></pre>
-<h3 id="消息操作">消息操作</h3>
-<pre><code class="language-typescript">actions: {
-  react: async ({ cfg, accountId, messageId, reaction }) =&gt; {
-    // 发送 emoji 表情反应
-    // 发送相同 emoji 可取消反应
-  },
-}
-</code></pre>
-<h3 id="账号配置结构">账号配置结构</h3>
-<pre><code class="language-typescript">{
-  authDir: string,           // Baileys session 存储目录
-  enabled: boolean,          // 是否启用
-  name: string,              // 自定义账号标签
-  allowFrom: string[],       // 电话号码白名单 (E.164)
-  dmPolicy: &quot;pairing&quot; | &quot;allowlist&quot; | &quot;open&quot; | &quot;disabled&quot;,  // DM 安全策略
-  groups: {                  // 群组特定路由配置
-    [groupId]: {
-      enabled: boolean,
-      agent?: string,
-      requireMention?: boolean,
-      toolPolicy?: string,
-    }
-  }
-}
-</code></pre>
+<h3 id="_6">群组策略</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">groups</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">resolveRequireMention</span>: <span class="kt">resolveWhatsAppGroupRequireMention</span><span class="p">,</span>
+    <span class="c1">// 群组中是否需要 @提及才响应</span>
+  <span class="nx">resolveToolPolicy</span>: <span class="kt">resolveWhatsAppGroupToolPolicy</span><span class="p">,</span>
+    <span class="c1">// 群组中的工具执行策略</span>
+  <span class="nx">resolveGroupIntroHint</span>: <span class="kt">resolveWhatsAppGroupIntroHint</span><span class="p">,</span>
+    <span class="c1">// 群组入门提示</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="_7">提及处理</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">mentions</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">resolveStripPatterns</span>: <span class="kt">resolveWhatsAppMentionStripPatterns</span><span class="p">,</span>
+  <span class="c1">// WhatsApp 使用原始电话号码作为提及</span>
+  <span class="c1">// 需要剥离号码模式以提取纯文本消息</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="_8">消息操作</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">actions</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">react</span>: <span class="kt">async</span> <span class="p">({</span> <span class="nx">cfg</span><span class="p">,</span> <span class="nx">accountId</span><span class="p">,</span> <span class="nx">messageId</span><span class="p">,</span> <span class="nx">reaction</span> <span class="p">})</span> <span class="p">=&gt;</span> <span class="p">{</span>
+    <span class="c1">// 发送 emoji 表情反应</span>
+    <span class="c1">// 发送相同 emoji 可取消反应</span>
+  <span class="p">},</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="_9">账号配置结构</h3>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span>
+  <span class="nx">authDir</span>: <span class="kt">string</span><span class="p">,</span>           <span class="c1">// Baileys session 存储目录</span>
+  <span class="nx">enabled</span>: <span class="kt">boolean</span><span class="p">,</span>          <span class="c1">// 是否启用</span>
+  <span class="nx">name</span>: <span class="kt">string</span><span class="p">,</span>              <span class="c1">// 自定义账号标签</span>
+  <span class="nx">allowFrom</span>: <span class="kt">string</span><span class="p">[],</span>       <span class="c1">// 电话号码白名单 (E.164)</span>
+  <span class="nx">dmPolicy</span><span class="o">:</span> <span class="s2">&quot;pairing&quot;</span> <span class="o">|</span> <span class="s2">&quot;allowlist&quot;</span> <span class="o">|</span> <span class="s2">&quot;open&quot;</span> <span class="o">|</span> <span class="s2">&quot;disabled&quot;</span><span class="p">,</span>  <span class="c1">// DM 安全策略</span>
+  <span class="nx">groups</span><span class="o">:</span> <span class="p">{</span>                  <span class="c1">// 群组特定路由配置</span>
+    <span class="p">[</span><span class="nx">groupId</span><span class="p">]</span><span class="o">:</span> <span class="p">{</span>
+      <span class="nx">enabled</span>: <span class="kt">boolean</span><span class="p">,</span>
+      <span class="nx">agent?</span>: <span class="kt">string</span><span class="p">,</span>
+      <span class="nx">requireMention?</span>: <span class="kt">boolean</span><span class="p">,</span>
+      <span class="nx">toolPolicy?</span>: <span class="kt">string</span><span class="p">,</span>
+    <span class="p">}</span>
+  <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <hr />
-<h2 id="5-discord-接入详解">5. Discord 接入详解</h2>
+<h2 id="5-discord">5. Discord 接入详解</h2>
 <p><strong>文件</strong>: <code>extensions/discord/src/channel.ts</code> (412 行)</p>
-<h3 id="底层库-1">底层库</h3>
+<h3 id="_10">底层库</h3>
 <p>使用 <strong><code>@buape/carbon</code></strong> (WebSocket gateway + REST) + <strong><code>discord-api-types/v10</code></strong> (类型定义)：
 - Bot Token 认证
 - Gateway WebSocket (实时事件)
@@ -374,84 +392,91 @@ isConfigured: async (account) =&gt;
 <blockquote>
 <p>注意：OpenClaw 使用 <code>@buape/carbon</code> 而非 <code>discord.js</code> 作为 Discord 集成库。</p>
 </blockquote>
-<h3 id="认证方式">认证方式</h3>
-<pre><code class="language-typescript">// Bot Token 认证（Discord Developer Portal 创建）
-auth: {
-  login: async ({ cfg, accountId, runtime }) =&gt; {
-    // Bot token 存储在配置中
-    // 启动时自动连接 Discord Gateway
-  }
-}
-</code></pre>
+<h3 id="_11">认证方式</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// Bot Token 认证（Discord Developer Portal 创建）</span>
+<span class="nx">auth</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">login</span>: <span class="kt">async</span> <span class="p">({</span> <span class="nx">cfg</span><span class="p">,</span> <span class="nx">accountId</span><span class="p">,</span> <span class="nx">runtime</span> <span class="p">})</span> <span class="p">=&gt;</span> <span class="p">{</span>
+    <span class="c1">// Bot token 存储在配置中</span>
+    <span class="c1">// 启动时自动连接 Discord Gateway</span>
+  <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <blockquote>
 <p>注意：Discord 使用单一 Bot Token 进行认证，不存在双 Token 模式。双 Token 模式（<code>getTokenForOperation</code>）仅存在于 Slack 接入中。</p>
 </blockquote>
-<h3 id="出站消息交付-1">出站消息交付</h3>
-<pre><code class="language-typescript">outbound: {
-  deliveryMode: &quot;direct&quot;,   // 直接发送（非队列）
-  textChunkLimit: 2000,     // Discord embed 最大 2000 字符
-  pollMaxOptions: 10,       // 投票最多 10 个选项
-  sendText: async ({ cfg, to, text, accountId, deps, replyToId, silent }) =&gt; {
-    return send(to, text, {
-      verbose: false, cfg, replyTo, accountId, silent
-    });
-  },
-}
-</code></pre>
-<h3 id="线程支持">线程支持</h3>
-<pre><code class="language-typescript">threading: {
-  // Discord 线程是一等公民
-  // ReplyToId 映射到 thread ID
-  resolveReplyToMode: (context) =&gt; {
-    // 决定回复是嵌套还是独立
-  },
-  // Thread 绑定：将 Discord thread 绑定到 agent session
-}
-</code></pre>
-<h3 id="原生命令">原生命令</h3>
-<pre><code class="language-typescript">commands: {
-  // Discord Slash Commands 集成
-  // 注册 /ask, /config, /status 等命令
-  // 通过 Discord Interaction API 处理
-}
-</code></pre>
-<h3 id="目录支持">目录支持</h3>
-<pre><code class="language-typescript">directory: {
-  // 通过 Discord API 实时查询用户和群组列表
-  listPeers: async (params) =&gt; { /* Discord API call */ },
-  listGroups: async (params) =&gt; { /* Discord API call */ },
-}
-</code></pre>
-<h3 id="消息操作-1">消息操作</h3>
+<h3 id="_12">出站消息交付</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">outbound</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">deliveryMode</span><span class="o">:</span> <span class="s2">&quot;direct&quot;</span><span class="p">,</span>   <span class="c1">// 直接发送（非队列）</span>
+  <span class="nx">textChunkLimit</span>: <span class="kt">2000</span><span class="p">,</span>     <span class="c1">// Discord embed 最大 2000 字符</span>
+  <span class="nx">pollMaxOptions</span>: <span class="kt">10</span><span class="p">,</span>       <span class="c1">// 投票最多 10 个选项</span>
+  <span class="nx">sendText</span>: <span class="kt">async</span> <span class="p">({</span> <span class="nx">cfg</span><span class="p">,</span> <span class="nx">to</span><span class="p">,</span> <span class="nx">text</span><span class="p">,</span> <span class="nx">accountId</span><span class="p">,</span> <span class="nx">deps</span><span class="p">,</span> <span class="nx">replyToId</span><span class="p">,</span> <span class="nx">silent</span> <span class="p">})</span> <span class="p">=&gt;</span> <span class="p">{</span>
+    <span class="k">return</span> <span class="nx">send</span><span class="p">(</span><span class="nx">to</span><span class="p">,</span> <span class="nx">text</span><span class="p">,</span> <span class="p">{</span>
+      <span class="nx">verbose</span>: <span class="kt">false</span><span class="p">,</span> <span class="nx">cfg</span><span class="p">,</span> <span class="nx">replyTo</span><span class="p">,</span> <span class="nx">accountId</span><span class="p">,</span> <span class="nx">silent</span>
+    <span class="p">});</span>
+  <span class="p">},</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="_13">线程支持</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">threading</span><span class="o">:</span> <span class="p">{</span>
+  <span class="c1">// Discord 线程是一等公民</span>
+  <span class="c1">// ReplyToId 映射到 thread ID</span>
+  <span class="nx">resolveReplyToMode</span><span class="o">:</span> <span class="p">(</span><span class="nx">context</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="p">{</span>
+    <span class="c1">// 决定回复是嵌套还是独立</span>
+  <span class="p">},</span>
+  <span class="c1">// Thread 绑定：将 Discord thread 绑定到 agent session</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="_14">原生命令</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">commands</span><span class="o">:</span> <span class="p">{</span>
+  <span class="c1">// Discord Slash Commands 集成</span>
+  <span class="c1">// 注册 /ask, /config, /status 等命令</span>
+  <span class="c1">// 通过 Discord Interaction API 处理</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="_15">目录支持</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">directory</span><span class="o">:</span> <span class="p">{</span>
+  <span class="c1">// 通过 Discord API 实时查询用户和群组列表</span>
+  <span class="nx">listPeers</span>: <span class="kt">async</span> <span class="p">(</span><span class="nx">params</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="p">{</span> <span class="cm">/* Discord API call */</span> <span class="p">},</span>
+  <span class="nx">listGroups</span>: <span class="kt">async</span> <span class="p">(</span><span class="nx">params</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="p">{</span> <span class="cm">/* Discord API call */</span> <span class="p">},</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="_16">消息操作</h3>
 <ul>
 <li><strong>Reactions</strong>：emoji 表情反应</li>
 <li><strong>Polls</strong>：基于反应的投票</li>
 <li><strong>Components</strong>：按钮、选择菜单、模态框（通过 Discord Components API）</li>
 </ul>
 <hr />
-<h2 id="6-telegram-接入详解">6. Telegram 接入详解</h2>
+<h2 id="6-telegram">6. Telegram 接入详解</h2>
 <p><strong>文件</strong>: <code>extensions/telegram/src/channel.ts</code> (573 行)</p>
-<h3 id="底层库-2">底层库</h3>
+<h3 id="_17">底层库</h3>
 <p>使用 <strong>grammy</strong> —— Telegram Bot API 的现代 TypeScript 框架：
 - 长轮询或 Webhook 模式
 - 丰富的消息类型
 - 内联按钮
 - 论坛话题</p>
-<h3 id="认证方式-1">认证方式</h3>
-<pre><code class="language-typescript">// Bot Token（从 BotFather 获取）
-auth: {
-  login: async ({ cfg, accountId, runtime, verbose }) =&gt; {
-    // Token 存储在配置或 tokenFile 中
-  }
-}
-</code></pre>
+<h3 id="_18">认证方式</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// Bot Token（从 BotFather 获取）</span>
+<span class="nx">auth</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">login</span>: <span class="kt">async</span> <span class="p">({</span> <span class="nx">cfg</span><span class="p">,</span> <span class="nx">accountId</span><span class="p">,</span> <span class="nx">runtime</span><span class="p">,</span> <span class="nx">verbose</span> <span class="p">})</span> <span class="p">=&gt;</span> <span class="p">{</span>
+    <span class="c1">// Token 存储在配置或 tokenFile 中</span>
+  <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p><strong>Token 重复检测</strong>：</p>
-<pre><code class="language-typescript">// 检测同一 token 是否被多个账号使用
-findTelegramTokenOwnerAccountId(cfg, token) {
-  // 遍历所有账号，查找 token 匹配
-}
-</code></pre>
-<h3 id="消息地址格式-1">消息地址格式</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// 检测同一 token 是否被多个账号使用</span>
+<span class="nx">findTelegramTokenOwnerAccountId</span><span class="p">(</span><span class="nx">cfg</span><span class="p">,</span> <span class="nx">token</span><span class="p">)</span> <span class="p">{</span>
+  <span class="c1">// 遍历所有账号，查找 token 匹配</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="_19">消息地址格式</h3>
 <table>
 <thead>
 <tr>
@@ -478,25 +503,27 @@ findTelegramTokenOwnerAccountId(cfg, token) {
 </tr>
 </tbody>
 </table>
-<h3 id="线程话题支持">线程/话题支持</h3>
-<pre><code class="language-typescript">threading: {
-  // Telegram 论坛群组的话题 (Topics)
-  // MessageThreadId = 话题 ID
-  resolveReplyToMode: (context) =&gt; {
-    // 话题内回复保持在话题内
-  }
-}
-</code></pre>
-<h3 id="内联按钮">内联按钮</h3>
-<pre><code class="language-typescript">type TelegramInlineButtons = ReadonlyArray&lt;
-  ReadonlyArray&lt;{
-    text: string;
-    callback_data: string;
-    style?: &quot;danger&quot; | &quot;success&quot; | &quot;primary&quot;;
-  }&gt;
-&gt;;
-</code></pre>
-<h3 id="特殊功能">特殊功能</h3>
+<h3 id="_20">线程/话题支持</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">threading</span><span class="o">:</span> <span class="p">{</span>
+  <span class="c1">// Telegram 论坛群组的话题 (Topics)</span>
+  <span class="c1">// MessageThreadId = 话题 ID</span>
+  <span class="nx">resolveReplyToMode</span><span class="o">:</span> <span class="p">(</span><span class="nx">context</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="p">{</span>
+    <span class="c1">// 话题内回复保持在话题内</span>
+  <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="_21">内联按钮</h3>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">TelegramInlineButtons</span> <span class="o">=</span> <span class="nx">ReadonlyArray</span><span class="o">&lt;</span>
+  <span class="nx">ReadonlyArray</span><span class="o">&lt;</span><span class="p">{</span>
+    <span class="nx">text</span>: <span class="kt">string</span><span class="p">;</span>
+    <span class="nx">callback_data</span>: <span class="kt">string</span><span class="p">;</span>
+    <span class="nx">style</span><span class="o">?:</span> <span class="s2">&quot;danger&quot;</span> <span class="o">|</span> <span class="s2">&quot;success&quot;</span> <span class="o">|</span> <span class="s2">&quot;primary&quot;</span><span class="p">;</span>
+  <span class="p">}</span><span class="o">&gt;</span>
+<span class="o">&gt;</span><span class="p">;</span>
+</code></pre></div>
+
+<h3 id="_22">特殊功能</h3>
 <ul>
 <li><code>blockStreaming: true</code>：Agent 响应合并后再发送（而非流式发送部分消息）</li>
 <li>图片、文档、动画、GIF 支持</li>
@@ -504,30 +531,31 @@ findTelegramTokenOwnerAccountId(cfg, token) {
 <li>论坛话题（Forum Topics）</li>
 </ul>
 <hr />
-<h2 id="7-slack-接入详解">7. Slack 接入详解</h2>
+<h2 id="7-slack">7. Slack 接入详解</h2>
 <p><strong>文件</strong>: <code>extensions/slack/src/channel.ts</code> (421 行)</p>
-<h3 id="底层库-3">底层库</h3>
+<h3 id="_23">底层库</h3>
 <p>使用 <strong>@slack/bolt</strong> —— Slack 官方 SDK：
 - Socket Mode (RTM + AppSocket)
 - HTTP Webhook 模式
 - Events API
 - Web API</p>
-<h3 id="双-token-认证">双 Token 认证</h3>
-<pre><code class="language-typescript">function getTokenForOperation(
-  account: ResolvedSlackAccount,
-  operation: &quot;read&quot; | &quot;write&quot;
-): string | undefined {
-  const userToken = account.config.userToken?.trim() || undefined;
-  const botToken = account.botToken?.trim();
-  const allowUserWrites = account.config.userTokenReadOnly === false;
+<h3 id="token">双 Token 认证</h3>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">getTokenForOperation</span><span class="p">(</span>
+  <span class="nx">account</span>: <span class="kt">ResolvedSlackAccount</span><span class="p">,</span>
+  <span class="nx">operation</span><span class="o">:</span> <span class="s2">&quot;read&quot;</span> <span class="o">|</span> <span class="s2">&quot;write&quot;</span>
+<span class="p">)</span><span class="o">:</span> <span class="kt">string</span> <span class="o">|</span> <span class="kc">undefined</span> <span class="p">{</span>
+  <span class="kd">const</span> <span class="nx">userToken</span> <span class="o">=</span> <span class="nx">account</span><span class="p">.</span><span class="nx">config</span><span class="p">.</span><span class="nx">userToken</span><span class="o">?</span><span class="p">.</span><span class="nx">trim</span><span class="p">()</span> <span class="o">||</span> <span class="kc">undefined</span><span class="p">;</span>
+  <span class="kd">const</span> <span class="nx">botToken</span> <span class="o">=</span> <span class="nx">account</span><span class="p">.</span><span class="nx">botToken</span><span class="o">?</span><span class="p">.</span><span class="nx">trim</span><span class="p">();</span>
+  <span class="kd">const</span> <span class="nx">allowUserWrites</span> <span class="o">=</span> <span class="nx">account</span><span class="p">.</span><span class="nx">config</span><span class="p">.</span><span class="nx">userTokenReadOnly</span> <span class="o">===</span> <span class="kc">false</span><span class="p">;</span>
 
-  // 读操作：优先 user token（更广泛的权限）
-  // 写操作：默认 bot token（除非显式允许 user writes，此时 bot token 优先）
-  if (operation === &quot;read&quot;) return userToken || botToken;
-  if (allowUserWrites) return botToken ?? userToken;
-  return botToken;
-}
-</code></pre>
+  <span class="c1">// 读操作：优先 user token（更广泛的权限）</span>
+  <span class="c1">// 写操作：默认 bot token（除非显式允许 user writes，此时 bot token 优先）</span>
+  <span class="k">if</span> <span class="p">(</span><span class="nx">operation</span> <span class="o">===</span> <span class="s2">&quot;read&quot;</span><span class="p">)</span> <span class="k">return</span> <span class="nx">userToken</span> <span class="o">||</span> <span class="nx">botToken</span><span class="p">;</span>
+  <span class="k">if</span> <span class="p">(</span><span class="nx">allowUserWrites</span><span class="p">)</span> <span class="k">return</span> <span class="nx">botToken</span> <span class="o">??</span> <span class="nx">userToken</span><span class="p">;</span>
+  <span class="k">return</span> <span class="nx">botToken</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <p><strong>四种凭证</strong>：
 | 凭证 | 说明 |
 |------|------|
@@ -535,7 +563,7 @@ findTelegramTokenOwnerAccountId(cfg, token) {
 | User Token | <code>xoxp-</code> 前缀，用户级权限 |
 | App Token | <code>xapp-</code> 前缀，Socket Mode 必需 |
 | Signing Secret | Webhook 签名验证（HTTP 模式专用） |</p>
-<h3 id="运行模式">运行模式</h3>
+<h3 id="_24">运行模式</h3>
 <table>
 <thead>
 <tr>
@@ -554,40 +582,42 @@ findTelegramTokenOwnerAccountId(cfg, token) {
 </tr>
 </tbody>
 </table>
-<h3 id="线程支持-1">线程支持</h3>
-<pre><code class="language-typescript">threading: {
-  // Slack 线程通过 thread_ts（线程根消息的时间戳）标识
-  buildSlackThreadingToolContext: (context) =&gt; {
-    // 映射上下文到线程信息
-  }
-}
-</code></pre>
-<h3 id="特殊功能-1">特殊功能</h3>
+<h3 id="_25">线程支持</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">threading</span><span class="o">:</span> <span class="p">{</span>
+  <span class="c1">// Slack 线程通过 thread_ts（线程根消息的时间戳）标识</span>
+  <span class="nx">buildSlackThreadingToolContext</span><span class="o">:</span> <span class="p">(</span><span class="nx">context</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="p">{</span>
+    <span class="c1">// 映射上下文到线程信息</span>
+  <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="_26">特殊功能</h3>
 <ul>
 <li>Slack Blocks（结构化消息布局）</li>
 <li>按钮、选择菜单、模态框</li>
 <li>线程内回复（per-message TS）</li>
 <li>归档 channel 检测</li>
-<li><code>blockStreaming: true</code></li>
+<li>流式合并（streaming coalesce）：<code>blockStreamingCoalesceDefaults</code></li>
 </ul>
 <hr />
-<h2 id="8-signal-接入详解">8. Signal 接入详解</h2>
+<h2 id="8-signal">8. Signal 接入详解</h2>
 <p><strong>文件</strong>: <code>extensions/signal/src/channel.ts</code> (246 行)</p>
-<h3 id="底层实现">底层实现</h3>
+<h3 id="_27">底层实现</h3>
 <p>使用 <strong>signal-cli HTTP API</strong>（不是直接的 libsignal）：
 - signal-cli 作为守护进程运行
 - 通过 HTTP REST API 通信
 - E.164 电话号码寻址</p>
-<h3 id="配置">配置</h3>
-<pre><code class="language-typescript">function buildSignalSetupPatch(input: {
-  signalNumber?: string;    // 手机号码（如 +8613800138000）
-  cliPath?: string;         // signal-cli 二进制路径
-  httpUrl?: string;         // 完整 URL (如 http://localhost:8080)
-  httpHost?: string;        // 主机 (如 localhost)
-  httpPort?: string;        // 端口
-}) { ... }
-</code></pre>
-<h3 id="消息地址格式-2">消息地址格式</h3>
+<h3 id="_28">配置</h3>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">buildSignalSetupPatch</span><span class="p">(</span><span class="nx">input</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">signalNumber?</span>: <span class="kt">string</span><span class="p">;</span>    <span class="c1">// 手机号码（如 +8613800138000）</span>
+  <span class="nx">cliPath?</span>: <span class="kt">string</span><span class="p">;</span>         <span class="c1">// signal-cli 二进制路径</span>
+  <span class="nx">httpUrl?</span>: <span class="kt">string</span><span class="p">;</span>         <span class="c1">// 完整 URL (如 http://localhost:8080)</span>
+  <span class="nx">httpHost?</span>: <span class="kt">string</span><span class="p">;</span>        <span class="c1">// 主机 (如 localhost)</span>
+  <span class="nx">httpPort?</span>: <span class="kt">string</span><span class="p">;</span>        <span class="c1">// 端口</span>
+<span class="p">})</span> <span class="p">{</span> <span class="p">...</span> <span class="p">}</span>
+</code></pre></div>
+
+<h3 id="_29">消息地址格式</h3>
 <table>
 <thead>
 <tr>
@@ -609,12 +639,12 @@ findTelegramTokenOwnerAccountId(cfg, token) {
 </tr>
 </tbody>
 </table>
-<h3 id="多账号支持">多账号支持</h3>
+<h3 id="_30">多账号支持</h3>
 <ul>
 <li>每个账号 = 不同的手机号码 + 独立 session</li>
 <li>多个账号可共享同一 signal-cli 实例</li>
 </ul>
-<h3 id="特殊功能-2">特殊功能</h3>
+<h3 id="_31">特殊功能</h3>
 <ul>
 <li>表情反应（emoji emotes）</li>
 <li>群组支持（群组 UUID）</li>
@@ -624,33 +654,35 @@ findTelegramTokenOwnerAccountId(cfg, token) {
 <li>无群组已读回执</li>
 </ul>
 <hr />
-<h2 id="9-imessage-接入详解">9. iMessage 接入详解</h2>
+<h2 id="9-imessage">9. iMessage 接入详解</h2>
 <p><strong>文件</strong>: <code>extensions/imessage/src/channel.ts</code> (250 行), <code>extensions/bluebubbles/</code></p>
-<h3 id="两种接入模式">两种接入模式</h3>
-<h4 id="模式-1-直接-imessage-macos-本地">模式 1: 直接 iMessage (macOS 本地)</h4>
-<pre><code class="language-typescript">function buildIMessageSetupPatch(input: {
-  cliPath?: string;        // imsg 二进制路径
-  dbPath?: string;         // Messages.app 数据库路径
-  service?: string;  // 服务类型
-  region?: string;         // MMS 区域
-}) { ... }
-</code></pre>
+<h3 id="_32">两种接入模式</h3>
+<h4 id="1-imessage-macos">模式 1: 直接 iMessage (macOS 本地)</h4>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">buildIMessageSetupPatch</span><span class="p">(</span><span class="nx">input</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">cliPath?</span>: <span class="kt">string</span><span class="p">;</span>        <span class="c1">// imsg 二进制路径</span>
+  <span class="nx">dbPath?</span>: <span class="kt">string</span><span class="p">;</span>         <span class="c1">// Messages.app 数据库路径</span>
+  <span class="nx">service?</span>: <span class="kt">string</span><span class="p">;</span>  <span class="c1">// 服务类型</span>
+  <span class="nx">region?</span>: <span class="kt">string</span><span class="p">;</span>         <span class="c1">// MMS 区域</span>
+<span class="p">})</span> <span class="p">{</span> <span class="p">...</span> <span class="p">}</span>
+</code></pre></div>
+
 <ul>
 <li>通过 CLI 桥接工具（<code>imsg</code> 命令）</li>
 <li>直接读取 macOS Messages.app 数据库</li>
 <li>支持 SMS 回退</li>
 <li>需要在 macOS 上运行</li>
 </ul>
-<h4 id="模式-2-bluebubbles-远程-macos">模式 2: BlueBubbles (远程 macOS)</h4>
-<pre><code>HTTP API → BlueBubbles 服务器（运行在 macOS 上）→ iMessage
-</code></pre>
+<h4 id="2-bluebubbles-macos">模式 2: BlueBubbles (远程 macOS)</h4>
+<div class="codehilite"><pre><span></span><code>HTTP API → BlueBubbles 服务器（运行在 macOS 上）→ iMessage
+</code></pre></div>
+
 <ul>
 <li>BlueBubbles 服务器在 macOS 上运行</li>
 <li>通过 HTTP API 和 Webhook 通信</li>
 <li>Token 认证</li>
 <li>支持远程访问</li>
 </ul>
-<h3 id="消息地址">消息地址</h3>
+<h3 id="_33">消息地址</h3>
 <table>
 <thead>
 <tr>
@@ -670,57 +702,66 @@ findTelegramTokenOwnerAccountId(cfg, token) {
 </tbody>
 </table>
 <hr />
-<h2 id="10-其他-channel-接入">10. 其他 Channel 接入</h2>
+<h2 id="10-channel">10. 其他 Channel 接入</h2>
 <h3 id="line-extensionsline">LINE (<code>extensions/line/</code>)</h3>
-<pre><code>底层库: @line/bot-sdk
-认证: Channel Access Token + Channel Secret
-消息限制: 5000 字符
-特点: 贴图支持、Flex Messages、Rich Menus
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="nl">底层库</span><span class="p">:</span><span class="w"> </span><span class="nv">@line</span><span class="o">/</span><span class="n">bot</span><span class="o">-</span><span class="n">sdk</span><span class="w"></span>
+<span class="nl">认证</span><span class="p">:</span><span class="w"> </span><span class="n">Channel</span><span class="w"> </span><span class="n">Access</span><span class="w"> </span><span class="n">Token</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">Channel</span><span class="w"> </span><span class="n">Secret</span><span class="w"></span>
+<span class="nl">消息限制</span><span class="p">:</span><span class="w"> </span><span class="mi">5000</span><span class="w"> </span><span class="n">字符</span><span class="w"></span>
+<span class="nl">特点</span><span class="p">:</span><span class="w"> </span><span class="n">贴图支持</span><span class="err">、</span><span class="n">Flex</span><span class="w"> </span><span class="n">Messages</span><span class="err">、</span><span class="n">Rich</span><span class="w"> </span><span class="n">Menus</span><span class="w"></span>
+</code></pre></div>
+
 <h3 id="irc-extensionsirc">IRC (<code>extensions/irc/</code>)</h3>
-<pre><code>底层库: IRC 协议直接实现
-认证: NICK/USER 注册 + NickServ
-消息限制: 350 字符
-特点: 大小写不敏感 channel 名、手动字符集
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="err">底层库</span><span class="o">:</span><span class="w"> </span><span class="n">IRC</span><span class="w"> </span><span class="err">协议直接实现</span><span class="w"></span>
+<span class="err">认证</span><span class="o">:</span><span class="w"> </span><span class="n">NICK</span><span class="o">/</span><span class="n">USER</span><span class="w"> </span><span class="err">注册</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">NickServ</span><span class="w"></span>
+<span class="err">消息限制</span><span class="o">:</span><span class="w"> </span><span class="mi">350</span><span class="w"> </span><span class="err">字符</span><span class="w"></span>
+<span class="err">特点</span><span class="o">:</span><span class="w"> </span><span class="err">大小写不敏感</span><span class="w"> </span><span class="n">channel</span><span class="w"> </span><span class="err">名、手动字符集</span><span class="w"></span>
+</code></pre></div>
+
 <h3 id="matrix-extensionsmatrix">Matrix (<code>extensions/matrix/</code>)</h3>
-<pre><code>底层库: @vector-im/matrix-bot-sdk (Element fork)
-认证: Access Token 或用户名/密码
-特点: 联邦协议、端到端加密、Room 概念
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="nl">底层库</span><span class="p">:</span><span class="w"> </span><span class="nv">@vector</span><span class="o">-</span><span class="n">im</span><span class="o">/</span><span class="n">matrix</span><span class="o">-</span><span class="n">bot</span><span class="o">-</span><span class="n">sdk</span><span class="w"> </span><span class="p">(</span><span class="k">Element</span><span class="w"> </span><span class="n">fork</span><span class="p">)</span><span class="w"></span>
+<span class="nl">认证</span><span class="p">:</span><span class="w"> </span><span class="n">Access</span><span class="w"> </span><span class="n">Token</span><span class="w"> </span><span class="n">或用户名</span><span class="o">/</span><span class="n">密码</span><span class="w"></span>
+<span class="nl">特点</span><span class="p">:</span><span class="w"> </span><span class="n">联邦协议</span><span class="err">、</span><span class="n">端到端加密</span><span class="err">、</span><span class="n">Room</span><span class="w"> </span><span class="n">概念</span><span class="w"></span>
+</code></pre></div>
+
 <h3 id="microsoft-teams-extensionsmsteams">Microsoft Teams (<code>extensions/msteams/</code>)</h3>
-<pre><code>底层库: @microsoft/agents-hosting
-认证: Azure AD 应用注册
-特点: Adaptive Cards、Teams 特定消息类型
-</code></pre>
-<h3 id="飞书lark-extensionsfeishu">飞书/Lark (<code>extensions/feishu/</code>)</h3>
-<pre><code>底层库: 飞书开放平台 API
-认证: App ID + App Secret
-特点: 企业内部应用、互动卡片
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="nl">底层库</span><span class="p">:</span><span class="w"> </span><span class="nv">@microsoft</span><span class="o">/</span><span class="n">agents</span><span class="o">-</span><span class="n">hosting</span><span class="w"></span>
+<span class="nl">认证</span><span class="p">:</span><span class="w"> </span><span class="n">Azure</span><span class="w"> </span><span class="n">AD</span><span class="w"> </span><span class="n">应用注册</span><span class="w"></span>
+<span class="nl">特点</span><span class="p">:</span><span class="w"> </span><span class="n">Adaptive</span><span class="w"> </span><span class="n">Cards</span><span class="err">、</span><span class="n">Teams</span><span class="w"> </span><span class="n">特定消息类型</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="lark-extensionsfeishu">飞书/Lark (<code>extensions/feishu/</code>)</h3>
+<div class="codehilite"><pre><span></span><code><span class="err">底层库</span><span class="o">:</span><span class="w"> </span><span class="err">飞书开放平台</span><span class="w"> </span><span class="n">API</span><span class="w"></span>
+<span class="err">认证</span><span class="o">:</span><span class="w"> </span><span class="n">App</span><span class="w"> </span><span class="n">ID</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">App</span><span class="w"> </span><span class="n">Secret</span><span class="w"></span>
+<span class="err">特点</span><span class="o">:</span><span class="w"> </span><span class="err">企业内部应用、互动卡片</span><span class="w"></span>
+</code></pre></div>
+
 <h3 id="mattermost-extensionsmattermost">Mattermost (<code>extensions/mattermost/</code>)</h3>
-<pre><code>底层库: Mattermost API
-认证: Personal Access Token
-特点: 自托管、Slack 兼容
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="err">底层库</span><span class="o">:</span><span class="w"> </span><span class="n">Mattermost</span><span class="w"> </span><span class="n">API</span><span class="w"></span>
+<span class="err">认证</span><span class="o">:</span><span class="w"> </span><span class="n">Personal</span><span class="w"> </span><span class="n">Access</span><span class="w"> </span><span class="n">Token</span><span class="w"></span>
+<span class="err">特点</span><span class="o">:</span><span class="w"> </span><span class="err">自托管、</span><span class="n">Slack</span><span class="w"> </span><span class="err">兼容</span><span class="w"></span>
+</code></pre></div>
+
 <h3 id="zalo-extensionszalo-extensionszalouser">Zalo (<code>extensions/zalo/</code>, <code>extensions/zalouser/</code>)</h3>
-<pre><code>底层库: Zalo API (越南消息平台)
-认证: App ID + App Secret
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="err">底层库</span><span class="o">:</span><span class="w"> </span><span class="n">Zalo</span><span class="w"> </span><span class="n">API</span><span class="w"> </span><span class="o">(</span><span class="err">越南消息平台</span><span class="o">)</span><span class="w"></span>
+<span class="err">认证</span><span class="o">:</span><span class="w"> </span><span class="n">App</span><span class="w"> </span><span class="n">ID</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">App</span><span class="w"> </span><span class="n">Secret</span><span class="w"></span>
+</code></pre></div>
+
 <h3 id="twitch-extensionstwitch">Twitch (<code>extensions/twitch/</code>)</h3>
-<pre><code>底层库: Twitch API
-认证: OAuth Token
-特点: 直播聊天集成
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="err">底层库</span><span class="o">:</span><span class="w"> </span><span class="n">Twitch</span><span class="w"> </span><span class="n">API</span><span class="w"></span>
+<span class="err">认证</span><span class="o">:</span><span class="w"> </span><span class="n">OAuth</span><span class="w"> </span><span class="n">Token</span><span class="w"></span>
+<span class="err">特点</span><span class="o">:</span><span class="w"> </span><span class="err">直播聊天集成</span><span class="w"></span>
+</code></pre></div>
+
 <h3 id="nostr-extensionsnostr">Nostr (<code>extensions/nostr/</code>)</h3>
-<pre><code>底层库: Nostr 协议
-认证: 密钥对
-特点: 去中心化协议
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="err">底层库</span><span class="o">:</span><span class="w"> </span><span class="n">Nostr</span><span class="w"> </span><span class="err">协议</span><span class="w"></span>
+<span class="err">认证</span><span class="o">:</span><span class="w"> </span><span class="err">密钥对</span><span class="w"></span>
+<span class="err">特点</span><span class="o">:</span><span class="w"> </span><span class="err">去中心化协议</span><span class="w"></span>
+</code></pre></div>
+
 <hr />
-<h2 id="11-channel-生命周期管理">11. Channel 生命周期管理</h2>
-<h3 id="启动流程">启动流程</h3>
-<pre><code>Gateway 启动
+<h2 id="11-channel">11. Channel 生命周期管理</h2>
+<h3 id="_34">启动流程</h3>
+<div class="codehilite"><pre><span></span><code>Gateway 启动
   → 加载配置
   → 遍历已配置的 channels
   → 对每个 channel 的每个 account:
@@ -729,18 +770,20 @@ findTelegramTokenOwnerAccountId(cfg, token) {
     → 启动 channel 特定的 monitor（如 WhatsApp 的 monitorWebChannel）
     → 注册消息事件监听器
     → 标记状态为 &quot;running&quot;
-</code></pre>
-<h3 id="健康监控-srcgatewaychannel-health-monitorts-203-行">健康监控 (<code>src/gateway/channel-health-monitor.ts</code>, 203 行)</h3>
-<pre><code class="language-typescript">evaluateChannelHealth(status, policy) {
-  const stale = now - lastEventTime &gt; staleEventThresholdMs;  // 30 分钟
-  const recentlyConnected = now - connectedAt &lt; channelConnectGraceMs;  // 2 分钟
+</code></pre></div>
 
-  return {
-    healthy: !stale &amp;&amp; (recentlyConnected || status.running),
-    restartReason: stale ? &quot;stale_socket&quot; : undefined
-  };
-}
-</code></pre>
+<h3 id="srcgatewaychannel-health-monitorts-203">健康监控 (<code>src/gateway/channel-health-monitor.ts</code>, 203 行)</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">evaluateChannelHealth</span><span class="p">(</span><span class="nx">status</span><span class="p">,</span> <span class="nx">policy</span><span class="p">)</span> <span class="p">{</span>
+  <span class="kd">const</span> <span class="nx">stale</span> <span class="o">=</span> <span class="nx">now</span> <span class="o">-</span> <span class="nx">lastEventTime</span> <span class="o">&gt;</span> <span class="nx">staleEventThresholdMs</span><span class="p">;</span>  <span class="c1">// 30 分钟</span>
+  <span class="kd">const</span> <span class="nx">recentlyConnected</span> <span class="o">=</span> <span class="nx">now</span> <span class="o">-</span> <span class="nx">connectedAt</span> <span class="o">&lt;</span> <span class="nx">channelConnectGraceMs</span><span class="p">;</span>  <span class="c1">// 2 分钟</span>
+
+  <span class="k">return</span> <span class="p">{</span>
+    <span class="nx">healthy</span><span class="o">:</span> <span class="o">!</span><span class="nx">stale</span> <span class="o">&amp;&amp;</span> <span class="p">(</span><span class="nx">recentlyConnected</span> <span class="o">||</span> <span class="nx">status</span><span class="p">.</span><span class="nx">running</span><span class="p">),</span>
+    <span class="nx">restartReason</span>: <span class="kt">stale</span> <span class="o">?</span> <span class="s2">&quot;stale_socket&quot;</span> <span class="o">:</span> <span class="kc">undefined</span>
+  <span class="p">};</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <blockquote>
 <p>注意：健康评估函数 <code>evaluateChannelHealth</code> 定义在 <code>src/gateway/channel-health-policy.ts</code> 中，<code>channel-health-monitor.ts</code> 负责调度和生命周期管理。</p>
 </blockquote>
@@ -786,216 +829,224 @@ findTelegramTokenOwnerAccountId(cfg, token) {
 </tr>
 </tbody>
 </table>
-<h3 id="自动重启">自动重启</h3>
-<pre><code>检测到不健康
+<h3 id="_35">自动重启</h3>
+<div class="codehilite"><pre><span></span><code>检测到不健康
   → 检查重启冷却期
   → 检查小时重启限制
   → 如果允许: 停止 channel → 等待 → 重新启动
   → 如果超限: 优雅降级，记录警告
-</code></pre>
-<h3 id="配置热重载">配置热重载</h3>
-<pre><code>配置文件变更
-  → chokidar 监听 (300ms 去抖)
-  → 深度比较 prev/next
+</code></pre></div>
+
+<h3 id="_36">配置热重载</h3>
+<div class="codehilite"><pre><span></span><code>配置文件变更
+  → <span class="nv">chokidar</span> 监听 <span class="ss">(</span><span class="mi">300</span><span class="nv">ms</span> 去抖<span class="ss">)</span>
+  → 深度比较 <span class="nv">prev</span><span class="o">/</span><span class="k">next</span>
   → 判断热兼容性:
-    → 热兼容: 直接更新 channel 配置
-    → 不兼容: 重启 channel 或整个 gateway
-</code></pre>
+    → 热兼容: 直接更新 <span class="nv">channel</span> 配置
+    → 不兼容: 重启 <span class="nv">channel</span> 或整个 <span class="nv">gateway</span>
+</code></pre></div>
+
 <hr />
-<h2 id="12-入站消息流完整路径">12. 入站消息流（完整路径）</h2>
-<pre><code>┌──────────────────────────────────────────────────┐
-│ 1. 平台事件                                       │
-│    WhatsApp: Baileys message event                │
-│    Discord: @buape/carbon message event            │
-│    Telegram: grammy update event                  │
-│    Slack: @slack/bolt message event               │
-│    Signal: signal-cli HTTP webhook                │
-└──────────────────────┬───────────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────────┐
-│ 2. 消息标准化                                     │
-│    提取: sender, text, mediaUrl, chatId, chatType │
-│    处理: 群组 @提及, 附件, 引用                    │
-│    标准化为 MsgContext                             │
-└──────────────────────┬───────────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────────┐
-│ 3. 安全策略检查                                   │
-│    DM 策略: pairing / allowlist / open / disabled │
-│    Allowlist 匹配: 电话号码/用户ID/角色            │
-│    群组策略: 是否需要 @提及                        │
-└──────────────────────┬───────────────────────────┘
-                       │ (通过)
-                       ▼
-┌──────────────────────────────────────────────────┐
-│ 4. 路由解析 (src/routing/resolve-route.ts)        │
-│    输入: channel + accountId + peer               │
-│    多层绑定匹配:                                   │
-│      peer → peer.parent → guild+roles             │
-│      → guild → team → account → channel           │
-│    输出: agentId + sessionKey                      │
-└──────────────────────┬───────────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────────┐
-│ 5. Session 查找/创建                              │
-│    加载已有 session 或创建新 session               │
-│    检查 reset 触发器                               │
-│    应用 session hooks                              │
-└──────────────────────┬───────────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────────┐
-│ 6. Plugin Hooks                                   │
-│    message_received → before_agent_start          │
-│    可能覆盖: 模型、提示词、工具                    │
-└──────────────────────┬───────────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────────┐
-│ 7. Agent 执行                                     │
-│    Context Engine: assemble() 组装上下文           │
-│    System Prompt: 构建系统提示词                   │
-│    LLM 调用: 发送到模型                            │
-│    工具调用: 执行工具 → 返回结果                   │
-│    生成回复文本                                    │
-└──────────────────────┬───────────────────────────┘
-                       │
-                       ▼
-              (进入出站消息流)
-</code></pre>
+<h2 id="12">12. 入站消息流（完整路径）</h2>
+<div class="codehilite"><pre><span></span><code><span class="err">┌──────────────────────────────────────────────────┐</span><span class="w"></span>
+<span class="err">│</span><span class="w"> </span><span class="mf">1.</span><span class="w"> </span><span class="err">平台事件</span><span class="w">                                       </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="n">WhatsApp</span><span class="p">:</span><span class="w"> </span><span class="n">Baileys</span><span class="w"> </span><span class="n">message</span><span class="w"> </span><span class="n">event</span><span class="w">                </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="n">Discord</span><span class="p">:</span><span class="w"> </span><span class="err">@</span><span class="n">buape</span><span class="o">/</span><span class="n">carbon</span><span class="w"> </span><span class="n">message</span><span class="w"> </span><span class="n">event</span><span class="w">            </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="n">Telegram</span><span class="p">:</span><span class="w"> </span><span class="n">grammy</span><span class="w"> </span><span class="n">update</span><span class="w"> </span><span class="n">event</span><span class="w">                  </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="n">Slack</span><span class="p">:</span><span class="w"> </span><span class="err">@</span><span class="n">slack</span><span class="o">/</span><span class="n">bolt</span><span class="w"> </span><span class="n">message</span><span class="w"> </span><span class="n">event</span><span class="w">               </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="n">Signal</span><span class="p">:</span><span class="w"> </span><span class="k">signal</span><span class="o">-</span><span class="n">cli</span><span class="w"> </span><span class="n">HTTP</span><span class="w"> </span><span class="n">webhook</span><span class="w">                </span><span class="err">│</span><span class="w"></span>
+<span class="err">└──────────────────────┬───────────────────────────┘</span><span class="w"></span>
+<span class="w">                       </span><span class="err">│</span><span class="w"></span>
+<span class="w">                       </span><span class="err">▼</span><span class="w"></span>
+<span class="err">┌──────────────────────────────────────────────────┐</span><span class="w"></span>
+<span class="err">│</span><span class="w"> </span><span class="mf">2.</span><span class="w"> </span><span class="err">消息标准化</span><span class="w">                                     </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="err">提取</span><span class="p">:</span><span class="w"> </span><span class="n">sender</span><span class="p">,</span><span class="w"> </span><span class="n">text</span><span class="p">,</span><span class="w"> </span><span class="n">mediaUrl</span><span class="p">,</span><span class="w"> </span><span class="n">chatId</span><span class="p">,</span><span class="w"> </span><span class="n">chatType</span><span class="w"> </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="err">处理</span><span class="p">:</span><span class="w"> </span><span class="err">群组</span><span class="w"> </span><span class="err">@提及</span><span class="p">,</span><span class="w"> </span><span class="err">附件</span><span class="p">,</span><span class="w"> </span><span class="err">引用</span><span class="w">                    </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="err">标准化为</span><span class="w"> </span><span class="n">MsgContext</span><span class="w">                             </span><span class="err">│</span><span class="w"></span>
+<span class="err">└──────────────────────┬───────────────────────────┘</span><span class="w"></span>
+<span class="w">                       </span><span class="err">│</span><span class="w"></span>
+<span class="w">                       </span><span class="err">▼</span><span class="w"></span>
+<span class="err">┌──────────────────────────────────────────────────┐</span><span class="w"></span>
+<span class="err">│</span><span class="w"> </span><span class="mf">3.</span><span class="w"> </span><span class="err">安全策略检查</span><span class="w">                                   </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="n">DM</span><span class="w"> </span><span class="err">策略</span><span class="p">:</span><span class="w"> </span><span class="n">pairing</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">allowlist</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">open</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">disabled</span><span class="w"> </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="n">Allowlist</span><span class="w"> </span><span class="err">匹配</span><span class="p">:</span><span class="w"> </span><span class="err">电话号码</span><span class="o">/</span><span class="err">用户</span><span class="n">ID</span><span class="o">/</span><span class="err">角色</span><span class="w">            </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="err">群组策略</span><span class="p">:</span><span class="w"> </span><span class="err">是否需要</span><span class="w"> </span><span class="err">@提及</span><span class="w">                        </span><span class="err">│</span><span class="w"></span>
+<span class="err">└──────────────────────┬───────────────────────────┘</span><span class="w"></span>
+<span class="w">                       </span><span class="err">│</span><span class="w"> </span><span class="p">(</span><span class="err">通过</span><span class="p">)</span><span class="w"></span>
+<span class="w">                       </span><span class="err">▼</span><span class="w"></span>
+<span class="err">┌──────────────────────────────────────────────────┐</span><span class="w"></span>
+<span class="err">│</span><span class="w"> </span><span class="mf">4.</span><span class="w"> </span><span class="err">路由解析</span><span class="w"> </span><span class="p">(</span><span class="n">src</span><span class="o">/</span><span class="n">routing</span><span class="o">/</span><span class="n">resolve</span><span class="o">-</span><span class="n">route</span><span class="o">.</span><span class="n">ts</span><span class="p">)</span><span class="w">        </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="err">输入</span><span class="p">:</span><span class="w"> </span><span class="n">channel</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">accountId</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">peer</span><span class="w">               </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="err">多层绑定匹配</span><span class="p">:</span><span class="w">                                   </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">      </span><span class="n">peer</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="n">peer</span><span class="o">.</span><span class="n">parent</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="n">guild</span><span class="o">+</span><span class="n">roles</span><span class="w">             </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">      </span><span class="err">→</span><span class="w"> </span><span class="n">guild</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="n">team</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="n">account</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="n">channel</span><span class="w">           </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="err">输出</span><span class="p">:</span><span class="w"> </span><span class="n">agentId</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">sessionKey</span><span class="w">                      </span><span class="err">│</span><span class="w"></span>
+<span class="err">└──────────────────────┬───────────────────────────┘</span><span class="w"></span>
+<span class="w">                       </span><span class="err">│</span><span class="w"></span>
+<span class="w">                       </span><span class="err">▼</span><span class="w"></span>
+<span class="err">┌──────────────────────────────────────────────────┐</span><span class="w"></span>
+<span class="err">│</span><span class="w"> </span><span class="mf">5.</span><span class="w"> </span><span class="n">Session</span><span class="w"> </span><span class="err">查找</span><span class="o">/</span><span class="err">创建</span><span class="w">                              </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="err">加载已有</span><span class="w"> </span><span class="n">session</span><span class="w"> </span><span class="err">或创建新</span><span class="w"> </span><span class="n">session</span><span class="w">               </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="err">检查</span><span class="w"> </span><span class="n">reset</span><span class="w"> </span><span class="err">触发器</span><span class="w">                               </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="err">应用</span><span class="w"> </span><span class="n">session</span><span class="w"> </span><span class="n">hooks</span><span class="w">                              </span><span class="err">│</span><span class="w"></span>
+<span class="err">└──────────────────────┬───────────────────────────┘</span><span class="w"></span>
+<span class="w">                       </span><span class="err">│</span><span class="w"></span>
+<span class="w">                       </span><span class="err">▼</span><span class="w"></span>
+<span class="err">┌──────────────────────────────────────────────────┐</span><span class="w"></span>
+<span class="err">│</span><span class="w"> </span><span class="mf">6.</span><span class="w"> </span><span class="n">Plugin</span><span class="w"> </span><span class="n">Hooks</span><span class="w">                                   </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="n">message_received</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="n">before_agent_start</span><span class="w">          </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="err">可能覆盖</span><span class="p">:</span><span class="w"> </span><span class="err">模型、提示词、工具</span><span class="w">                    </span><span class="err">│</span><span class="w"></span>
+<span class="err">└──────────────────────┬───────────────────────────┘</span><span class="w"></span>
+<span class="w">                       </span><span class="err">│</span><span class="w"></span>
+<span class="w">                       </span><span class="err">▼</span><span class="w"></span>
+<span class="err">┌──────────────────────────────────────────────────┐</span><span class="w"></span>
+<span class="err">│</span><span class="w"> </span><span class="mf">7.</span><span class="w"> </span><span class="n">Agent</span><span class="w"> </span><span class="err">执行</span><span class="w">                                     </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="n">Context</span><span class="w"> </span><span class="n">Engine</span><span class="p">:</span><span class="w"> </span><span class="n">assemble</span><span class="p">()</span><span class="w"> </span><span class="err">组装上下文</span><span class="w">           </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="n">System</span><span class="w"> </span><span class="n">Prompt</span><span class="p">:</span><span class="w"> </span><span class="err">构建系统提示词</span><span class="w">                   </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="n">LLM</span><span class="w"> </span><span class="err">调用</span><span class="p">:</span><span class="w"> </span><span class="err">发送到模型</span><span class="w">                            </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="err">工具调用</span><span class="p">:</span><span class="w"> </span><span class="err">执行工具</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="err">返回结果</span><span class="w">                   </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="err">生成回复文本</span><span class="w">                                    </span><span class="err">│</span><span class="w"></span>
+<span class="err">└──────────────────────┬───────────────────────────┘</span><span class="w"></span>
+<span class="w">                       </span><span class="err">│</span><span class="w"></span>
+<span class="w">                       </span><span class="err">▼</span><span class="w"></span>
+<span class="w">              </span><span class="p">(</span><span class="err">进入出站消息流</span><span class="p">)</span><span class="w"></span>
+</code></pre></div>
+
 <hr />
-<h2 id="13-出站消息流完整路径">13. 出站消息流（完整路径）</h2>
-<pre><code>┌──────────────────────────────────────────────────┐
-│ 1. Agent 回复生成                                 │
-│    文本 + 可选媒体 + 可选投票                      │
-└──────────────────────┬───────────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────────┐
-│ 2. Plugin Hooks: message_sending                  │
-│    最终回复修改                                    │
-└──────────────────────┬───────────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────────┐
-│ 3. 格式化与分块                                   │
-│    按 channel 字符限制分块:                        │
-│      WhatsApp/Signal/Telegram: 4000 字符          │
-│      Discord: 2000 字符                            │
-│      Slack: 4000 字符                              │
-│      IRC: 350 字符                                 │
-│    Markdown 处理:                                  │
-│      Discord/Slack: 保留 markdown/blocks           │
-│      WhatsApp: 转义特殊字符                        │
-│      SMS-like: 剥离 markdown                       │
-└──────────────────────┬───────────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────────┐
-│ 4. 交付模式分流                                   │
-│                                                    │
-│  ┌─────────────────┐  ┌────────────────────────┐  │
-│  │ Gateway 模式     │  │ Direct 模式            │  │
-│  │ (WhatsApp)       │  │ (Discord/Slack/Signal  │  │
-│  │                  │  │  /Telegram/iMessage)   │  │
-│  │ 消息入队         │  │                        │  │
-│  │ delivery-queue   │  │ 立即发送               │  │
-│  │ WAL 崩溃恢复     │  │ 同步失败 = agent 错误  │  │
-│  │ 异步交付+回调    │  │                        │  │
-│  └────────┬────────┘  └───────────┬────────────┘  │
-│           │                       │                 │
-└───────────┼───────────────────────┼─────────────────┘
-            │                       │
-            ▼                       ▼
-┌──────────────────────────────────────────────────┐
-│ 5. Channel 出站适配器                             │
-│    调用 channel 特定的 send 方法:                  │
-│    WhatsApp: Baileys sendMessage()                │
-│    Discord: @buape/carbon REST API                │
-│    Telegram: grammy ctx.reply()                   │
-│    Slack: @slack/bolt chat.postMessage()           │
-│    Signal: signal-cli HTTP POST                   │
-└──────────────────────┬───────────────────────────┘
-                       │
-                       ▼
-┌──────────────────────────────────────────────────┐
-│ 6. 交付确认                                      │
-│    更新状态反应 (✓ → ✓✓)                          │
-│    Plugin Hooks: message_sent                     │
-│    记录交付元数据                                  │
-└──────────────────────────────────────────────────┘
-</code></pre>
+<h2 id="13">13. 出站消息流（完整路径）</h2>
+<div class="codehilite"><pre><span></span><code><span class="err">┌──────────────────────────────────────────────────┐</span><span class="w"></span>
+<span class="err">│</span><span class="w"> </span><span class="mf">1.</span><span class="w"> </span><span class="n">Agent</span><span class="w"> </span><span class="err">回复生成</span><span class="w">                                 </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="err">文本</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="err">可选媒体</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="err">可选投票</span><span class="w">                      </span><span class="err">│</span><span class="w"></span>
+<span class="err">└──────────────────────┬───────────────────────────┘</span><span class="w"></span>
+<span class="w">                       </span><span class="err">│</span><span class="w"></span>
+<span class="w">                       </span><span class="err">▼</span><span class="w"></span>
+<span class="err">┌──────────────────────────────────────────────────┐</span><span class="w"></span>
+<span class="err">│</span><span class="w"> </span><span class="mf">2.</span><span class="w"> </span><span class="n">Plugin</span><span class="w"> </span><span class="n">Hooks</span><span class="p">:</span><span class="w"> </span><span class="n">message_sending</span><span class="w">                  </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="err">最终回复修改</span><span class="w">                                    </span><span class="err">│</span><span class="w"></span>
+<span class="err">└──────────────────────┬───────────────────────────┘</span><span class="w"></span>
+<span class="w">                       </span><span class="err">│</span><span class="w"></span>
+<span class="w">                       </span><span class="err">▼</span><span class="w"></span>
+<span class="err">┌──────────────────────────────────────────────────┐</span><span class="w"></span>
+<span class="err">│</span><span class="w"> </span><span class="mf">3.</span><span class="w"> </span><span class="err">格式化与分块</span><span class="w">                                   </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="err">按</span><span class="w"> </span><span class="n">channel</span><span class="w"> </span><span class="err">字符限制分块</span><span class="p">:</span><span class="w">                        </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">      </span><span class="n">WhatsApp</span><span class="o">/</span><span class="n">Signal</span><span class="o">/</span><span class="n">Telegram</span><span class="p">:</span><span class="w"> </span><span class="mi">4000</span><span class="w"> </span><span class="err">字符</span><span class="w">          </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">      </span><span class="n">Discord</span><span class="p">:</span><span class="w"> </span><span class="mi">2000</span><span class="w"> </span><span class="err">字符</span><span class="w">                            </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">      </span><span class="n">Slack</span><span class="p">:</span><span class="w"> </span><span class="mi">4000</span><span class="w"> </span><span class="err">字符</span><span class="w">                              </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">      </span><span class="n">IRC</span><span class="p">:</span><span class="w"> </span><span class="mi">350</span><span class="w"> </span><span class="err">字符</span><span class="w">                                 </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="n">Markdown</span><span class="w"> </span><span class="err">处理</span><span class="p">:</span><span class="w">                                  </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">      </span><span class="n">Discord</span><span class="o">/</span><span class="n">Slack</span><span class="p">:</span><span class="w"> </span><span class="err">保留</span><span class="w"> </span><span class="n">markdown</span><span class="o">/</span><span class="n">blocks</span><span class="w">           </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">      </span><span class="n">WhatsApp</span><span class="p">:</span><span class="w"> </span><span class="err">转义特殊字符</span><span class="w">                        </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">      </span><span class="n">SMS</span><span class="o">-</span><span class="n">like</span><span class="p">:</span><span class="w"> </span><span class="err">剥离</span><span class="w"> </span><span class="n">markdown</span><span class="w">                       </span><span class="err">│</span><span class="w"></span>
+<span class="err">└──────────────────────┬───────────────────────────┘</span><span class="w"></span>
+<span class="w">                       </span><span class="err">│</span><span class="w"></span>
+<span class="w">                       </span><span class="err">▼</span><span class="w"></span>
+<span class="err">┌──────────────────────────────────────────────────┐</span><span class="w"></span>
+<span class="err">│</span><span class="w"> </span><span class="mf">4.</span><span class="w"> </span><span class="err">交付模式分流</span><span class="w">                                   </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">                                                    </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">┌─────────────────┐</span><span class="w">  </span><span class="err">┌────────────────────────┐</span><span class="w">  </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="n">Gateway</span><span class="w"> </span><span class="err">模式</span><span class="w">     </span><span class="err">│</span><span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="n">Direct</span><span class="w"> </span><span class="err">模式</span><span class="w">            </span><span class="err">│</span><span class="w">  </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="p">(</span><span class="n">WhatsApp</span><span class="p">)</span><span class="w">       </span><span class="err">│</span><span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="p">(</span><span class="n">Discord</span><span class="o">/</span><span class="n">Slack</span><span class="o">/</span><span class="n">Signal</span><span class="w">  </span><span class="err">│</span><span class="w">  </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">│</span><span class="w">                  </span><span class="err">│</span><span class="w">  </span><span class="err">│</span><span class="w">  </span><span class="o">/</span><span class="n">Telegram</span><span class="o">/</span><span class="n">iMessage</span><span class="p">)</span><span class="w">   </span><span class="err">│</span><span class="w">  </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="err">消息入队</span><span class="w">         </span><span class="err">│</span><span class="w">  </span><span class="err">│</span><span class="w">                        </span><span class="err">│</span><span class="w">  </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="n">delivery</span><span class="o">-</span><span class="n">queue</span><span class="w">   </span><span class="err">│</span><span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="err">立即发送</span><span class="w">               </span><span class="err">│</span><span class="w">  </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="n">WAL</span><span class="w"> </span><span class="err">崩溃恢复</span><span class="w">     </span><span class="err">│</span><span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="err">同步失败</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">agent</span><span class="w"> </span><span class="err">错误</span><span class="w">  </span><span class="err">│</span><span class="w">  </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="err">异步交付</span><span class="o">+</span><span class="err">回调</span><span class="w">    </span><span class="err">│</span><span class="w">  </span><span class="err">│</span><span class="w">                        </span><span class="err">│</span><span class="w">  </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">└────────┬────────┘</span><span class="w">  </span><span class="err">└───────────┬────────────┘</span><span class="w">  </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">           </span><span class="err">│</span><span class="w">                       </span><span class="err">│</span><span class="w">                 </span><span class="err">│</span><span class="w"></span>
+<span class="err">└───────────┼───────────────────────┼─────────────────┘</span><span class="w"></span>
+<span class="w">            </span><span class="err">│</span><span class="w">                       </span><span class="err">│</span><span class="w"></span>
+<span class="w">            </span><span class="err">▼</span><span class="w">                       </span><span class="err">▼</span><span class="w"></span>
+<span class="err">┌──────────────────────────────────────────────────┐</span><span class="w"></span>
+<span class="err">│</span><span class="w"> </span><span class="mf">5.</span><span class="w"> </span><span class="n">Channel</span><span class="w"> </span><span class="err">出站适配器</span><span class="w">                             </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="err">调用</span><span class="w"> </span><span class="n">channel</span><span class="w"> </span><span class="err">特定的</span><span class="w"> </span><span class="n">send</span><span class="w"> </span><span class="err">方法</span><span class="p">:</span><span class="w">                  </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="n">WhatsApp</span><span class="p">:</span><span class="w"> </span><span class="n">Baileys</span><span class="w"> </span><span class="n">sendMessage</span><span class="p">()</span><span class="w">                </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="n">Discord</span><span class="p">:</span><span class="w"> </span><span class="err">@</span><span class="n">buape</span><span class="o">/</span><span class="n">carbon</span><span class="w"> </span><span class="n">REST</span><span class="w"> </span><span class="n">API</span><span class="w">                </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="n">Telegram</span><span class="p">:</span><span class="w"> </span><span class="n">grammy</span><span class="w"> </span><span class="n">ctx</span><span class="o">.</span><span class="n">reply</span><span class="p">()</span><span class="w">                   </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="n">Slack</span><span class="p">:</span><span class="w"> </span><span class="err">@</span><span class="n">slack</span><span class="o">/</span><span class="n">bolt</span><span class="w"> </span><span class="n">chat</span><span class="o">.</span><span class="n">postMessage</span><span class="p">()</span><span class="w">           </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="n">Signal</span><span class="p">:</span><span class="w"> </span><span class="k">signal</span><span class="o">-</span><span class="n">cli</span><span class="w"> </span><span class="n">HTTP</span><span class="w"> </span><span class="n">POST</span><span class="w">                   </span><span class="err">│</span><span class="w"></span>
+<span class="err">└──────────────────────┬───────────────────────────┘</span><span class="w"></span>
+<span class="w">                       </span><span class="err">│</span><span class="w"></span>
+<span class="w">                       </span><span class="err">▼</span><span class="w"></span>
+<span class="err">┌──────────────────────────────────────────────────┐</span><span class="w"></span>
+<span class="err">│</span><span class="w"> </span><span class="mf">6.</span><span class="w"> </span><span class="err">交付确认</span><span class="w">                                      </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="err">更新状态反应</span><span class="w"> </span><span class="p">(</span><span class="err">✓</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="err">✓✓</span><span class="p">)</span><span class="w">                          </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="n">Plugin</span><span class="w"> </span><span class="n">Hooks</span><span class="p">:</span><span class="w"> </span><span class="n">message_sent</span><span class="w">                     </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">    </span><span class="err">记录交付元数据</span><span class="w">                                  </span><span class="err">│</span><span class="w"></span>
+<span class="err">└──────────────────────────────────────────────────┘</span><span class="w"></span>
+</code></pre></div>
+
 <hr />
-<h2 id="14-多账号支持">14. 多账号支持</h2>
-<h3 id="统一模式">统一模式</h3>
+<h2 id="14">14. 多账号支持</h2>
+<h3 id="_37">统一模式</h3>
 <p>所有 channel 遵循相同的多账号管理模式：</p>
-<pre><code class="language-typescript">config: {
-  // 列出所有已配置的账号 ID
-  listAccountIds: (cfg) =&gt; string[],
+<div class="codehilite"><pre><span></span><code><span class="nx">config</span><span class="o">:</span> <span class="p">{</span>
+  <span class="c1">// 列出所有已配置的账号 ID</span>
+  <span class="nx">listAccountIds</span><span class="o">:</span> <span class="p">(</span><span class="nx">cfg</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="kt">string</span><span class="p">[],</span>
 
-  // 解析特定账号的完整配置
-  resolveAccount: (cfg, accountId) =&gt; ResolvedAccount,
+  <span class="c1">// 解析特定账号的完整配置</span>
+  <span class="nx">resolveAccount</span><span class="o">:</span> <span class="p">(</span><span class="nx">cfg</span><span class="p">,</span> <span class="nx">accountId</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="nx">ResolvedAccount</span><span class="p">,</span>
 
-  // 获取默认账号 ID
-  defaultAccountId: (cfg) =&gt; string,
+  <span class="c1">// 获取默认账号 ID</span>
+  <span class="nx">defaultAccountId</span><span class="o">:</span> <span class="p">(</span><span class="nx">cfg</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="kt">string</span><span class="p">,</span>
 
-  // 启用/禁用账号
-  setAccountEnabled: ({ cfg, accountId, enabled }) =&gt; OpenClawConfig,
+  <span class="c1">// 启用/禁用账号</span>
+  <span class="nx">setAccountEnabled</span><span class="o">:</span> <span class="p">({</span> <span class="nx">cfg</span><span class="p">,</span> <span class="nx">accountId</span><span class="p">,</span> <span class="nx">enabled</span> <span class="p">})</span> <span class="p">=&gt;</span> <span class="nx">OpenClawConfig</span><span class="p">,</span>
 
-  // 删除账号
-  deleteAccount: ({ cfg, accountId }) =&gt; OpenClawConfig,
-}
-</code></pre>
-<h3 id="配置存储结构">配置存储结构</h3>
-<pre><code class="language-json">{
-  &quot;channels&quot;: {
-    &quot;whatsapp&quot;: {
-      &quot;accounts&quot;: {
-        &quot;personal&quot;: {
-          &quot;enabled&quot;: true,
-          &quot;name&quot;: &quot;个人号&quot;,
-          &quot;authDir&quot;: &quot;~/.openclaw/whatsapp/personal&quot;,
-          &quot;allowFrom&quot;: [&quot;+8613800138000&quot;],
-          &quot;dmPolicy&quot;: &quot;allowlist&quot;
-        },
-        &quot;business&quot;: {
-          &quot;enabled&quot;: true,
-          &quot;name&quot;: &quot;商务号&quot;,
-          &quot;authDir&quot;: &quot;~/.openclaw/whatsapp/business&quot;,
-          &quot;allowFrom&quot;: [],
-          &quot;dmPolicy&quot;: &quot;open&quot;
-        }
-      }
-    },
-    &quot;slack&quot;: {
-      &quot;accounts&quot;: {
-        &quot;team-alpha&quot;: {
-          &quot;enabled&quot;: true,
-          &quot;name&quot;: &quot;Alpha 团队&quot;,
-          &quot;botToken&quot;: &quot;xoxb-...&quot;,
-          &quot;signingSecret&quot;: &quot;...&quot;
-        }
-      }
-    }
-  }
-}
-</code></pre>
-<h3 id="账号解析">账号解析</h3>
-<pre><code>大小写不敏感查找 (normalizeAccountId)
+  <span class="c1">// 删除账号</span>
+  <span class="nx">deleteAccount</span><span class="o">:</span> <span class="p">({</span> <span class="nx">cfg</span><span class="p">,</span> <span class="nx">accountId</span> <span class="p">})</span> <span class="p">=&gt;</span> <span class="nx">OpenClawConfig</span><span class="p">,</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="_38">配置存储结构</h3>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;channels&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">    </span><span class="nt">&quot;whatsapp&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;accounts&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">        </span><span class="nt">&quot;personal&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">          </span><span class="nt">&quot;enabled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"></span>
+<span class="w">          </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;个人号&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">          </span><span class="nt">&quot;authDir&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;~/.openclaw/whatsapp/personal&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">          </span><span class="nt">&quot;allowFrom&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;+8613800138000&quot;</span><span class="p">],</span><span class="w"></span>
+<span class="w">          </span><span class="nt">&quot;dmPolicy&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;allowlist&quot;</span><span class="w"></span>
+<span class="w">        </span><span class="p">},</span><span class="w"></span>
+<span class="w">        </span><span class="nt">&quot;business&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">          </span><span class="nt">&quot;enabled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"></span>
+<span class="w">          </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;商务号&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">          </span><span class="nt">&quot;authDir&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;~/.openclaw/whatsapp/business&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">          </span><span class="nt">&quot;allowFrom&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span><span class="w"></span>
+<span class="w">          </span><span class="nt">&quot;dmPolicy&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;open&quot;</span><span class="w"></span>
+<span class="w">        </span><span class="p">}</span><span class="w"></span>
+<span class="w">      </span><span class="p">}</span><span class="w"></span>
+<span class="w">    </span><span class="p">},</span><span class="w"></span>
+<span class="w">    </span><span class="nt">&quot;slack&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;accounts&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">        </span><span class="nt">&quot;team-alpha&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">          </span><span class="nt">&quot;enabled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"></span>
+<span class="w">          </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Alpha 团队&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">          </span><span class="nt">&quot;botToken&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;xoxb-...&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">          </span><span class="nt">&quot;signingSecret&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;...&quot;</span><span class="w"></span>
+<span class="w">        </span><span class="p">}</span><span class="w"></span>
+<span class="w">      </span><span class="p">}</span><span class="w"></span>
+<span class="w">    </span><span class="p">}</span><span class="w"></span>
+<span class="w">  </span><span class="p">}</span><span class="w"></span>
+<span class="p">}</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="_39">账号解析</h3>
+<div class="codehilite"><pre><span></span><code>大小写不敏感查找 (normalizeAccountId)
 无指定 → 回退到默认账号
 每账号独立安全策略
-</code></pre>
+</code></pre></div>
+
 <hr />
-<h2 id="15-安全策略与-allowlist">15. 安全策略与 Allowlist</h2>
-<h3 id="dm-策略">DM 策略</h3>
-<pre><code class="language-typescript">security: {
-  resolveDmPolicy: ({ cfg, accountId, account }) =&gt; ChannelSecurityDmPolicy,
-  collectWarnings: ({ account, cfg }) =&gt; string[],
-}
-</code></pre>
+<h2 id="15-allowlist">15. 安全策略与 Allowlist</h2>
+<h3 id="dm">DM 策略</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">security</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">resolveDmPolicy</span><span class="o">:</span> <span class="p">({</span> <span class="nx">cfg</span><span class="p">,</span> <span class="nx">accountId</span><span class="p">,</span> <span class="nx">account</span> <span class="p">})</span> <span class="p">=&gt;</span> <span class="nx">ChannelSecurityDmPolicy</span><span class="p">,</span>
+  <span class="nx">collectWarnings</span><span class="o">:</span> <span class="p">({</span> <span class="nx">account</span><span class="p">,</span> <span class="nx">cfg</span> <span class="p">})</span> <span class="p">=&gt;</span> <span class="kt">string</span><span class="p">[],</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <table>
 <thead>
 <tr>
@@ -1022,35 +1073,37 @@ findTelegramTokenOwnerAccountId(cfg, token) {
 </tr>
 </tbody>
 </table>
-<h3 id="allowlist-配置">Allowlist 配置</h3>
-<pre><code class="language-typescript">config: {
-  resolveAllowFrom: ({ cfg, accountId }) =&gt; string[],
-  // WhatsApp: 电话号码 E.164 格式
-  // Discord: 用户 ID 或角色 ID
-  // Telegram: 用户 ID 或用户名
-  // Slack: 用户 ID
+<h3 id="allowlist">Allowlist 配置</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">config</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">resolveAllowFrom</span><span class="o">:</span> <span class="p">({</span> <span class="nx">cfg</span><span class="p">,</span> <span class="nx">accountId</span> <span class="p">})</span> <span class="p">=&gt;</span> <span class="kt">string</span><span class="p">[],</span>
+  <span class="c1">// WhatsApp: 电话号码 E.164 格式</span>
+  <span class="c1">// Discord: 用户 ID 或角色 ID</span>
+  <span class="c1">// Telegram: 用户 ID 或用户名</span>
+  <span class="c1">// Slack: 用户 ID</span>
 
-  formatAllowFrom: ({ allowFrom }) =&gt; string[],
-  // 标准化 allowlist 条目:
-  // - 剥离前缀 (如 @, #)
-  // - 小写转换
-  // - E.164 标准化（电话号码）
-}
-</code></pre>
-<h3 id="群组安全">群组安全</h3>
-<pre><code class="language-typescript">groups: {
-  resolveRequireMention: (cfg, accountId, groupId) =&gt; boolean,
-  // 群组中是否需要 @提及 bot 才响应
+  <span class="nx">formatAllowFrom</span><span class="o">:</span> <span class="p">({</span> <span class="nx">allowFrom</span> <span class="p">})</span> <span class="p">=&gt;</span> <span class="kt">string</span><span class="p">[],</span>
+  <span class="c1">// 标准化 allowlist 条目:</span>
+  <span class="c1">// - 剥离前缀 (如 @, #)</span>
+  <span class="c1">// - 小写转换</span>
+  <span class="c1">// - E.164 标准化（电话号码）</span>
+<span class="p">}</span>
+</code></pre></div>
 
-  resolveToolPolicy: (cfg, accountId, groupId) =&gt; ToolPolicy,
-  // 群组中的工具执行策略:
-  // - &quot;full&quot;: 所有工具可用
-  // - &quot;safe&quot;: 仅安全工具
-  // - &quot;none&quot;: 禁用工具
-}
-</code></pre>
+<h3 id="_40">群组安全</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">groups</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">resolveRequireMention</span><span class="o">:</span> <span class="p">(</span><span class="nx">cfg</span><span class="p">,</span> <span class="nx">accountId</span><span class="p">,</span> <span class="nx">groupId</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="kt">boolean</span><span class="p">,</span>
+  <span class="c1">// 群组中是否需要 @提及 bot 才响应</span>
+
+  <span class="nx">resolveToolPolicy</span><span class="o">:</span> <span class="p">(</span><span class="nx">cfg</span><span class="p">,</span> <span class="nx">accountId</span><span class="p">,</span> <span class="nx">groupId</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="nx">ToolPolicy</span><span class="p">,</span>
+  <span class="c1">// 群组中的工具执行策略:</span>
+  <span class="c1">// - &quot;full&quot;: 所有工具可用</span>
+  <span class="c1">// - &quot;safe&quot;: 仅安全工具</span>
+  <span class="c1">// - &quot;none&quot;: 禁用工具</span>
+<span class="p">}</span>
+</code></pre></div>
+
 <hr />
-<h2 id="16-channel-特有功能对比">16. Channel 特有功能对比</h2>
+<h2 id="16-channel">16. Channel 特有功能对比</h2>
 <table>
 <thead>
 <tr>
@@ -1196,158 +1249,164 @@ findTelegramTokenOwnerAccountId(cfg, token) {
 <p>*注：Slack 使用 streaming coalesce（流式合并）默认配置，而非完整的 <code>blockStreaming</code>。<code>blockStreaming</code> 会完全阻塞流式输出直到响应完成后再发送；streaming coalesce 则是将短时间内的流式片段合并为较少的更新，仍保持部分流式体验。Telegram 使用的是完整的 <code>blockStreaming</code>。</p>
 </blockquote>
 <hr />
-<h2 id="17-新-channel-接入指南">17. 新 Channel 接入指南</h2>
-<h3 id="步骤概览">步骤概览</h3>
-<pre><code>1. 创建扩展包
-   extensions/&lt;channel-name&gt;/
-     package.json
-     src/
-       index.ts      # 插件入口
-       channel.ts    # Channel 实现
+<h2 id="17-channel">17. 新 Channel 接入指南</h2>
+<h3 id="_41">步骤概览</h3>
+<div class="codehilite"><pre><span></span><code><span class="mf">1.</span><span class="w"> </span><span class="n">创建扩展包</span><span class="w"></span>
+<span class="w">   </span><span class="n">extensions</span><span class="o">/&lt;</span><span class="n">channel</span><span class="o">-</span><span class="n">name</span><span class="o">&gt;/</span><span class="w"></span>
+<span class="w">     </span><span class="n">package</span><span class="mf">.</span><span class="n">json</span><span class="w"></span>
+<span class="w">     </span><span class="n">src</span><span class="o">/</span><span class="w"></span>
+<span class="w">       </span><span class="n">index</span><span class="mf">.</span><span class="n">ts</span><span class="w">      </span><span class="err">#</span><span class="w"> </span><span class="n">插件入口</span><span class="w"></span>
+<span class="w">       </span><span class="n">channel</span><span class="mf">.</span><span class="n">ts</span><span class="w">    </span><span class="err">#</span><span class="w"> </span><span class="n">Channel</span><span class="w"> </span><span class="n">实现</span><span class="w"></span>
 
-2. 实现 ChannelPlugin 接口
-   必选适配器:
-     - config    (账号管理)
-     - security  (DM 策略)
-   推荐适配器:
-     - gateway   (启动/停止监听器)
-     - outbound  (发送消息)
-     - auth      (认证流程)
-   可选适配器:
-     - directory, actions, threading, groups, mentions, commands
+<span class="mf">2.</span><span class="w"> </span><span class="n">实现</span><span class="w"> </span><span class="n">ChannelPlugin</span><span class="w"> </span><span class="n">接口</span><span class="w"></span>
+<span class="w">   </span><span class="n">必选适配器</span><span class="p">:</span><span class="w"></span>
+<span class="w">     </span><span class="o">-</span><span class="w"> </span><span class="n">config</span><span class="w">    </span><span class="p">(</span><span class="n">账号管理</span><span class="p">)</span><span class="w"></span>
+<span class="w">     </span><span class="o">-</span><span class="w"> </span><span class="n">security</span><span class="w">  </span><span class="p">(</span><span class="n">DM</span><span class="w"> </span><span class="n">策略</span><span class="p">)</span><span class="w"></span>
+<span class="w">   </span><span class="n">推荐适配器</span><span class="p">:</span><span class="w"></span>
+<span class="w">     </span><span class="o">-</span><span class="w"> </span><span class="n">gateway</span><span class="w">   </span><span class="p">(</span><span class="n">启动</span><span class="o">/</span><span class="n">停止监听器</span><span class="p">)</span><span class="w"></span>
+<span class="w">     </span><span class="o">-</span><span class="w"> </span><span class="n">outbound</span><span class="w">  </span><span class="p">(</span><span class="n">发送消息</span><span class="p">)</span><span class="w"></span>
+<span class="w">     </span><span class="o">-</span><span class="w"> </span><span class="n">auth</span><span class="w">      </span><span class="p">(</span><span class="n">认证流程</span><span class="p">)</span><span class="w"></span>
+<span class="w">   </span><span class="n">可选适配器</span><span class="p">:</span><span class="w"></span>
+<span class="w">     </span><span class="o">-</span><span class="w"> </span><span class="n">directory</span><span class="p">,</span><span class="w"> </span><span class="n">actions</span><span class="p">,</span><span class="w"> </span><span class="n">threading</span><span class="p">,</span><span class="w"> </span><span class="n">groups</span><span class="p">,</span><span class="w"> </span><span class="n">mentions</span><span class="p">,</span><span class="w"> </span><span class="n">commands</span><span class="w"></span>
 
-3. 添加 Dock 条目
-   src/channels/dock.ts 中注册:
-     - textChunkLimit
-     - capabilities
-     - config helpers
+<span class="mf">3.</span><span class="w"> </span><span class="n">添加</span><span class="w"> </span><span class="n">Dock</span><span class="w"> </span><span class="n">条目</span><span class="w"></span>
+<span class="w">   </span><span class="n">src</span><span class="o">/</span><span class="n">channels</span><span class="o">/</span><span class="n">dock</span><span class="mf">.</span><span class="n">ts</span><span class="w"> </span><span class="n">中注册</span><span class="p">:</span><span class="w"></span>
+<span class="w">     </span><span class="o">-</span><span class="w"> </span><span class="n">textChunkLimit</span><span class="w"></span>
+<span class="w">     </span><span class="o">-</span><span class="w"> </span><span class="n">capabilities</span><span class="w"></span>
+<span class="w">     </span><span class="o">-</span><span class="w"> </span><span class="n">config</span><span class="w"> </span><span class="n">helpers</span><span class="w"></span>
 
-4. 注册插件
-   extensions/&lt;channel-name&gt;/src/index.ts:
-     api.registerChannel({ plugin: myPlugin })
+<span class="mf">4.</span><span class="w"> </span><span class="n">注册插件</span><span class="w"></span>
+<span class="w">   </span><span class="n">extensions</span><span class="o">/&lt;</span><span class="n">channel</span><span class="o">-</span><span class="n">name</span><span class="o">&gt;/</span><span class="n">src</span><span class="o">/</span><span class="n">index</span><span class="mf">.</span><span class="n">ts</span><span class="p">:</span><span class="w"></span>
+<span class="w">     </span><span class="n">api</span><span class="mf">.</span><span class="n">registerChannel</span><span class="p">(</span><span class="err">{</span><span class="w"> </span><span class="n">plugin</span><span class="p">:</span><span class="w"> </span><span class="n">myPlugin</span><span class="w"> </span><span class="err">}</span><span class="p">)</span><span class="w"></span>
 
-5. 实现消息监听器
-   在 gateway.startAccount() 中:
-     - 连接平台 API
-     - 监听消息事件
-     - 标准化为 MsgContext
-     - 路由到 session/agent 层
+<span class="mf">5.</span><span class="w"> </span><span class="n">实现消息监听器</span><span class="w"></span>
+<span class="w">   </span><span class="n">在</span><span class="w"> </span><span class="n">gateway</span><span class="mf">.</span><span class="n">startAccount</span><span class="p">()</span><span class="w"> </span><span class="n">中</span><span class="p">:</span><span class="w"></span>
+<span class="w">     </span><span class="o">-</span><span class="w"> </span><span class="n">连接平台</span><span class="w"> </span><span class="n">API</span><span class="w"></span>
+<span class="w">     </span><span class="o">-</span><span class="w"> </span><span class="n">监听消息事件</span><span class="w"></span>
+<span class="w">     </span><span class="o">-</span><span class="w"> </span><span class="n">标准化为</span><span class="w"> </span><span class="n">MsgContext</span><span class="w"></span>
+<span class="w">     </span><span class="o">-</span><span class="w"> </span><span class="n">路由到</span><span class="w"> </span><span class="n">session</span><span class="o">/</span><span class="n">agent</span><span class="w"> </span><span class="n">层</span><span class="w"></span>
 
-6. 更新配置
-   - .github/labeler.yml 添加标签规则
-   - docs/ 添加 channel 文档
-   - 创建 GitHub label
-</code></pre>
-<h3 id="必须实现的最小接口">必须实现的最小接口</h3>
-<pre><code class="language-typescript">const myPlugin: ChannelPlugin&lt;MyResolvedAccount&gt; = {
-  id: &quot;my-channel&quot;,
-  meta: {
-    displayName: &quot;My Channel&quot;,
-    description: &quot;Integration with My Channel platform&quot;,
-  },
-  capabilities: {
-    chatTypes: [&quot;direct&quot;, &quot;group&quot;],
-    polls: false,
-    reactions: false,
-    media: true,
-    threads: false,
-    blockStreaming: false,
-  },
+<span class="mf">6.</span><span class="w"> </span><span class="n">更新配置</span><span class="w"></span>
+<span class="w">   </span><span class="o">-</span><span class="w"> </span><span class="mf">.</span><span class="n">github</span><span class="o">/</span><span class="n">labeler</span><span class="mf">.</span><span class="n">yml</span><span class="w"> </span><span class="n">添加标签规则</span><span class="w"></span>
+<span class="w">   </span><span class="o">-</span><span class="w"> </span><span class="n">docs</span><span class="o">/</span><span class="w"> </span><span class="n">添加</span><span class="w"> </span><span class="n">channel</span><span class="w"> </span><span class="n">文档</span><span class="w"></span>
+<span class="w">   </span><span class="o">-</span><span class="w"> </span><span class="n">创建</span><span class="w"> </span><span class="n">GitHub</span><span class="w"> </span><span class="n">label</span><span class="w"></span>
+</code></pre></div>
 
-  config: {
-    listAccountIds: (cfg) =&gt; [...],
-    resolveAccount: (cfg, accountId) =&gt; ({...}),
-    defaultAccountId: (cfg) =&gt; &quot;default&quot;,
-    resolveAllowFrom: ({ cfg, accountId }) =&gt; [...],
-    formatAllowFrom: ({ allowFrom }) =&gt; allowFrom.map(normalize),
-    resolveDefaultTo: ({ cfg, accountId }) =&gt; &quot;...&quot;,
-  },
+<h3 id="_42">必须实现的最小接口</h3>
+<div class="codehilite"><pre><span></span><code><span class="kd">const</span> <span class="nx">myPlugin</span>: <span class="kt">ChannelPlugin</span><span class="o">&lt;</span><span class="nx">MyResolvedAccount</span><span class="o">&gt;</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">id</span><span class="o">:</span> <span class="s2">&quot;my-channel&quot;</span><span class="p">,</span>
+  <span class="nx">meta</span><span class="o">:</span> <span class="p">{</span>
+    <span class="nx">displayName</span><span class="o">:</span> <span class="s2">&quot;My Channel&quot;</span><span class="p">,</span>
+    <span class="nx">description</span><span class="o">:</span> <span class="s2">&quot;Integration with My Channel platform&quot;</span><span class="p">,</span>
+  <span class="p">},</span>
+  <span class="nx">capabilities</span><span class="o">:</span> <span class="p">{</span>
+    <span class="nx">chatTypes</span><span class="o">:</span> <span class="p">[</span><span class="s2">&quot;direct&quot;</span><span class="p">,</span> <span class="s2">&quot;group&quot;</span><span class="p">],</span>
+    <span class="nx">polls</span>: <span class="kt">false</span><span class="p">,</span>
+    <span class="nx">reactions</span>: <span class="kt">false</span><span class="p">,</span>
+    <span class="nx">media</span>: <span class="kt">true</span><span class="p">,</span>
+    <span class="nx">threads</span>: <span class="kt">false</span><span class="p">,</span>
+    <span class="nx">blockStreaming</span>: <span class="kt">false</span><span class="p">,</span>
+  <span class="p">},</span>
 
-  security: {
-    resolveDmPolicy: ({ account }) =&gt; account.dmPolicy || &quot;allowlist&quot;,
-  },
+  <span class="nx">config</span><span class="o">:</span> <span class="p">{</span>
+    <span class="nx">listAccountIds</span><span class="o">:</span> <span class="p">(</span><span class="nx">cfg</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="p">[...],</span>
+    <span class="nx">resolveAccount</span><span class="o">:</span> <span class="p">(</span><span class="nx">cfg</span><span class="p">,</span> <span class="nx">accountId</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="p">({...}),</span>
+    <span class="nx">defaultAccountId</span><span class="o">:</span> <span class="p">(</span><span class="nx">cfg</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="s2">&quot;default&quot;</span><span class="p">,</span>
+    <span class="nx">resolveAllowFrom</span><span class="o">:</span> <span class="p">({</span> <span class="nx">cfg</span><span class="p">,</span> <span class="nx">accountId</span> <span class="p">})</span> <span class="p">=&gt;</span> <span class="p">[...],</span>
+    <span class="nx">formatAllowFrom</span><span class="o">:</span> <span class="p">({</span> <span class="nx">allowFrom</span> <span class="p">})</span> <span class="p">=&gt;</span> <span class="nx">allowFrom</span><span class="p">.</span><span class="nx">map</span><span class="p">(</span><span class="nx">normalize</span><span class="p">),</span>
+    <span class="nx">resolveDefaultTo</span><span class="o">:</span> <span class="p">({</span> <span class="nx">cfg</span><span class="p">,</span> <span class="nx">accountId</span> <span class="p">})</span> <span class="p">=&gt;</span> <span class="s2">&quot;...&quot;</span><span class="p">,</span>
+  <span class="p">},</span>
 
-  outbound: {
-    deliveryMode: &quot;direct&quot;,
-    textChunkLimit: 4000,
-    sendText: async ({ to, text }) =&gt; {
-      await myPlatformSdk.sendMessage(to, text);
-    },
-  },
+  <span class="nx">security</span><span class="o">:</span> <span class="p">{</span>
+    <span class="nx">resolveDmPolicy</span><span class="o">:</span> <span class="p">({</span> <span class="nx">account</span> <span class="p">})</span> <span class="p">=&gt;</span> <span class="nx">account</span><span class="p">.</span><span class="nx">dmPolicy</span> <span class="o">||</span> <span class="s2">&quot;allowlist&quot;</span><span class="p">,</span>
+  <span class="p">},</span>
 
-  gateway: {
-    startAccount: async (ctx) =&gt; {
-      const client = new MyPlatformClient(ctx.account.token);
-      client.on(&quot;message&quot;, (msg) =&gt; {
-        // 标准化消息 → 路由到 agent
-      });
-      await client.connect();
-    },
-  },
-};
-</code></pre>
+  <span class="nx">outbound</span><span class="o">:</span> <span class="p">{</span>
+    <span class="nx">deliveryMode</span><span class="o">:</span> <span class="s2">&quot;direct&quot;</span><span class="p">,</span>
+    <span class="nx">textChunkLimit</span>: <span class="kt">4000</span><span class="p">,</span>
+    <span class="nx">sendText</span>: <span class="kt">async</span> <span class="p">({</span> <span class="nx">to</span><span class="p">,</span> <span class="nx">text</span> <span class="p">})</span> <span class="p">=&gt;</span> <span class="p">{</span>
+      <span class="k">await</span> <span class="nx">myPlatformSdk</span><span class="p">.</span><span class="nx">sendMessage</span><span class="p">(</span><span class="nx">to</span><span class="p">,</span> <span class="nx">text</span><span class="p">);</span>
+    <span class="p">},</span>
+  <span class="p">},</span>
+
+  <span class="nx">gateway</span><span class="o">:</span> <span class="p">{</span>
+    <span class="nx">startAccount</span>: <span class="kt">async</span> <span class="p">(</span><span class="nx">ctx</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="p">{</span>
+      <span class="kd">const</span> <span class="nx">client</span> <span class="o">=</span> <span class="ow">new</span> <span class="nx">MyPlatformClient</span><span class="p">(</span><span class="nx">ctx</span><span class="p">.</span><span class="nx">account</span><span class="p">.</span><span class="nx">token</span><span class="p">);</span>
+      <span class="nx">client</span><span class="p">.</span><span class="nx">on</span><span class="p">(</span><span class="s2">&quot;message&quot;</span><span class="p">,</span> <span class="p">(</span><span class="nx">msg</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="p">{</span>
+        <span class="c1">// 标准化消息 → 路由到 agent</span>
+      <span class="p">});</span>
+      <span class="k">await</span> <span class="nx">client</span><span class="p">.</span><span class="nx">connect</span><span class="p">();</span>
+    <span class="p">},</span>
+  <span class="p">},</span>
+<span class="p">};</span>
+</code></pre></div>
+
 <hr />
-<h2 id="18-扩展插件注册机制">18. 扩展插件注册机制</h2>
-<h3 id="packagejson-声明">package.json 声明</h3>
-<pre><code class="language-json">{
-  &quot;name&quot;: &quot;@openclaw/whatsapp&quot;,
-  &quot;version&quot;: &quot;2026.3.9&quot;,
-  &quot;type&quot;: &quot;module&quot;,
-  &quot;openclaw&quot;: {
-    &quot;extensions&quot;: [&quot;./index.ts&quot;]
-  },
-  &quot;dependencies&quot;: {}
-}
-</code></pre>
+<h2 id="18">18. 扩展插件注册机制</h2>
+<h3 id="packagejson">package.json 声明</h3>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;@openclaw/whatsapp&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026.3.9&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;module&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;openclaw&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">    </span><span class="nt">&quot;extensions&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;./index.ts&quot;</span><span class="p">]</span><span class="w"></span>
+<span class="w">  </span><span class="p">},</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;dependencies&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{}</span><span class="w"></span>
+<span class="p">}</span><span class="w"></span>
+</code></pre></div>
+
 <p><strong>关键规则</strong>：
 - <code>openclaw</code> 在 <code>devDependencies</code> 或 <code>peerDependencies</code>（不是 <code>dependencies</code>，避免 <code>workspace:*</code> 在 npm install 中断）
 - 运行时通过 jiti 别名解析 <code>openclaw/plugin-sdk</code>
 - 插件特有依赖放在扩展自己的 <code>package.json</code>
 - WhatsApp 的 Baileys 依赖由核心包管理，不在扩展的 <code>dependencies</code> 中声明</p>
-<h3 id="插件入口">插件入口</h3>
-<pre><code class="language-typescript">// extensions/whatsapp/index.ts
-import type { OpenClawPlugin, OpenClawPluginApi } from &quot;openclaw/plugin-sdk/whatsapp&quot;;
-import { whatsappPlugin } from &quot;./src/channel.js&quot;;
-import { createPluginRuntimeStore } from &quot;openclaw/plugin-sdk/compat&quot;;
+<h3 id="_43">插件入口</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1">// extensions/whatsapp/index.ts</span>
+<span class="k">import</span> <span class="kr">type</span> <span class="p">{</span> <span class="nx">OpenClawPlugin</span><span class="p">,</span> <span class="nx">OpenClawPluginApi</span> <span class="p">}</span> <span class="kr">from</span> <span class="s2">&quot;openclaw/plugin-sdk/whatsapp&quot;</span><span class="p">;</span>
+<span class="k">import</span> <span class="p">{</span> <span class="nx">whatsappPlugin</span> <span class="p">}</span> <span class="kr">from</span> <span class="s2">&quot;./src/channel.js&quot;</span><span class="p">;</span>
+<span class="k">import</span> <span class="p">{</span> <span class="nx">createPluginRuntimeStore</span> <span class="p">}</span> <span class="kr">from</span> <span class="s2">&quot;openclaw/plugin-sdk/compat&quot;</span><span class="p">;</span>
 
-// 注意: getWhatsAppRuntime / setWhatsAppRuntime 实际定义在 src/runtime.ts，而非 index.ts
-const { getRuntime, setRuntime } = createPluginRuntimeStore&lt;OpenClawPluginApi[&quot;runtime&quot;]&gt;();
-export const getWhatsAppRuntime = getRuntime;
+<span class="c1">// 注意: getWhatsAppRuntime / setWhatsAppRuntime 实际定义在 src/runtime.ts，而非 index.ts</span>
+<span class="kd">const</span> <span class="p">{</span> <span class="nx">getRuntime</span><span class="p">,</span> <span class="nx">setRuntime</span> <span class="p">}</span> <span class="o">=</span> <span class="nx">createPluginRuntimeStore</span><span class="o">&lt;</span><span class="nx">OpenClawPluginApi</span><span class="p">[</span><span class="s2">&quot;runtime&quot;</span><span class="p">]</span><span class="o">&gt;</span><span class="p">();</span>
+<span class="k">export</span> <span class="kd">const</span> <span class="nx">getWhatsAppRuntime</span> <span class="o">=</span> <span class="nx">getRuntime</span><span class="p">;</span>
 
-export default {
-  id: &quot;whatsapp&quot;,
-  name: &quot;WhatsApp&quot;,
-  configSchema: emptyPluginConfigSchema(),
-  register(api: OpenClawPluginApi) {
-    setRuntime(api.runtime);
-    api.registerChannel({ plugin: whatsappPlugin });
-  },
-};
-</code></pre>
-<h3 id="运行时注入">运行时注入</h3>
+<span class="k">export</span> <span class="k">default</span> <span class="p">{</span>
+  <span class="nx">id</span><span class="o">:</span> <span class="s2">&quot;whatsapp&quot;</span><span class="p">,</span>
+  <span class="nx">name</span><span class="o">:</span> <span class="s2">&quot;WhatsApp&quot;</span><span class="p">,</span>
+  <span class="nx">configSchema</span>: <span class="kt">emptyPluginConfigSchema</span><span class="p">(),</span>
+  <span class="nx">register</span><span class="p">(</span><span class="nx">api</span>: <span class="kt">OpenClawPluginApi</span><span class="p">)</span> <span class="p">{</span>
+    <span class="nx">setRuntime</span><span class="p">(</span><span class="nx">api</span><span class="p">.</span><span class="nx">runtime</span><span class="p">);</span>
+    <span class="nx">api</span><span class="p">.</span><span class="nx">registerChannel</span><span class="p">({</span> <span class="nx">plugin</span>: <span class="kt">whatsappPlugin</span> <span class="p">});</span>
+  <span class="p">},</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="_44">运行时注入</h3>
 <p>Plugin SDK 通过 <code>api.runtime</code> 注入 channel 特定的运行时函数：</p>
-<pre><code class="language-typescript">api.runtime.channel.whatsapp = {
-  sendMessageWhatsApp,     // 发送文本消息（含媒体，通过同一函数）
-  sendPollWhatsApp,        // 发送投票
-  monitorWebChannel,       // 启动消息监听
-  loginWeb,                // QR 码登录
-  webAuthExists,           // 检查认证状态
-};
-</code></pre>
-<h3 id="插件加载机制">插件加载机制</h3>
-<pre><code>src/plugins/registry.ts + src/plugins/runtime.ts
-  → 扫描 extensions/ 目录
-  → 读取 package.json 中的 openclaw.extensions
-  → 通过 jiti (ESM 加载器) 惰性加载
-  → 调用 plugin.register(api)
-  → 注册 channel、tools、hooks、routes 等
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="nx">api</span><span class="p">.</span><span class="nx">runtime</span><span class="p">.</span><span class="nx">channel</span><span class="p">.</span><span class="nx">whatsapp</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">sendMessageWhatsApp</span><span class="p">,</span>     <span class="c1">// 发送文本消息（含媒体，通过同一函数）</span>
+  <span class="nx">sendPollWhatsApp</span><span class="p">,</span>        <span class="c1">// 发送投票</span>
+  <span class="nx">monitorWebChannel</span><span class="p">,</span>       <span class="c1">// 启动消息监听</span>
+  <span class="nx">loginWeb</span><span class="p">,</span>                <span class="c1">// QR 码登录</span>
+  <span class="nx">webAuthExists</span><span class="p">,</span>           <span class="c1">// 检查认证状态</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="_45">插件加载机制</h3>
+<div class="codehilite"><pre><span></span><code><span class="n">src</span><span class="o">/</span><span class="n">plugins</span><span class="o">/</span><span class="n">registry</span><span class="o">.</span><span class="n">ts</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">src</span><span class="o">/</span><span class="n">plugins</span><span class="o">/</span><span class="n">runtime</span><span class="o">.</span><span class="n">ts</span><span class="w"></span>
+<span class="w">  </span><span class="err">→</span><span class="w"> </span><span class="err">扫描</span><span class="w"> </span><span class="n">extensions</span><span class="o">/</span><span class="w"> </span><span class="err">目录</span><span class="w"></span>
+<span class="w">  </span><span class="err">→</span><span class="w"> </span><span class="err">读取</span><span class="w"> </span><span class="n">package</span><span class="o">.</span><span class="n">json</span><span class="w"> </span><span class="err">中的</span><span class="w"> </span><span class="n">openclaw</span><span class="o">.</span><span class="n">extensions</span><span class="w"></span>
+<span class="w">  </span><span class="err">→</span><span class="w"> </span><span class="err">通过</span><span class="w"> </span><span class="n">jiti</span><span class="w"> </span><span class="p">(</span><span class="n">ESM</span><span class="w"> </span><span class="err">加载器</span><span class="p">)</span><span class="w"> </span><span class="err">惰性加载</span><span class="w"></span>
+<span class="w">  </span><span class="err">→</span><span class="w"> </span><span class="err">调用</span><span class="w"> </span><span class="n">plugin</span><span class="o">.</span><span class="n">register</span><span class="p">(</span><span class="n">api</span><span class="p">)</span><span class="w"></span>
+<span class="w">  </span><span class="err">→</span><span class="w"> </span><span class="err">注册</span><span class="w"> </span><span class="n">channel</span><span class="err">、</span><span class="n">tools</span><span class="err">、</span><span class="n">hooks</span><span class="err">、</span><span class="n">routes</span><span class="w"> </span><span class="err">等</span><span class="w"></span>
+</code></pre></div>
+
 <hr />
-<h2 id="19-设备配对请求刷新与取代2026-03-18-后新增">19. 设备配对请求刷新与取代（2026-03-18 后新增）</h2>
+<h2 id="19-2026-03-18">19. 设备配对请求刷新与取代（2026-03-18 后新增）</h2>
 <p><strong>文件</strong>: <code>src/infra/device-pairing.ts</code> (809 行)</p>
-<h3 id="新增功能">新增功能</h3>
+<h3 id="_46">新增功能</h3>
 <p>当设备认证信息变更时，系统现在可以"取代"（supersede）过期的待审批配对请求，而非简单丢弃：</p>
-<h4 id="核心函数">核心函数</h4>
+<h4 id="_47">核心函数</h4>
 <table>
 <thead>
 <tr>
@@ -1378,29 +1437,31 @@ export default {
 </tr>
 </tbody>
 </table>
-<h4 id="取代流程">取代流程</h4>
-<pre><code>设备认证变更
+<h4 id="_48">取代流程</h4>
+<div class="codehilite"><pre><span></span><code>设备认证变更
   → samePendingApprovalSnapshot() 检查现有请求是否匹配
   → 不匹配 → buildPendingDevicePairingRequest() 构建新请求，取代旧请求
   → 匹配 → refreshPendingDevicePairingRequest() 仅刷新元数据
-</code></pre>
-<h3 id="配对通知扩展">配对通知扩展</h3>
+</code></pre></div>
+
+<h3 id="_49">配对通知扩展</h3>
 <p><strong>文件</strong>: <code>extensions/device-pair/notify.ts</code> (新增)</p>
 <p>新增 <code>PendingPairingRequest</code> 类型和通知订阅逻辑，向用户发送待配对通知。</p>
 <hr />
-<h2 id="20-telegram-线程绑定配置2026-03-18-后新增">20. Telegram 线程绑定配置（2026-03-18 后新增）</h2>
+<h2 id="20-telegram-2026-03-18">20. Telegram 线程绑定配置（2026-03-18 后新增）</h2>
 <p><strong>文件</strong>: <code>src/config/types.telegram.ts</code> (285 行)</p>
 <p>新增 <code>TelegramThreadBindingsConfig</code> 类型，扩展 <code>SessionThreadBindingsConfig</code>：</p>
-<pre><code class="language-typescript">type TelegramThreadBindingsConfig = SessionThreadBindingsConfig &amp; {
-  /** 允许 sessions_spawn({ thread: true }) 自动创建 + 绑定 Telegram topic 用于子 Agent session。默认: false */
-  spawnSubagentSessions?: boolean;
-  /** 允许 /acp spawn 自动创建 + 绑定 Telegram topic 用于 ACP session。默认: false */
-  spawnAcpSessions?: boolean;
-};
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">TelegramThreadBindingsConfig</span> <span class="o">=</span> <span class="nx">SessionThreadBindingsConfig</span> <span class="o">&amp;</span> <span class="p">{</span>
+  <span class="cm">/** 允许 sessions_spawn({ thread: true }) 自动创建 + 绑定 Telegram topic 用于子 Agent session。默认: false */</span>
+  <span class="nx">spawnSubagentSessions?</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="cm">/** 允许 /acp spawn 自动创建 + 绑定 Telegram topic 用于 ACP session。默认: false */</span>
+  <span class="nx">spawnAcpSessions?</span>: <span class="kt">boolean</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
 <p>两个字段均为 opt-in（默认 false），需显式启用。</p>
 <hr />
-<h2 id="21-discord-扩展设置重构2026-03-18-后新增">21. Discord 扩展设置重构（2026-03-18 后新增）</h2>
+<h2 id="21-discord-2026-03-18">21. Discord 扩展设置重构（2026-03-18 后新增）</h2>
 <p><strong>文件</strong>: <code>extensions/discord/src/setup-runtime-helpers.ts</code> (436 行，新增)</p>
 <p>Discord 扩展的设置逻辑重构为懒加载 + 独立辅助文件：</p>
 <table>
@@ -1434,77 +1495,81 @@ export default {
 </tbody>
 </table>
 <p>另新增 <code>extensions/discord/src/setup-account-state.ts</code> (163 行) 处理账号级设置状态。</p>
-<h3 id="matrix-运行时-api-导入安全">Matrix 运行时 API 导入安全</h3>
+<h3 id="matrix-api">Matrix 运行时 API 导入安全</h3>
 <p><code>extensions/matrix/runtime-api.ts</code> 修复了导入安全问题，确保运行时 API 导出真正懒加载。</p>
 <hr />
-<h2 id="22-telegram-自动话题命名大版本更新后新增">22. Telegram 自动话题命名（大版本更新后新增）</h2>
-<p><strong>文件</strong>: <code>src/auto-reply/reply/auto-topic-label.ts</code> (102 行) + <code>auto-topic-label-config.ts</code> (37 行)</p>
+<h2 id="22-telegram">22. Telegram 自动话题命名（大版本更新后新增）</h2>
+<p><strong>文件</strong>: <code>extensions/telegram/src/auto-topic-label.ts</code> (39 行)</p>
 <p>Telegram DM 论坛话题在收到第一条消息时自动通过 LLM 生成标签：</p>
-<pre><code class="language-typescript">async function generateTopicLabel(params: {
-  userMessage: string;
-  prompt: string;        // 自定义 LLM prompt
-  cfg: OpenClawConfig;
-  agentId: string;
-  agentDir: string;
-}): Promise&lt;string | null&gt;
+<div class="codehilite"><pre><span></span><code><span class="k">async</span> <span class="kd">function</span> <span class="nx">generateTopicLabel</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">userMessage</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">prompt</span>: <span class="kt">string</span><span class="p">;</span>        <span class="c1">// 自定义 LLM prompt</span>
+  <span class="nx">cfg</span>: <span class="kt">OpenClawConfig</span><span class="p">;</span>
+  <span class="nx">agentId?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">agentDir?</span>: <span class="kt">string</span><span class="p">;</span>
+<span class="p">})</span><span class="o">:</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="kt">string</span> <span class="o">|</span> <span class="kc">null</span><span class="o">&gt;</span>
 
-function resolveAutoTopicLabelConfig(directConfig?, accountConfig?): {
-  enabled: true; prompt: string;
-} | null
-</code></pre>
+<span class="kd">function</span> <span class="nx">resolveAutoTopicLabelConfig</span><span class="p">(</span><span class="nx">directConfig</span><span class="o">?</span><span class="p">,</span> <span class="nx">accountConfig</span><span class="o">?</span><span class="p">)</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">enabled</span>: <span class="kt">true</span><span class="p">;</span> <span class="nx">prompt</span>: <span class="kt">string</span><span class="p">;</span>
+<span class="p">}</span> <span class="o">|</span> <span class="kc">null</span>
+</code></pre></div>
+
 <p><strong>常量</strong>: <code>MAX_LABEL_LENGTH = 128</code>, <code>TIMEOUT_MS = 15_000</code></p>
-<p><strong>配置</strong>: <code>telegram.dmAutoTopic</code> / <code>telegram.dmAutoTopicLabel</code> / <code>telegram.dmAutoTopicCustom</code>。Per-DM 配置优先于账号级配置。</p>
+<p><strong>配置</strong>: <code>autoTopicLabel</code>（位于 <code>TelegramDirectConfig</code> 和 <code>TelegramAccountConfig</code>）。Per-DM 配置优先于账号级配置。</p>
 <hr />
-<h2 id="23-telegram-自定义-api-root大版本更新后新增">23. Telegram 自定义 API Root（大版本更新后新增）</h2>
+<h2 id="23-telegram-api-root">23. Telegram 自定义 API Root（大版本更新后新增）</h2>
 <p><strong>文件</strong>: <code>extensions/telegram/src/api-fetch.ts</code> (62 行)</p>
 <p>支持自托管 Telegram Bot API 端点：</p>
-<pre><code class="language-typescript">function lookupTelegramChatId(params: {
-  token: string;
-  chatId: string;
-  signal?: AbortSignal;
-  apiRoot?: string;       // 新增：自定义 API 根 URL
-  proxyUrl?: string;
-  network?: TelegramNetworkConfig;
-}): Promise&lt;string | null&gt;
-</code></pre>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">lookupTelegramChatId</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">token</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">chatId</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">signal?</span>: <span class="kt">AbortSignal</span><span class="p">;</span>
+  <span class="nx">apiRoot?</span>: <span class="kt">string</span><span class="p">;</span>       <span class="c1">// 新增：自定义 API 根 URL</span>
+  <span class="nx">proxyUrl?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">network?</span>: <span class="kt">TelegramNetworkConfig</span><span class="p">;</span>
+<span class="p">})</span><span class="o">:</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="kt">string</span> <span class="o">|</span> <span class="kc">null</span><span class="o">&gt;</span>
+</code></pre></div>
+
 <p><strong>配置</strong>: <code>telegram.apiRoot</code>。<code>apiRoot</code> 贯穿所有 Telegram API 调用点（bot 创建、消息发送、探测、审计、媒体下载）。扩展 SSRF 策略以支持自定义 apiRoot 主机名。</p>
 <hr />
-<h2 id="24-acp-协议增强大版本更新后新增">24. ACP 协议增强（大版本更新后新增）</h2>
+<h2 id="24-acp">24. ACP 协议增强（大版本更新后新增）</h2>
 <p><strong>文件</strong>: <code>src/acp/control-plane/manager.core.ts</code></p>
-<h3 id="中止信号转发">中止信号转发</h3>
+<h3 id="_50">中止信号转发</h3>
 <p>Discord/ACP 现在将中止信号转发到 ACP 执行轮次中。在 actor 启动前可中止已排队的轮次。</p>
-<h3 id="挂起轮次恢复">挂起轮次恢复</h3>
+<h3 id="_51">挂起轮次恢复</h3>
 <p>新增挂起轮次饥饿恢复机制——检测超时的 session handles 并保留它们以便恢复，防止轮次永久阻塞。</p>
-<pre><code class="language-typescript">class AcpSessionManager {
-  activeTurnBySession: Map&lt;string, ActiveTurnState&gt;;
-  turnLatencyStats: TurnLatencyStats;    // 完成/失败计数，延迟统计
-  errorCountsByCode: Map&lt;string, number&gt;;
-  // ...
-}
-</code></pre>
-<h3 id="隐藏思考块保留">隐藏思考块保留</h3>
+<div class="codehilite"><pre><span></span><code><span class="kd">class</span> <span class="nx">AcpSessionManager</span> <span class="p">{</span>
+  <span class="nx">activeTurnBySession</span>: <span class="kt">Map</span><span class="o">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="nx">ActiveTurnState</span><span class="o">&gt;</span><span class="p">;</span>
+  <span class="nx">turnLatencyStats</span>: <span class="kt">TurnLatencyStats</span><span class="p">;</span>    <span class="c1">// 完成/失败计数，延迟统计</span>
+  <span class="nx">errorCountsByCode</span>: <span class="kt">Map</span><span class="o">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="kt">number</span><span class="o">&gt;</span><span class="p">;</span>
+  <span class="c1">// ...</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="_52">隐藏思考块保留</h3>
 <p><code>742c005ac8</code> / <code>32fdd21c80</code>：Gateway 聊天和 session 加载时保留隐藏的 thought 块重放。</p>
 <hr />
-<h2 id="25-channel-设置辅助函数统一大版本更新后新增">25. Channel 设置辅助函数统一（大版本更新后新增）</h2>
-<h3 id="共享设置状态辅助">共享设置状态辅助</h3>
+<h2 id="25-channel">25. Channel 设置辅助函数统一（大版本更新后新增）</h2>
+<h3 id="_53">共享设置状态辅助</h3>
 <p>14+ channel 扩展统一使用 <code>src/channels/plugins/setup-wizard-helpers.ts</code> 中的共享辅助函数，通过 <code>src/plugin-sdk/setup-runtime.ts</code> 和 <code>src/plugin-sdk/setup.ts</code> 暴露。</p>
-<h3 id="共享-allowlist-prompt-解析">共享 Allowlist Prompt 解析</h3>
+<h3 id="allowlist-prompt">共享 Allowlist Prompt 解析</h3>
 <p><code>src/channels/plugins/setup-wizard-helpers.ts</code> 扩展 allowlist 解析辅助，5+ 扩展（bluebubbles, feishu, googlechat, irc, nostr）统一使用。</p>
-<h3 id="共享账号查找">共享账号查找</h3>
+<h3 id="_54">共享账号查找</h3>
 <p><strong>文件</strong>: <code>src/plugin-sdk/account-resolution.ts</code> (74 行，新文件)</p>
 <p>集中管理大小写不敏感的账号查找与标准化：</p>
-<pre><code class="language-typescript">function resolveAccountWithDefaultFallback&lt;TAccount&gt;(params: {
-  accountId?; normalizeAccountId; resolvePrimary;
-  hasCredential; resolveDefaultAccountId;
-}): TAccount
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">resolveAccountWithDefaultFallback</span><span class="o">&lt;</span><span class="nx">TAccount</span><span class="o">&gt;</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">accountId</span><span class="o">?</span><span class="p">;</span> <span class="nx">normalizeAccountId</span><span class="p">;</span> <span class="nx">resolvePrimary</span><span class="p">;</span>
+  <span class="nx">hasCredential</span><span class="p">;</span> <span class="nx">resolveDefaultAccountId</span><span class="p">;</span>
+<span class="p">})</span><span class="o">:</span> <span class="nx">TAccount</span>
 
-function listConfiguredAccountIds(params: {
-  accounts: Record&lt;string, unknown&gt; | undefined;
-  normalizeAccountId: (accountId: string) =&gt; string;
-}): string[]
-</code></pre>
+<span class="kd">function</span> <span class="nx">listConfiguredAccountIds</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">accounts</span>: <span class="kt">Record</span><span class="o">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="nx">unknown</span><span class="o">&gt;</span> <span class="o">|</span> <span class="kc">undefined</span><span class="p">;</span>
+  <span class="nx">normalizeAccountId</span><span class="o">:</span> <span class="p">(</span><span class="nx">accountId</span>: <span class="kt">string</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="kt">string</span><span class="p">;</span>
+<span class="p">})</span><span class="o">:</span> <span class="kt">string</span><span class="p">[]</span>
+</code></pre></div>
+
 <hr />
-<h2 id="26-line-channel-迁移大版本更新后新增">26. LINE Channel 迁移（大版本更新后新增）</h2>
+<h2 id="26-line-channel">26. LINE Channel 迁移（大版本更新后新增）</h2>
 <p>LINE channel 从核心 <code>src/line/</code> 迁移到 <code>extensions/line/src/</code>，作为标准扩展包运行。</p>
 <p>新增 <code>extensions/line/runtime-api.ts</code> (75 行) 作为运行时 barrel 文件，重导出：
 - Plugin SDK 核心类型和辅助
@@ -1512,8 +1577,8 @@ function listConfiguredAccountIds(params: {
 - Plugin SDK line-runtime</p>
 <p>配置 schema 相应更新。</p>
 <hr />
-<h2 id="27-关键文件索引">27. 关键文件索引</h2>
-<h3 id="核心框架">核心框架</h3>
+<h2 id="27">27. 关键文件索引</h2>
+<h3 id="_55">核心框架</h3>
 <table>
 <thead>
 <tr>
@@ -1565,7 +1630,7 @@ function listConfiguredAccountIds(params: {
 </tr>
 </tbody>
 </table>
-<h3 id="channel-实现">Channel 实现</h3>
+<h3 id="channel">Channel 实现</h3>
 <table>
 <thead>
 <tr>
@@ -1637,7 +1702,7 @@ function listConfiguredAccountIds(params: {
 </tr>
 </tbody>
 </table>
-<h3 id="配置与安全">配置与安全</h3>
+<h3 id="_56">配置与安全</h3>
 <table>
 <thead>
 <tr>
@@ -1668,7 +1733,7 @@ function listConfiguredAccountIds(params: {
 </tr>
 </tbody>
 </table>
-<h3 id="设备配对与设置">设备配对与设置</h3>
+<h3 id="_57">设备配对与设置</h3>
 <table>
 <thead>
 <tr>
@@ -1696,6 +1761,548 @@ function listConfiguredAccountIds(params: {
 <tr>
 <td><code>extensions/matrix/runtime-api.ts</code></td>
 <td>Matrix 运行时 API（懒加载导出）</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="28-slack-2026-04-07">28. Slack 增强功能（2026-04-07 更新）</h2>
+<h3 id="281-threadrequireexplicitmention">28.1 线程内显式 @提及配置 (<code>thread.requireExplicitMention</code>)</h3>
+<p><strong>文件</strong>: <code>src/config/types.slack.ts</code> (<code>SlackThreadConfig</code>)</p>
+<p>新增 <code>thread.requireExplicitMention</code> 布尔配置，控制 Slack 线程内的隐式提及行为。</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">SlackThreadConfig</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">historyScope</span><span class="o">?:</span> <span class="s2">&quot;thread&quot;</span> <span class="o">|</span> <span class="s2">&quot;channel&quot;</span><span class="p">;</span>
+  <span class="nx">inheritParent?</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">initialHistoryLimit?</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="cm">/**</span>
+<span class="cm">   * 如果为 true，即使 bot 已参与线程，仍要求显式 @bot 提及才触发回复。</span>
+<span class="cm">   * 默认 false：线程参与视为隐式提及，绕过 requireMention 网关。</span>
+<span class="cm">   */</span>
+  <span class="nx">requireExplicitMention?</span>: <span class="kt">boolean</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p><strong>行为</strong>：
+- 默认 <code>false</code>：bot 参与过的线程内发消息自动视为隐式提及
+- 设为 <code>true</code>：只有显式 <code>@bot</code> 才会触发回复，适合高流量线程降噪</p>
+<p>实现路径：<code>extensions/slack/src/monitor/message-handler/prepare.ts</code> 中使用 <code>hasSlackThreadParticipation()</code> 检查线程参与状态，结合 <code>resolveInboundMentionDecision()</code> 进行统一提及决策。</p>
+<h3 id="282-mrkdwn">28.2 作用域提示词与 mrkdwn 格式提示</h3>
+<p><strong>文件</strong>: <code>extensions/slack/src/format.ts</code>, <code>extensions/slack/src/blocks-render.ts</code></p>
+<p>Slack 扩展现在向 Agent 系统提示词中注入 Slack mrkdwn 格式指导，帮助 LLM 生成正确的 Slack 格式文本（使用 <code>*bold*</code> 而非 <code>**bold**</code>）。同时支持 per-channel 和 per-DM 的 <code>systemPrompt</code> 配置字段，允许在不同 Slack channel/DM 上下文中注入不同的系统提示词片段。</p>
+<p>配置示例：</p>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;channels&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">    </span><span class="nt">&quot;slack&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;channels&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">        </span><span class="nt">&quot;C12345&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">          </span><span class="nt">&quot;systemPrompt&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;你是研发团队助手，专注于代码相关问题。&quot;</span><span class="w"></span>
+<span class="w">        </span><span class="p">}</span><span class="w"></span>
+<span class="w">      </span><span class="p">}</span><span class="w"></span>
+<span class="w">    </span><span class="p">}</span><span class="w"></span>
+<span class="w">  </span><span class="p">}</span><span class="w"></span>
+<span class="p">}</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="283-native-exec-approvals">28.3 原生执行审批 (Native Exec Approvals)</h3>
+<p><strong>文件</strong>: <code>extensions/slack/src/monitor/exec-approvals.ts</code>, <code>extensions/slack/src/approval-native.ts</code></p>
+<p>Slack 现在支持原生 Exec Approval 交付——当 Agent 需要执行命令审批时，直接在 Slack 内呈现交互式审批界面（Block Kit 按钮），无需离开 Slack 到 Web UI 审批。</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">SlackExecApprovalConfig</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">enabled?</span>: <span class="kt">NativeExecApprovalEnableMode</span><span class="p">;</span>  <span class="c1">// 启用模式（auto 时可自动解析审批人）</span>
+  <span class="nx">approvers?</span>: <span class="kt">Array</span><span class="o">&lt;</span><span class="kt">string</span> <span class="o">|</span> <span class="kt">number</span><span class="o">&gt;</span><span class="p">;</span>      <span class="c1">// 允许审批的 Slack 用户 ID</span>
+  <span class="nx">agentFilter?</span>: <span class="kt">string</span><span class="p">[];</span>                  <span class="c1">// 仅转发指定 agent 的审批</span>
+  <span class="nx">sessionFilter?</span>: <span class="kt">string</span><span class="p">[];</span>                <span class="c1">// 仅转发匹配 session 的审批</span>
+  <span class="nx">target</span><span class="o">?:</span> <span class="s2">&quot;dm&quot;</span> <span class="o">|</span> <span class="s2">&quot;channel&quot;</span> <span class="o">|</span> <span class="s2">&quot;both&quot;</span><span class="p">;</span>      <span class="c1">// 审批通知发送位置</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p>实现使用 <code>createChannelNativeApprovalRuntime</code> + <code>slackNativeApprovalAdapter</code> 构建审批运行时，通过 Slack Block Kit 渲染命令详情和审批按钮，支持 DM 和 Channel 两种投递目标。</p>
+<h3 id="284-status-reaction-lifecycle">28.4 状态反应生命周期 (Status Reaction Lifecycle)</h3>
+<p><strong>文件</strong>: <code>src/channels/status-reactions.ts</code></p>
+<p>新增通用的 <code>StatusReactionController</code>，通过消息反应 emoji 展示 Agent 处理进度。这是一个 channel 无关的抽象层，已被 Slack、Discord、Telegram、Feishu 等 channel 集成。</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">StatusReactionController</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">setQueued</span><span class="o">:</span> <span class="p">()</span> <span class="p">=&gt;</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="ow">void</span><span class="o">&gt;</span> <span class="o">|</span> <span class="ow">void</span><span class="p">;</span>     <span class="c1">// 排队中 (👀)</span>
+  <span class="nx">setThinking</span><span class="o">:</span> <span class="p">()</span> <span class="p">=&gt;</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="ow">void</span><span class="o">&gt;</span> <span class="o">|</span> <span class="ow">void</span><span class="p">;</span>   <span class="c1">// 思考中 (🤔)</span>
+  <span class="nx">setTool</span><span class="o">:</span> <span class="p">(</span><span class="nx">toolName?</span>: <span class="kt">string</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="ow">void</span><span class="o">&gt;</span> <span class="o">|</span> <span class="ow">void</span><span class="p">;</span> <span class="c1">// 工具调用 (🔥/👨‍💻/⚡)</span>
+  <span class="nx">setCompacting</span><span class="o">:</span> <span class="p">()</span> <span class="p">=&gt;</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="ow">void</span><span class="o">&gt;</span> <span class="o">|</span> <span class="ow">void</span><span class="p">;</span> <span class="c1">// 压缩上下文 (✍)</span>
+  <span class="nx">cancelPending</span><span class="o">:</span> <span class="p">()</span> <span class="p">=&gt;</span> <span class="ow">void</span><span class="p">;</span>                 <span class="c1">// 取消待处理反应</span>
+  <span class="nx">setDone</span><span class="o">:</span> <span class="p">()</span> <span class="p">=&gt;</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="ow">void</span><span class="o">&gt;</span><span class="p">;</span>              <span class="c1">// 完成 (👍)</span>
+  <span class="nx">setError</span><span class="o">:</span> <span class="p">()</span> <span class="p">=&gt;</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="ow">void</span><span class="o">&gt;</span><span class="p">;</span>             <span class="c1">// 错误 (😱)</span>
+  <span class="nx">clear</span><span class="o">:</span> <span class="p">()</span> <span class="p">=&gt;</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="ow">void</span><span class="o">&gt;</span><span class="p">;</span>
+  <span class="nx">restoreInitial</span><span class="o">:</span> <span class="p">()</span> <span class="p">=&gt;</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="ow">void</span><span class="o">&gt;</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p><strong>默认 Emoji 映射</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>状态</th>
+<th>Emoji</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>queued</code></td>
+<td>👀</td>
+<td>消息已接收，排队处理</td>
+</tr>
+<tr>
+<td><code>thinking</code></td>
+<td>🤔</td>
+<td>LLM 正在思考</td>
+</tr>
+<tr>
+<td><code>tool</code></td>
+<td>🔥</td>
+<td>通用工具调用</td>
+</tr>
+<tr>
+<td><code>coding</code></td>
+<td>👨‍💻</td>
+<td>代码执行类工具</td>
+</tr>
+<tr>
+<td><code>web</code></td>
+<td>⚡</td>
+<td>网络请求类工具</td>
+</tr>
+<tr>
+<td><code>done</code></td>
+<td>👍</td>
+<td>处理完成</td>
+</tr>
+<tr>
+<td><code>error</code></td>
+<td>😱</td>
+<td>处理出错</td>
+</tr>
+<tr>
+<td><code>stallSoft</code></td>
+<td>🥱</td>
+<td>软超时 (10s)</td>
+</tr>
+<tr>
+<td><code>stallHard</code></td>
+<td>😨</td>
+<td>硬超时 (30s)</td>
+</tr>
+<tr>
+<td><code>compacting</code></td>
+<td>✍</td>
+<td>上下文压缩</td>
+</tr>
+</tbody>
+</table>
+<p><strong>时序参数</strong>：debounce 700ms，软超时 10s，硬超时 30s，完成保持 1.5s，错误保持 2.5s。工具名智能映射：exec/process → coding，browse/fetch → web。</p>
+<p>Slack 特殊处理：使用 <code>removeReaction</code> + <code>setReaction</code> 的添加/删除模式（而非 Telegram 的替换模式），有专门的 Slack lifecycle 测试覆盖。</p>
+<hr />
+<h2 id="29-matrix-2026-04-07">29. Matrix 增强功能（2026-04-07 更新）</h2>
+<h3 id="291-session-per-chat-type-threadreplies">29.1 线程隔离 Session 与 per-chat-type threadReplies</h3>
+<p><strong>文件</strong>: <code>extensions/matrix/src/matrix/monitor/threads.ts</code>, <code>extensions/matrix/src/types.ts</code></p>
+<p>Matrix 现在支持线程级别的 session 隔离和 per-chat-type 的 threadReplies 配置。</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">MatrixThreadReplies</span> <span class="o">=</span> <span class="s2">&quot;off&quot;</span> <span class="o">|</span> <span class="s2">&quot;inbound&quot;</span> <span class="o">|</span> <span class="s2">&quot;always&quot;</span><span class="p">;</span>
+
+<span class="c1">// DM 可以独立于房间设置 threadReplies 策略</span>
+<span class="kr">type</span> <span class="nx">MatrixDmConfig</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">threadReplies</span><span class="o">?:</span> <span class="s2">&quot;off&quot;</span> <span class="o">|</span> <span class="s2">&quot;inbound&quot;</span> <span class="o">|</span> <span class="s2">&quot;always&quot;</span><span class="p">;</span>
+  <span class="nx">sessionScope</span><span class="o">?:</span> <span class="s2">&quot;per-user&quot;</span> <span class="o">|</span> <span class="s2">&quot;per-room&quot;</span><span class="p">;</span>
+  <span class="c1">// ...</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p><strong>三种 threadReplies 模式</strong>：
+- <code>off</code>：不使用线程回复
+- <code>inbound</code>：仅回复已有线程中的消息（跟随入站线程）
+- <code>always</code>：所有回复都以线程形式发送（如果没有线程则创建新线程）</p>
+<p>DM 的 <code>threadReplies</code> 可独立于房间级别的 <code>threadReplies</code> 配置，通过 <code>resolveMatrixThreadRouting</code> 函数在运行时动态选择。线程 ID 通过 Matrix event 的 <code>m.relates_to</code> 关系提取。</p>
+<h3 id="292-draft-streaming">29.2 Draft Streaming（编辑式流式回复）</h3>
+<p><strong>文件</strong>: <code>extensions/matrix/src/matrix/draft-stream.ts</code></p>
+<p>Matrix 现在支持 Draft Streaming，即在发送回复时使用"编辑已发送消息"的方式实时更新回复内容，模拟流式输出效果。</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">MatrixDraftStream</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">update</span><span class="o">:</span> <span class="p">(</span><span class="nx">text</span>: <span class="kt">string</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="ow">void</span><span class="p">;</span>            <span class="c1">// 更新当前文本块</span>
+  <span class="nx">flush</span><span class="o">:</span> <span class="p">()</span> <span class="p">=&gt;</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="ow">void</span><span class="o">&gt;</span><span class="p">;</span>                <span class="c1">// 确保最新更新已发送</span>
+  <span class="nx">stop</span><span class="o">:</span> <span class="p">()</span> <span class="p">=&gt;</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="kt">string</span> <span class="o">|</span> <span class="kc">undefined</span><span class="o">&gt;</span><span class="p">;</span>   <span class="c1">// 结束当前块，返回 event ID</span>
+  <span class="nx">reset</span><span class="o">:</span> <span class="p">()</span> <span class="p">=&gt;</span> <span class="ow">void</span><span class="p">;</span>                         <span class="c1">// 重置状态（工具调用间隔）</span>
+  <span class="nx">eventId</span><span class="o">:</span> <span class="p">()</span> <span class="p">=&gt;</span> <span class="kt">string</span> <span class="o">|</span> <span class="kc">undefined</span><span class="p">;</span>         <span class="c1">// 当前草稿消息的 event ID</span>
+  <span class="nx">matchesPreparedText</span><span class="o">:</span> <span class="p">(</span><span class="nx">text</span>: <span class="kt">string</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">mustDeliverFinalNormally</span><span class="o">:</span> <span class="p">()</span> <span class="p">=&gt;</span> <span class="kt">boolean</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p><strong>两种预览模式</strong>：
+- <code>partial</code>（默认）：使用 <code>m.text</code> 消息类型，包含 mention 格式
+- <code>quiet</code>：使用 <code>m.notice</code> 消息类型，不包含 mention，适合安静更新</p>
+<p>实现：首条消息使用 <code>sendSingleTextMessageMatrix</code> 发送，后续更新使用 <code>editMessageMatrix</code> 原地编辑。基于 <code>createDraftStreamLoop</code> 共享基础设施，默认 throttle 1000ms。支持跨工具调用 reset。</p>
+<h3 id="293">29.3 群聊历史上下文</h3>
+<p>Matrix 新增 <code>historyLimit</code> 配置，控制 Agent 在群聊中被提及时获取的近期聊天历史条数（默认 0 禁用）。这让 Agent 能理解对话上下文而非仅看到触发消息。</p>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;channels&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">    </span><span class="nt">&quot;matrix&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;historyLimit&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">20</span><span class="w"></span>
+<span class="w">    </span><span class="p">}</span><span class="w"></span>
+<span class="w">  </span><span class="p">}</span><span class="w"></span>
+<span class="p">}</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="294-proxy">29.4 显式 proxy 配置</h3>
+<p><strong>文件</strong>: <code>extensions/matrix/src/matrix/client/config.ts</code></p>
+<p>新增 <code>channels.matrix.proxy</code> 配置字段，支持为 Matrix 连接指定 HTTP/HTTPS 代理。</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">MatrixConfig</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">proxy?</span>: <span class="kt">string</span><span class="p">;</span>  <span class="c1">// 如 &quot;http://127.0.0.1:7890&quot;</span>
+  <span class="c1">// ...</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p>适用于需要通过代理访问 Matrix homeserver 的环境（如企业网络或受限网络）。</p>
+<hr />
+<h2 id="30-line-2026-04-07">30. LINE 出站媒体支持（2026-04-07 更新）</h2>
+<p><strong>文件</strong>: <code>extensions/line/src/outbound-media.ts</code></p>
+<p>LINE channel 新增出站媒体消息支持，覆盖图片、视频和音频三种类型。</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">LineOutboundMediaKind</span> <span class="o">=</span> <span class="s2">&quot;image&quot;</span> <span class="o">|</span> <span class="s2">&quot;video&quot;</span> <span class="o">|</span> <span class="s2">&quot;audio&quot;</span><span class="p">;</span>
+
+<span class="kr">type</span> <span class="nx">LineOutboundMediaResolved</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">mediaUrl</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">mediaKind</span>: <span class="kt">LineOutboundMediaKind</span><span class="p">;</span>
+  <span class="nx">previewImageUrl?</span>: <span class="kt">string</span><span class="p">;</span>   <span class="c1">// 视频/图片预览图</span>
+  <span class="nx">durationMs?</span>: <span class="kt">number</span><span class="p">;</span>        <span class="c1">// 音频/视频时长</span>
+  <span class="nx">trackingId?</span>: <span class="kt">string</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p><strong>约束</strong>：
+- 仅允许 HTTPS URL（LINE API 要求）
+- URL 长度限制 2000 字符
+- 自动根据 MIME 类型或 URL 扩展名检测媒体类型（<code>detectLineMediaKind</code> / <code>detectLineMediaKindFromUrl</code>）
+- 支持的格式：图片 (png/jpg/gif/webp/heic/avif)，视频 (mp4/mov/webm)，音频 (mp3/m4a/aac/wav/ogg)</p>
+<hr />
+<h2 id="31-discord-autothreadname-generated-2026-04-07">31. Discord autoThreadName 'generated' 策略（2026-04-07 更新）</h2>
+<p><strong>文件</strong>: <code>extensions/discord/src/monitor/thread-title.ts</code>, <code>src/config/types.discord.ts</code></p>
+<p>Discord 的 <code>autoThread</code> 功能新增 <code>autoThreadName: "generated"</code> 策略，使用 LLM 为自动创建的线程生成简洁标题。</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">DiscordGuildChannelConfig</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">autoThread?</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">autoArchiveDuration</span><span class="o">?:</span> <span class="s2">&quot;60&quot;</span> <span class="o">|</span> <span class="s2">&quot;1440&quot;</span> <span class="o">|</span> <span class="s2">&quot;4320&quot;</span> <span class="o">|</span> <span class="s2">&quot;10080&quot;</span> <span class="o">|</span> <span class="mf">60</span> <span class="o">|</span> <span class="mf">1440</span> <span class="o">|</span> <span class="mf">4320</span> <span class="o">|</span> <span class="mf">10080</span><span class="p">;</span>
+  <span class="nx">autoThreadName</span><span class="o">?:</span> <span class="s2">&quot;message&quot;</span> <span class="o">|</span> <span class="s2">&quot;generated&quot;</span><span class="p">;</span>  <span class="c1">// 新增 &quot;generated&quot;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p><strong>两种命名策略</strong>：
+- <code>message</code>（默认）：直接使用消息文本截断作为线程标题
+- <code>generated</code>：调用 LLM 生成 3-6 词的简洁标题</p>
+<p><strong>LLM 生成实现</strong>：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">async</span> <span class="kd">function</span> <span class="nx">generateThreadTitle</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">cfg</span>: <span class="kt">OpenClawConfig</span><span class="p">;</span>
+  <span class="nx">agentId</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">messageText</span>: <span class="kt">string</span><span class="p">;</span>         <span class="c1">// 截断到 600 字符</span>
+  <span class="nx">channelName?</span>: <span class="kt">string</span><span class="p">;</span>        <span class="c1">// 截断到 120 字符</span>
+  <span class="nx">channelDescription?</span>: <span class="kt">string</span><span class="p">;</span> <span class="c1">// 截断到 320 字符</span>
+  <span class="nx">timeoutMs?</span>: <span class="kt">number</span><span class="p">;</span>          <span class="c1">// 默认 10s</span>
+<span class="p">})</span><span class="o">:</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="kt">string</span> <span class="o">|</span> <span class="kc">null</span><span class="o">&gt;</span>
+</code></pre></div>
+
+<p>使用 <code>prepareSimpleCompletionModelForAgent</code> 复用当前 Agent 的模型配置，系统提示词要求生成 3-6 词标题，并利用 channel 上下文避免冗余。</p>
+<hr />
+<h2 id="32-whatsapp-2026-04-07">32. WhatsApp 反应引导级别（2026-04-07 更新）</h2>
+<p><strong>文件</strong>: <code>src/utils/reaction-level.ts</code>, <code>extensions/whatsapp/src/channel.ts</code></p>
+<p>新增 <code>ReactionLevel</code> 统一反应引导体系，通过分级控制 Agent 发送 emoji 反应的行为。</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">ReactionLevel</span> <span class="o">=</span> <span class="s2">&quot;off&quot;</span> <span class="o">|</span> <span class="s2">&quot;ack&quot;</span> <span class="o">|</span> <span class="s2">&quot;minimal&quot;</span> <span class="o">|</span> <span class="s2">&quot;extensive&quot;</span><span class="p">;</span>
+
+<span class="kr">type</span> <span class="nx">ResolvedReactionLevel</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">level</span>: <span class="kt">ReactionLevel</span><span class="p">;</span>
+  <span class="nx">ackEnabled</span>: <span class="kt">boolean</span><span class="p">;</span>             <span class="c1">// 是否启用 ACK 反应（如处理中 👀）</span>
+  <span class="nx">agentReactionsEnabled</span>: <span class="kt">boolean</span><span class="p">;</span>  <span class="c1">// 是否启用 Agent 主动反应</span>
+  <span class="nx">agentReactionGuidance</span><span class="o">?:</span> <span class="s2">&quot;minimal&quot;</span> <span class="o">|</span> <span class="s2">&quot;extensive&quot;</span><span class="p">;</span>  <span class="c1">// Agent 反应引导级别</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p><strong>四个级别</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>级别</th>
+<th>ACK 反应</th>
+<th>Agent 反应</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>off</code></td>
+<td>禁用</td>
+<td>禁用</td>
+<td>完全关闭反应</td>
+</tr>
+<tr>
+<td><code>ack</code></td>
+<td>启用</td>
+<td>禁用</td>
+<td>仅显示处理确认反应</td>
+</tr>
+<tr>
+<td><code>minimal</code></td>
+<td>禁用</td>
+<td>启用（稀疏）</td>
+<td>Agent 偶尔反应</td>
+</tr>
+<tr>
+<td><code>extensive</code></td>
+<td>禁用</td>
+<td>启用（频繁）</td>
+<td>Agent 积极反应</td>
+</tr>
+</tbody>
+</table>
+<p>WhatsApp channel 通过 <code>agentPrompt.reactionGuidance</code> 适配器将反应级别注入系统提示词，引导 LLM 行为。该体系也适用于 Telegram、Signal 等 channel。</p>
+<hr />
+<h2 id="33-channel-2026-04-07">33. 核心 Channel 变更（2026-04-07 更新）</h2>
+<h3 id="331-inbound-mention-policy">33.1 集中化入站提及策略 (Inbound Mention Policy)</h3>
+<p><strong>文件</strong>: <code>src/channels/mention-gating.ts</code></p>
+<p>入站消息的 @提及检测和响应策略现已集中化为统一的 <code>resolveInboundMentionDecision</code> 函数，取代各 channel 分散的提及处理逻辑。</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">InboundMentionFacts</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">canDetectMention</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">wasMentioned</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">hasAnyMention?</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">implicitMentionKinds?</span>: <span class="kt">readonly</span> <span class="nx">InboundImplicitMentionKind</span><span class="p">[];</span>
+<span class="p">};</span>
+
+<span class="kr">type</span> <span class="nx">InboundMentionPolicy</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">isGroup</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">requireMention</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">allowedImplicitMentionKinds?</span>: <span class="kt">readonly</span> <span class="nx">InboundImplicitMentionKind</span><span class="p">[];</span>
+  <span class="nx">allowTextCommands</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">hasControlCommand</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">commandAuthorized</span>: <span class="kt">boolean</span><span class="p">;</span>
+<span class="p">};</span>
+
+<span class="kr">type</span> <span class="nx">InboundImplicitMentionKind</span> <span class="o">=</span>
+  <span class="o">|</span> <span class="s2">&quot;reply_to_bot&quot;</span>     <span class="c1">// 回复 bot 消息</span>
+  <span class="o">|</span> <span class="s2">&quot;quoted_bot&quot;</span>       <span class="c1">// 引用 bot 消息</span>
+  <span class="o">|</span> <span class="s2">&quot;bot_thread_participant&quot;</span>  <span class="c1">// bot 参与的线程</span>
+  <span class="o">|</span> <span class="s2">&quot;native&quot;</span><span class="p">;</span>          <span class="c1">// 平台原生隐式提及</span>
+</code></pre></div>
+
+<p><strong>设计</strong>：将事实（Facts）与策略（Policy）分离，每个 channel 负责收集平台特定的提及事实，统一策略引擎做决策。支持隐式提及种类声明，允许 <code>thread.requireExplicitMention</code> 等配置精细控制哪些隐式提及被接受。</p>
+<h3 id="332-channel-mcp-bridge">33.2 Channel MCP Bridge</h3>
+<p><strong>文件</strong>: <code>src/mcp/channel-bridge.ts</code>, <code>src/mcp/channel-tools.ts</code></p>
+<p>新增 OpenClaw Channel MCP Bridge，允许通过 MCP (Model Context Protocol) 协议与 OpenClaw channel 交互。</p>
+<div class="codehilite"><pre><span></span><code><span class="kd">class</span> <span class="nx">OpenClawChannelBridge</span> <span class="p">{</span>
+  <span class="c1">// 通过 GatewayClient 连接到运行中的 OpenClaw 网关</span>
+  <span class="c1">// 支持三种模式：off, on, auto</span>
+
+  <span class="c1">// 注册到 MCP Server 的工具</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p><strong>MCP 工具列表</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>工具</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>conversations_list</code></td>
+<td>列出 channel 会话（支持搜索、过滤、分页）</td>
+</tr>
+<tr>
+<td><code>conversation_get</code></td>
+<td>获取单个会话详情</td>
+</tr>
+<tr>
+<td><code>messages_read</code></td>
+<td>获取会话聊天历史</td>
+</tr>
+<tr>
+<td><code>messages_send</code></td>
+<td>向会话发送消息</td>
+</tr>
+<tr>
+<td><code>attachments_fetch</code></td>
+<td>获取附件内容</td>
+</tr>
+<tr>
+<td><code>permissions_list_open</code></td>
+<td>列出待审批请求</td>
+</tr>
+<tr>
+<td><code>permissions_respond</code></td>
+<td>审批决策</td>
+</tr>
+<tr>
+<td><code>events_poll</code></td>
+<td>轮询实时事件</td>
+</tr>
+<tr>
+<td><code>events_wait</code></td>
+<td>等待实时事件</td>
+</tr>
+</tbody>
+</table>
+<p>Bridge 通过 <code>GatewayClient</code> WebSocket 连接到网关，接收实时事件（消息、审批请求），并通过 MCP Server Notification 推送给 Claude 等 MCP 客户端。支持 Claude channel 权限请求的拦截和转发。</p>
+<h3 id="333-acp-conversation-binds">33.3 ACP 会话绑定 (Conversation Binds)</h3>
+<p><strong>文件</strong>: <code>src/plugins/conversation-binding.ts</code>, <code>src/channels/plugins/types.adapters.ts</code></p>
+<p>ACP (Agent Communication Protocol) 新增会话绑定机制，允许消息 channel 的会话与 ACP session 建立关联。</p>
+<p>核心概念：
+- <code>conversationBindings</code> 适配器加入 <code>ChannelPlugin</code> 接口
+- 支持通过 <code>resolveConversationRef</code> 将 channel 特定的会话标识解析为规范化引用
+- 运行时插件会话绑定基于审批驱动，区别于配置编译的 channel 绑定</p>
+<p>已集成 channel：Discord、Telegram、Slack、Matrix、iMessage、BlueBubbles、LINE、Feishu 等均已实现 <code>conversationBindings</code> 适配器。</p>
+<h3 id="334-reply-dispatch-hook-before-agent-reply-hook">33.4 Reply Dispatch Hook 与 Before Agent Reply Hook</h3>
+<p><strong>文件</strong>: <code>src/plugins/types.ts</code></p>
+<p>新增两个关键 Plugin Hook：</p>
+<h4 id="reply_dispatch-hook"><code>reply_dispatch</code> Hook</h4>
+<p>在消息从入站路由到出站交付之间触发，允许插件完全接管回复分发流程。</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">PluginHookReplyDispatchEvent</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">ctx</span>: <span class="kt">FinalizedMsgContext</span><span class="p">;</span>
+  <span class="nx">runId?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">sessionKey?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">inboundAudio</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">sessionTtsAuto?</span>: <span class="kt">TtsAutoMode</span><span class="p">;</span>
+  <span class="nx">suppressUserDelivery?</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">shouldRouteToOriginating</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">originatingChannel?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">originatingTo?</span>: <span class="kt">string</span><span class="p">;</span>
+<span class="p">};</span>
+
+<span class="kr">type</span> <span class="nx">PluginHookReplyDispatchResult</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">handled</span>: <span class="kt">boolean</span><span class="p">;</span>         <span class="c1">// 是否由插件处理（跳过默认分发）</span>
+  <span class="nx">queuedFinal</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">counts</span>: <span class="kt">Record</span><span class="o">&lt;</span><span class="nx">ReplyDispatchKind</span><span class="p">,</span> <span class="kt">number</span><span class="o">&gt;</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h4 id="before_agent_reply-hook-claiming-pattern"><code>before_agent_reply</code> Hook (Claiming Pattern)</h4>
+<p>在 Agent 执行前触发，允许插件"认领"消息并提供自定义回复，跳过 LLM 调用。</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">PluginHookBeforeAgentReplyEvent</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">cleanedBody</span>: <span class="kt">string</span><span class="p">;</span>  <span class="c1">// 最终用户消息文本</span>
+<span class="p">};</span>
+
+<span class="kr">type</span> <span class="nx">PluginHookBeforeAgentReplyResult</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">handled</span>: <span class="kt">boolean</span><span class="p">;</span>   <span class="c1">// 是否已处理（跳过 Agent 执行）</span>
+  <span class="nx">reply?</span>: <span class="kt">ReplyPayload</span><span class="p">;</span> <span class="c1">// 自定义回复</span>
+  <span class="nx">reason?</span>: <span class="kt">string</span><span class="p">;</span>    <span class="c1">// 处理原因说明</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="335-before_tool_call-requireapproval">33.5 before_tool_call 异步 requireApproval</h3>
+<p><strong>文件</strong>: <code>src/plugins/types.ts</code> (<code>PluginHookBeforeToolCallResult</code>)</p>
+<p><code>before_tool_call</code> Hook 新增 <code>requireApproval</code> 返回字段，允许插件在工具调用前动态要求审批。</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">PluginHookBeforeToolCallResult</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">params?</span>: <span class="kt">Record</span><span class="o">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="nx">unknown</span><span class="o">&gt;</span><span class="p">;</span>
+  <span class="nx">block?</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">blockReason?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">requireApproval</span><span class="o">?:</span> <span class="p">{</span>
+    <span class="nx">title</span>: <span class="kt">string</span><span class="p">;</span>
+    <span class="nx">description</span>: <span class="kt">string</span><span class="p">;</span>
+    <span class="nx">severity</span><span class="o">?:</span> <span class="s2">&quot;info&quot;</span> <span class="o">|</span> <span class="s2">&quot;warning&quot;</span> <span class="o">|</span> <span class="s2">&quot;critical&quot;</span><span class="p">;</span>
+    <span class="nx">timeoutMs?</span>: <span class="kt">number</span><span class="p">;</span>
+    <span class="nx">timeoutBehavior</span><span class="o">?:</span> <span class="s2">&quot;allow&quot;</span> <span class="o">|</span> <span class="s2">&quot;deny&quot;</span><span class="p">;</span>
+  <span class="p">};</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p>这使得插件可以根据工具参数、上下文或外部策略动态决定是否需要人工审批，而非仅依赖静态的 exec approval 配置。审批请求通过现有的 native approval 渠道（Slack/Discord/Telegram/Matrix 等）交付。</p>
+<hr />
+<h2 id="34-2026-04-07">34. 关键文件索引补充（2026-04-07 更新）</h2>
+<h3 id="slack">Slack 增强</h3>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>src/config/types.slack.ts</code></td>
+<td>Slack 配置类型（含 SlackThreadConfig.requireExplicitMention）</td>
+</tr>
+<tr>
+<td><code>extensions/slack/src/monitor/exec-approvals.ts</code></td>
+<td>Slack 原生执行审批处理器</td>
+</tr>
+<tr>
+<td><code>extensions/slack/src/approval-native.ts</code></td>
+<td>Slack 原生审批适配器</td>
+</tr>
+<tr>
+<td><code>extensions/slack/src/format.ts</code></td>
+<td>Slack mrkdwn 格式化</td>
+</tr>
+<tr>
+<td><code>extensions/slack/src/blocks-render.ts</code></td>
+<td>Slack Block Kit 渲染</td>
+</tr>
+</tbody>
+</table>
+<h3 id="matrix">Matrix 增强</h3>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>extensions/matrix/src/types.ts</code></td>
+<td>Matrix 配置类型（含 threadReplies/proxy/threadBindings）</td>
+</tr>
+<tr>
+<td><code>extensions/matrix/src/matrix/draft-stream.ts</code></td>
+<td>Matrix Draft Streaming 实现</td>
+</tr>
+<tr>
+<td><code>extensions/matrix/src/matrix/monitor/threads.ts</code></td>
+<td>Matrix 线程路由解析</td>
+</tr>
+<tr>
+<td><code>extensions/matrix/src/matrix/client/config.ts</code></td>
+<td>Matrix 客户端配置（含 proxy）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="channel_1">核心 Channel 框架</h3>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>src/channels/status-reactions.ts</code></td>
+<td>状态反应控制器（通用抽象）</td>
+</tr>
+<tr>
+<td><code>src/channels/mention-gating.ts</code></td>
+<td>集中化入站提及策略</td>
+</tr>
+<tr>
+<td><code>src/mcp/channel-bridge.ts</code></td>
+<td>Channel MCP Bridge 实现</td>
+</tr>
+<tr>
+<td><code>src/mcp/channel-tools.ts</code></td>
+<td>MCP Bridge 注册的工具定义</td>
+</tr>
+<tr>
+<td><code>src/utils/reaction-level.ts</code></td>
+<td>反应引导级别解析</td>
+</tr>
+<tr>
+<td><code>src/plugins/conversation-binding.ts</code></td>
+<td>ACP 会话绑定管理</td>
+</tr>
+<tr>
+<td><code>extensions/line/src/outbound-media.ts</code></td>
+<td>LINE 出站媒体支持</td>
+</tr>
+<tr>
+<td><code>extensions/discord/src/monitor/thread-title.ts</code></td>
+<td>Discord LLM 线程标题生成</td>
 </tr>
 </tbody>
 </table>

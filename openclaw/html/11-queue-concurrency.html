@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>11-queue-concurrency</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1 id="11-">11 - 队列与并发系统深度调研</h1>
+<hr />
+<h2 id="1">1. 队列系统总体架构</h2>
+<h3 id="11">1.1 设计目标</h3>
+<p>OpenClaw 的队列系统解决: <strong>多通道、多消息并发到达时，如何安全、有序地执行 LLM Agent 回复</strong>。</p>
+<ul>
+<li>防止同一 session 内多个 agent run 并发执行导致的竞态</li>
+<li>控制全局 LLM 并发调用量，避免上游速率限制</li>
+<li>保证用户体验不受队列等待影响（typing indicator 立即触发）</li>
+<li>纯 TypeScript + Promise 实现，无外部依赖</li>
+</ul>
+<h3 id="12">1.2 与会话系统的关系</h3>
+<p>消息进入系统后，通过路由模块解析出 <code>sessionKey</code>，队列系统在两个层面工作:</p>
+<ol>
+<li><strong>session lane</strong> (<code>session:&lt;sessionKey&gt;</code>): 保证同一 session 内串行执行</li>
+<li><strong>global lane</strong> (<code>main</code> / <code>cron</code> / <code>subagent</code>): 控制跨 session 的全局并发数</li>
+</ol>
+<h3 id="13">1.3 关键源码路径</h3>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>职责</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>src/process/command-queue.ts</code></td>
+<td>底层 lane 队列</td>
+</tr>
+<tr>
+<td><code>src/process/lanes.ts</code></td>
+<td>Lane 常量定义</td>
+</tr>
+<tr>
+<td><code>src/auto-reply/reply/queue/</code></td>
+<td>上层 followup 队列</td>
+</tr>
+<tr>
+<td><code>src/gateway/server-lanes.ts</code></td>
+<td>Lane 并发初始化</td>
+</tr>
+<tr>
+<td><code>src/config/agent-limits.ts</code></td>
+<td>Agent limits 默认值</td>
+</tr>
+<tr>
+<td><code>src/routing/resolve-route.ts</code></td>
+<td>路由解析</td>
+</tr>
+<tr>
+<td><code>src/routing/session-key.ts</code></td>
+<td>Session key 构建</td>
+</tr>
+</tbody>
+</table>
+<h3 id="14">1.4 完整数据流</h3>
+<div class="codehilite"><pre><span></span><code>入站消息 → <span class="nv">resolveAgentRoute</span><span class="ss">()</span> → <span class="nv">sessionKey</span>
+         → <span class="nv">resolveQueueSettings</span><span class="ss">()</span> → <span class="nv">mode</span><span class="o">/</span><span class="nv">debounce</span><span class="o">/</span><span class="nv">cap</span><span class="o">/</span><span class="nv">drop</span>
+         → <span class="nv">enqueue</span> <span class="nv">to</span> <span class="nv">session</span> <span class="nv">lane</span> <span class="ss">(</span><span class="nv">session</span>:<span class="o">&lt;</span><span class="nv">key</span><span class="o">&gt;</span><span class="ss">)</span>
+         → <span class="k">wait</span> <span class="k">for</span> <span class="nv">session</span> <span class="nv">lane</span> <span class="nv">slot</span>
+         → <span class="nv">enqueue</span> <span class="nv">to</span> <span class="nv">global</span> <span class="nv">lane</span> <span class="ss">(</span><span class="nv">main</span><span class="o">/</span><span class="nv">cron</span><span class="o">/</span><span class="nv">subagent</span><span class="ss">)</span>
+         → <span class="k">wait</span> <span class="k">for</span> <span class="nv">global</span> <span class="nv">lane</span> <span class="nv">slot</span>
+         → <span class="nv">runEmbeddedPiAgent</span><span class="ss">()</span>
+                ↓
+         若有新消息到达且 <span class="nv">session</span> <span class="nv">busy</span>:
+            <span class="nv">steer</span> → 注入当前 <span class="nv">run</span>
+            <span class="nv">followup</span> → 加入 <span class="nv">followup</span> <span class="nv">queue</span>
+            <span class="nv">collect</span> → 加入 <span class="nv">followup</span> <span class="nv">queue</span>，<span class="nv">drain</span> 时合并
+            <span class="nv">interrupt</span> → 中止当前 <span class="nv">run</span> <span class="o">+</span> 重新执行
+                ↓
+         <span class="nv">run</span> 完成 → <span class="nv">finalizeWithFollowup</span><span class="ss">()</span>
+                  → <span class="nv">scheduleFollowupDrain</span><span class="ss">()</span>
+                  → 逐个<span class="o">/</span>合并执行 <span class="nv">followup</span> <span class="nv">queue</span>
+</code></pre></div>
+
+<hr />
+<h2 id="2-lane">2. Lane 模型</h2>
+<h3 id="21-lane">2.1 双层 Lane 结构</h3>
+<p><strong>Session Lane</strong>（每 session 一个，maxConcurrent = 1，不可配置）:</p>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kd">function</span> <span class="nx">resolveSessionLane</span><span class="p">(</span><span class="nx">key</span>: <span class="kt">string</span><span class="p">)</span> <span class="p">{</span>
+  <span class="kd">const</span> <span class="nx">cleaned</span> <span class="o">=</span> <span class="nx">key</span><span class="p">.</span><span class="nx">trim</span><span class="p">()</span> <span class="o">||</span> <span class="nx">CommandLane</span><span class="p">.</span><span class="nx">Main</span><span class="p">;</span>
+  <span class="k">return</span> <span class="nx">cleaned</span><span class="p">.</span><span class="nx">startsWith</span><span class="p">(</span><span class="s2">&quot;session:&quot;</span><span class="p">)</span> <span class="o">?</span> <span class="nx">cleaned</span> <span class="o">:</span> <span class="sb">`session:</span><span class="si">${</span><span class="nx">cleaned</span><span class="si">}</span><span class="sb">`</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p><strong>Global Lane</strong>（进程级别）:</p>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kd">const</span> <span class="kd">enum</span> <span class="nx">CommandLane</span> <span class="p">{</span>
+  <span class="nx">Main</span> <span class="o">=</span> <span class="s2">&quot;main&quot;</span><span class="p">,</span>        <span class="c1">// 默认 maxConcurrent=4</span>
+  <span class="nx">Cron</span> <span class="o">=</span> <span class="s2">&quot;cron&quot;</span><span class="p">,</span>        <span class="c1">// 定时任务</span>
+  <span class="nx">Subagent</span> <span class="o">=</span> <span class="s2">&quot;subagent&quot;</span><span class="p">,</span><span class="c1">// 子 agent，默认 maxConcurrent=8</span>
+  <span class="nx">Nested</span> <span class="o">=</span> <span class="s2">&quot;nested&quot;</span><span class="p">,</span>    <span class="c1">// 嵌套 agent 操作</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="22-lane-key">2.2 Lane Key 构建规则</h3>
+<ul>
+<li>Session lane key: <code>session:agent:&lt;agentId&gt;:&lt;channel&gt;:&lt;chatType&gt;:&lt;peerId&gt;</code></li>
+<li>Global lane key: 使用 <code>CommandLane</code> 枚举值</li>
+<li>Cron 内的嵌套操作路由到 <code>Nested</code> lane，避免死锁</li>
+</ul>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kd">function</span> <span class="nx">resolveGlobalLane</span><span class="p">(</span><span class="nx">lane?</span>: <span class="kt">string</span><span class="p">)</span> <span class="p">{</span>
+  <span class="kd">const</span> <span class="nx">cleaned</span> <span class="o">=</span> <span class="nx">lane</span><span class="o">?</span><span class="p">.</span><span class="nx">trim</span><span class="p">();</span>
+  <span class="k">if</span> <span class="p">(</span><span class="nx">cleaned</span> <span class="o">===</span> <span class="nx">CommandLane</span><span class="p">.</span><span class="nx">Cron</span><span class="p">)</span> <span class="p">{</span>
+    <span class="k">return</span> <span class="nx">CommandLane</span><span class="p">.</span><span class="nx">Nested</span><span class="p">;</span> <span class="c1">// 避免死锁</span>
+  <span class="p">}</span>
+  <span class="k">return</span> <span class="nx">cleaned</span> <span class="o">?</span> <span class="nx">cleaned</span> : <span class="kt">CommandLane.Main</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<hr />
+<h2 id="3">3. 队列模式（六种）</h2>
+<h3 id="31">3.1 类型定义</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kr">type</span> <span class="nx">QueueMode</span> <span class="o">=</span> <span class="s2">&quot;steer&quot;</span> <span class="o">|</span> <span class="s2">&quot;followup&quot;</span> <span class="o">|</span> <span class="s2">&quot;collect&quot;</span> <span class="o">|</span> <span class="s2">&quot;steer-backlog&quot;</span> <span class="o">|</span> <span class="s2">&quot;interrupt&quot;</span> <span class="o">|</span> <span class="s2">&quot;queue&quot;</span><span class="p">;</span>
+</code></pre></div>
+
+<h3 id="32">3.2 各模式详解</h3>
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>行为</th>
+<th>适用场景</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>steer</code></td>
+<td>新消息立即注入当前 run</td>
+<td>需要实时响应的对话</td>
+</tr>
+<tr>
+<td><code>followup</code></td>
+<td>等当前 run 结束后逐条执行</td>
+<td>严格顺序执行</td>
+</tr>
+<tr>
+<td><code>collect</code>（默认）</td>
+<td>多条排队消息合并为单一 turn</td>
+<td>减少 token 消耗</td>
+</tr>
+<tr>
+<td><code>steer-backlog</code></td>
+<td>先 steer 注入 + 保留到 followup</td>
+<td>双重保障</td>
+</tr>
+<tr>
+<td><code>interrupt</code></td>
+<td>中止当前 run，用最新消息重新开始</td>
+<td>Legacy</td>
+</tr>
+<tr>
+<td><code>queue</code></td>
+<td><code>steer</code> 的别名（归一化时映射为 steer）</td>
+<td>兼容</td>
+</tr>
+</tbody>
+</table>
+<h3 id="33-collect">3.3 collect 模式合并格式</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">[Queued messages while agent was busy]</span><span class="w"></span>
+
+<span class="na">---</span><span class="w"></span>
+<span class="na">Queued #1</span><span class="w"></span>
+<span class="na">&lt;message1&gt;</span><span class="w"></span>
+
+<span class="na">---</span><span class="w"></span>
+<span class="na">Queued #2</span><span class="w"></span>
+<span class="na">&lt;message2&gt;</span><span class="w"></span>
+</code></pre></div>
+
+<p>如果排队消息来自不同 channel/thread，退化为逐条处理。</p>
+<h3 id="34">3.4 队列策略决策逻辑</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kd">function</span> <span class="nx">resolveActiveRunQueueAction</span><span class="p">(</span><span class="nx">params</span><span class="p">)</span><span class="o">:</span> <span class="nx">ActiveRunQueueAction</span> <span class="p">{</span>
+  <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="nx">params</span><span class="p">.</span><span class="nx">isActive</span><span class="p">)</span> <span class="k">return</span> <span class="s2">&quot;run-now&quot;</span><span class="p">;</span>         <span class="c1">// 没有活跃 run</span>
+  <span class="k">if</span> <span class="p">(</span><span class="nx">params</span><span class="p">.</span><span class="nx">isHeartbeat</span><span class="p">)</span> <span class="k">return</span> <span class="s2">&quot;drop&quot;</span><span class="p">;</span>           <span class="c1">// 心跳在 busy 时丢弃</span>
+  <span class="k">if</span> <span class="p">(</span><span class="nx">params</span><span class="p">.</span><span class="nx">shouldFollowup</span> <span class="o">||</span> <span class="nx">params</span><span class="p">.</span><span class="nx">queueMode</span> <span class="o">===</span> <span class="s2">&quot;steer&quot;</span><span class="p">)</span>
+    <span class="k">return</span> <span class="s2">&quot;enqueue-followup&quot;</span><span class="p">;</span>
+  <span class="k">return</span> <span class="s2">&quot;run-now&quot;</span><span class="p">;</span>                                <span class="c1">// interrupt 等模式</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<hr />
+<h2 id="4-coalesce">4. 消息合并 (Coalesce)</h2>
+<h3 id="41-collect">4.1 collect 模式下的合并策略</h3>
+<p><code>src/auto-reply/reply/queue/drain.ts</code>:</p>
+<ol>
+<li><strong>等待 debounce</strong>: 确保用户停止输入后再合并</li>
+<li><strong>跨通道检测</strong>: 检查队列中消息是否来自不同 channel/thread</li>
+<li><strong>跨通道处理</strong>: 检测到跨通道时逐条处理</li>
+<li><strong>同通道合并</strong>: 调用 <code>buildCollectPrompt()</code> 拼接为结构化 prompt</li>
+<li><strong>溢出摘要注入</strong>: 有 dropped 消息时通过 <code>previewQueueSummaryPrompt()</code> 生成摘要</li>
+</ol>
+<hr />
+<h2 id="5">5. 并发控制</h2>
+<h3 id="51">5.1 全局并发限制</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kd">const</span> <span class="nx">DEFAULT_AGENT_MAX_CONCURRENT</span> <span class="o">=</span> <span class="mf">4</span><span class="p">;</span>
+<span class="k">export</span> <span class="kd">const</span> <span class="nx">DEFAULT_SUBAGENT_MAX_CONCURRENT</span> <span class="o">=</span> <span class="mf">8</span><span class="p">;</span>
+</code></pre></div>
+
+<p>Gateway 启动时应用:</p>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kd">function</span> <span class="nx">applyGatewayLaneConcurrency</span><span class="p">(</span><span class="nx">cfg</span><span class="p">)</span> <span class="p">{</span>
+  <span class="nx">setCommandLaneConcurrency</span><span class="p">(</span><span class="nx">CommandLane</span><span class="p">.</span><span class="nx">Cron</span><span class="p">,</span> <span class="nx">cfg</span><span class="p">.</span><span class="nx">cron</span><span class="o">?</span><span class="p">.</span><span class="nx">maxConcurrentRuns</span> <span class="o">??</span> <span class="mf">1</span><span class="p">);</span>
+  <span class="nx">setCommandLaneConcurrency</span><span class="p">(</span><span class="nx">CommandLane</span><span class="p">.</span><span class="nx">Main</span><span class="p">,</span> <span class="nx">resolveAgentMaxConcurrent</span><span class="p">(</span><span class="nx">cfg</span><span class="p">));</span>
+  <span class="nx">setCommandLaneConcurrency</span><span class="p">(</span><span class="nx">CommandLane</span><span class="p">.</span><span class="nx">Subagent</span><span class="p">,</span> <span class="nx">resolveSubagentMaxConcurrent</span><span class="p">(</span><span class="nx">cfg</span><span class="p">));</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="52-session">5.2 Session 级串行化</h3>
+<p>每个 session key 对应一个 session lane，<code>maxConcurrent</code> 固定为 1，保证:
+- session 文件不被并发写入
+- 对话历史一致性
+- tool 执行不交叉</p>
+<h3 id="53-lane-drain">5.3 Lane Drain 机制</h3>
+<p>底层 pump 循环:</p>
+<div class="codehilite"><pre><span></span><code><span class="kd">const</span> <span class="nx">pump</span> <span class="o">=</span> <span class="p">()</span> <span class="p">=&gt;</span> <span class="p">{</span>
+  <span class="k">while</span> <span class="p">(</span><span class="nx">state</span><span class="p">.</span><span class="nx">activeTaskIds</span><span class="p">.</span><span class="nx">size</span> <span class="o">&lt;</span> <span class="nx">state</span><span class="p">.</span><span class="nx">maxConcurrent</span> <span class="o">&amp;&amp;</span> <span class="nx">state</span><span class="p">.</span><span class="nx">queue</span><span class="p">.</span><span class="nx">length</span> <span class="o">&gt;</span> <span class="mf">0</span><span class="p">)</span> <span class="p">{</span>
+    <span class="kd">const</span> <span class="nx">entry</span> <span class="o">=</span> <span class="nx">state</span><span class="p">.</span><span class="nx">queue</span><span class="p">.</span><span class="nx">shift</span><span class="p">();</span>
+    <span class="c1">// 分配 taskId，执行 task，完成后递归 pump</span>
+  <span class="p">}</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="54">5.4 通用并发工具</h3>
+<table>
+<thead>
+<tr>
+<th>工具</th>
+<th>文件</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>runTasksWithConcurrency&lt;T&gt;</code></td>
+<td><code>src/utils/run-with-concurrency.ts</code></td>
+<td>Worker-pool 风格并发控制</td>
+</tr>
+<tr>
+<td><code>KeyedAsyncQueue</code></td>
+<td><code>src/plugin-sdk/keyed-async-queue.ts</code></td>
+<td>按 key 串行化，key 间互不阻塞</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="6">6. 溢出处理</h2>
+<h3 id="61">6.1 三种策略</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kr">type</span> <span class="nx">QueueDropPolicy</span> <span class="o">=</span> <span class="s2">&quot;old&quot;</span> <span class="o">|</span> <span class="s2">&quot;new&quot;</span> <span class="o">|</span> <span class="s2">&quot;summarize&quot;</span><span class="p">;</span>
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>策略</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>new</code></td>
+<td>拒绝新消息入队</td>
+</tr>
+<tr>
+<td><code>old</code></td>
+<td>从队列头部移除最旧消息</td>
+</tr>
+<tr>
+<td><code>summarize</code>（默认）</td>
+<td>移除最旧消息，截断文本（160字符）保存为摘要</td>
+</tr>
+</tbody>
+</table>
+<h3 id="62-summarize-prompt">6.2 summarize 生成的 prompt</h3>
+<div class="codehilite"><pre><span></span><code><span class="p">[</span><span class="n">Queue</span><span class="w"> </span><span class="n">overflow</span><span class="p">]</span><span class="w"> </span><span class="n">Dropped</span><span class="w"> </span><span class="mi">3</span><span class="w"> </span><span class="n">messages</span><span class="w"> </span><span class="n">due</span><span class="w"> </span><span class="n">to</span><span class="w"> </span><span class="n">cap</span><span class="p">.</span><span class="w"></span>
+<span class="nl">Summary</span><span class="p">:</span><span class="w"></span>
+<span class="o">-</span><span class="w"> </span><span class="n">User</span><span class="w"> </span><span class="n">asked</span><span class="w"> </span><span class="n">about</span><span class="w"> </span><span class="n">deployment</span><span class="w"> </span><span class="n">status</span><span class="p">...</span><span class="w"></span>
+<span class="o">-</span><span class="w"> </span><span class="n">User</span><span class="w"> </span><span class="n">mentioned</span><span class="w"> </span><span class="n">database</span><span class="w"> </span><span class="n">migration</span><span class="p">...</span><span class="w"></span>
+<span class="o">-</span><span class="w"> </span><span class="n">Follow</span><span class="w"> </span><span class="n">up</span><span class="w"> </span><span class="n">on</span><span class="w"> </span><span class="n">the</span><span class="w"> </span><span class="n">API</span><span class="w"> </span><span class="n">issue</span><span class="p">...</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="63">6.3 默认配置</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kd">const</span> <span class="nx">DEFAULT_QUEUE_DEBOUNCE_MS</span> <span class="o">=</span> <span class="mf">1000</span><span class="p">;</span>  <span class="c1">// 1秒防抖</span>
+<span class="k">export</span> <span class="kd">const</span> <span class="nx">DEFAULT_QUEUE_CAP</span> <span class="o">=</span> <span class="mf">20</span><span class="p">;</span>            <span class="c1">// 最多20条</span>
+<span class="k">export</span> <span class="kd">const</span> <span class="nx">DEFAULT_QUEUE_DROP</span>: <span class="kt">QueueDropPolicy</span> <span class="o">=</span> <span class="s2">&quot;summarize&quot;</span><span class="p">;</span>
+</code></pre></div>
+
+<hr />
+<h2 id="7">7. 优先级与中断</h2>
+<h3 id="71">7.1 心跳消息优先级</h3>
+<p>心跳消息在 session busy 时直接<strong>丢弃</strong>（<code>"drop"</code> action），避免低优先级检查堵塞用户消息。</p>
+<h3 id="72">7.2 中断机制</h3>
+<p>三层:</p>
+<ol>
+<li><strong>ReplyRunRegistry</strong> (<code>src/auto-reply/reply/reply-run-registry.ts</code>):</li>
+<li>每个 session 最多一个活跃 <code>ReplyOperation</code></li>
+<li><code>abort(sessionKey)</code> → AbortController → 通知后端取消</li>
+<li>
+<p>生命周期: <code>queued → preflight_compacting → memory_flushing → running → completed/failed/aborted</code></p>
+</li>
+<li>
+<p><strong>快速中止</strong> (<code>src/auto-reply/reply/abort.ts</code>):</p>
+</li>
+<li><code>/stop</code> 触发 <code>tryFastAbortFromMessage</code></li>
+<li>清除 followup 队列</li>
+<li>中止嵌入式 Pi run</li>
+<li>
+<p>级联中止子 agent</p>
+</li>
+<li>
+<p><strong>Gateway Draining</strong> (<code>command-queue.ts</code>):</p>
+</li>
+<li><code>markGatewayDraining()</code> 使新 enqueue 立即 reject</li>
+<li><code>waitForActiveTasks(timeoutMs)</code> 等待活跃 task 完成</li>
+</ol>
+<hr />
+<h2 id="8-commandlane">8. CommandLane 队列隔离</h2>
+<table>
+<thead>
+<tr>
+<th>Lane</th>
+<th>用途</th>
+<th>默认并发</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>main</code></td>
+<td>入站用户消息 + 心跳</td>
+<td>4</td>
+</tr>
+<tr>
+<td><code>cron</code></td>
+<td>定时任务</td>
+<td>1</td>
+</tr>
+<tr>
+<td><code>subagent</code></td>
+<td>子 agent 运行</td>
+<td>8</td>
+</tr>
+<tr>
+<td><code>nested</code></td>
+<td>嵌套操作</td>
+<td>1</td>
+</tr>
+</tbody>
+</table>
+<p>每个 lane 是独立的 <code>LaneState</code>:</p>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">LaneState</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">lane</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">queue</span>: <span class="kt">QueueEntry</span><span class="p">[];</span>
+  <span class="nx">activeTaskIds</span>: <span class="kt">Set</span><span class="o">&lt;</span><span class="kt">number</span><span class="o">&gt;</span><span class="p">;</span>
+  <span class="nx">maxConcurrent</span>: <span class="kt">number</span><span class="p">;</span>
+  <span class="nx">draining</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">generation</span>: <span class="kt">number</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p>所有 lane 状态存储在 <code>globalThis</code> 上的单例 Map 中，确保 bundled chunk 间共享。</p>
+<hr />
+<h2 id="9">9. 进程管理</h2>
+<h3 id="91-processsupervisor">9.1 ProcessSupervisor</h3>
+<p><code>src/process/supervisor/supervisor.ts</code>:
+- <strong>spawn</strong>: 创建子进程（child 或 pty），注册到 registry
+- <strong>cancel</strong>: SIGKILL 终止指定 runId
+- <strong>cancelScope</strong>: 按 scopeKey 终止一组 runs
+- <strong>超时控制</strong>: overall timeout + no-output timeout（空闲超时）
+- <strong>RunRecord</strong>: <code>starting → running → exiting → exited</code></p>
+<h3 id="92-kill-tree">9.2 kill-tree</h3>
+<p><code>src/process/kill-tree.ts</code>:
+- Unix: SIGTERM → 等待 graceMs（3秒） → SIGKILL
+- Windows: <code>taskkill /T</code> → 等待 → <code>taskkill /F /T</code></p>
+<h3 id="93-lane">9.3 Lane 重启恢复</h3>
+<p><code>resetAllLanes()</code>:
+- 递增所有 lane 的 <code>generation</code>
+- 清除 <code>activeTaskIds</code>（旧 generation task 回调自动失效）
+- 保留 queue 中的待执行 entry
+- 立即 drain 有待执行 entry 的 lane</p>
+<hr />
+<h2 id="10">10. 路由系统</h2>
+<h3 id="101">10.1 核心路由流程</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">resolveAgentRoute</span><span class="p">(</span><span class="nx">input</span><span class="p">)</span> <span class="err">→</span> <span class="p">{</span>
+  <span class="nx">agentId</span><span class="p">,</span> <span class="nx">channel</span><span class="p">,</span> <span class="nx">accountId</span><span class="p">,</span> <span class="nx">sessionKey</span><span class="p">,</span>
+  <span class="nx">mainSessionKey</span><span class="p">,</span> <span class="nx">lastRoutePolicy</span><span class="p">,</span> <span class="nx">matchedBy</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="102">10.2 路由层级（按优先级）</h3>
+<ol>
+<li><code>binding.peer</code> — 精确 peer 绑定</li>
+<li><code>binding.peer.parent</code> — 线程父 peer</li>
+<li><code>binding.peer.wildcard</code> — 通配 peer 种类</li>
+<li><code>binding.guild+roles</code> — Discord guild + 角色</li>
+<li><code>binding.guild</code> — Discord guild</li>
+<li><code>binding.team</code> — Teams 团队</li>
+<li><code>binding.account</code> — 账号级</li>
+<li><code>binding.channel</code> — 通道级</li>
+<li><code>default</code> — 默认 agent</li>
+</ol>
+<h3 id="103-session-key">10.3 Session Key 构建</h3>
+<p>DM 根据 <code>dmScope</code> 决定粒度:
+- <code>main</code>: 所有 DM 共享 → <code>agent:&lt;agentId&gt;:main</code>
+- <code>per-peer</code>: 按发送者隔离
+- <code>per-channel-peer</code>: 按通道+发送者
+- <code>per-account-channel-peer</code>: 按账号+通道+发送者</p>
+<h3 id="104-identity-links">10.4 Identity Links</h3>
+<p><code>session.identityLinks</code> 将不同通道的同一用户映射到统一 peerId，实现跨通道 session 合并。</p>
+<hr />
+<h2 id="11_1">11. 背压控制</h2>
+<h3 id="111">11.1 层次化背压</h3>
+<ol>
+<li><strong>session lane 背压</strong>: 每 session 同时只有一个 run</li>
+<li><strong>global lane 背压</strong>: 超过 maxConcurrent 的 run 等待</li>
+<li><strong>followup queue cap</strong>: 超过 cap 按 dropPolicy 处理</li>
+<li><strong>debounce</strong>: 1000ms 防抖</li>
+<li><strong>gateway draining</strong>: 重启前新 enqueue 直接 reject</li>
+<li><strong>typing indicator</strong>: 排队时立即发送，用户无感</li>
+</ol>
+<h3 id="112">11.2 队列去重</h3>
+<p><code>src/auto-reply/reply/queue/enqueue.ts</code>:
+- <strong>message-id 去重</strong>: 相同 ID + 相同路由不重复入队
+- <strong>全局 TTL 缓存</strong>: 5 分钟 TTL、最大 10000 条</p>
+<hr />
+<h2 id="12_1">12. 配置系统</h2>
+<h3 id="121">12.1 全局配置</h3>
+<div class="codehilite"><pre><span></span><code>{
+  messages: {
+    queue: {
+      mode: &quot;collect&quot;,              // 全局默认模式
+      byChannel: {                  // per-channel 覆盖
+        discord: &quot;collect&quot;,
+        telegram: &quot;steer&quot;
+      },
+      debounceMs: 1000,
+      cap: 20,
+      drop: &quot;summarize&quot;
+    }
+  },
+  agents: {
+    defaults: {
+      maxConcurrent: 4,
+      subagents: { maxConcurrent: 8 }
+    }
+  }
+}
+</code></pre></div>
+
+<h3 id="122-per-session">12.2 per-session 覆盖</h3>
+<p>通过 <code>/queue &lt;mode&gt;</code> 命令设置，<code>/queue reset</code> 清除。</p>
+<h3 id="123">12.3 设置解析优先级</h3>
+<ol>
+<li>inline mode（消息内嵌指令）</li>
+<li>session entry override</li>
+<li>per-channel config</li>
+<li>global config</li>
+<li>默认值（<code>collect</code>）</li>
+</ol>
+<hr />
+<h2 id="13_1">13. 关键设计决策</h2>
+<h3 id="131-lane">13.1 为什么选择双层 lane</h3>
+<ul>
+<li>Session lane 保证会话级一致性</li>
+<li>Global lane 保证系统资源可控</li>
+<li>两层解耦使得可以独立调整</li>
+</ul>
+<h3 id="132-collect-followup">13.2 为什么默认 collect 而非 followup</h3>
+<ul>
+<li>collect 合并多条消息为一次 LLM 调用，大幅减少 token 消耗</li>
+<li>避免连续回复轰炸用户</li>
+<li>跨通道消息自动退化为逐条处理</li>
+</ul>
+<h3 id="133-summarize">13.3 为什么 summarize 是默认溢出策略</h3>
+<ul>
+<li>不无声丢弃消息</li>
+<li>丢弃消息的摘要注入 prompt，agent 感知到有遗漏</li>
+</ul>
+<h3 id="134-generation-promise">13.4 为什么用 generation 而非取消 promise</h3>
+<ul>
+<li>SIGUSR1 就地重启时旧 task 的 finally 块可能不执行</li>
+<li>generation 机制让旧 task 的完成回调自动失效</li>
+<li>保留 queue 中的 entry（代表用户待处理工作）</li>
+</ul>
+<h3 id="135-typing-enqueue">13.5 为什么 typing 在 enqueue 时就触发</h3>
+<ul>
+<li>用户发消息后立即看到"正在输入"反馈</li>
+<li>实际 run 可能在排队，但用户无感</li>
+<li>典型的"乐观 UX"模式</li>
+</ul>
+</body>
+</html>

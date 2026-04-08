@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>09-exec-approvals-sandbox</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1 id="09-">09 - 执行审批与沙箱体系深度调研</h1>
+<hr />
+<h2 id="1">1. 执行审批总体架构</h2>
+<p>OpenClaw 的执行审批是一套<strong>双层安全联锁机制</strong>，涉及"请求侧"（Gateway 配置层）和"宿主侧"（执行主机本地文件层）。两层取<strong>更严格者</strong>作为生效策略。</p>
+<h3 id="11">1.1 双层决策模型</h3>
+<table>
+<thead>
+<tr>
+<th>层级</th>
+<th>配置来源</th>
+<th>存储位置</th>
+<th>职责</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>请求侧 (Requested)</td>
+<td><code>tools.exec.*</code> 或 per-agent <code>agents.list[].tools.exec.*</code></td>
+<td>OpenClaw 配置文件</td>
+<td>设定期望的安全等级</td>
+</tr>
+<tr>
+<td>宿主侧 (Host)</td>
+<td><code>~/.openclaw/exec-approvals.json</code></td>
+<td>执行主机本地文件</td>
+<td>本地强制策略 + 白名单</td>
+</tr>
+</tbody>
+</table>
+<p><strong>生效策略的计算</strong> (<code>src/infra/exec-approvals-effective.ts</code>):</p>
+<div class="codehilite"><pre><span></span><code>effectiveSecurity = minSecurity(requested, host)   // 取更严格的
+effectiveAsk = host.ask === &quot;off&quot; ? &quot;off&quot; : maxAsk(requested, host)  // 取更激进的
+</code></pre></div>
+
+<p>security 严格度排序: deny &lt; allowlist &lt; full
+ask 激进度排序: off &lt; on-miss &lt; always</p>
+<h3 id="12">1.2 执行位置决策</h3>
+<p>exec 工具的 <code>host</code> 参数决定命令在哪里执行：</p>
+<table>
+<thead>
+<tr>
+<th>host</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>auto</code>（默认）</td>
+<td>有活跃沙箱走沙箱，否则走 gateway</td>
+</tr>
+<tr>
+<td><code>sandbox</code></td>
+<td>强制在沙箱内执行</td>
+</tr>
+<tr>
+<td><code>gateway</code></td>
+<td>在 Gateway 所在主机执行</td>
+</tr>
+<tr>
+<td><code>node</code></td>
+<td>在配对的远程节点执行</td>
+</tr>
+</tbody>
+</table>
+<h3 id="13">1.3 审批流程事件管道</h3>
+<div class="codehilite"><pre><span></span><code><span class="n">Agent</span><span class="w"> </span><span class="err">调用</span><span class="w"> </span><span class="n">exec</span><span class="w"> </span><span class="err">工具</span><span class="w"></span>
+<span class="w">  </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">计算</span><span class="w"> </span><span class="n">effectiveSecurity</span><span class="w"> </span><span class="err">和</span><span class="w"> </span><span class="n">effectiveAsk</span><span class="w"></span>
+<span class="w">  </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">若需要审批</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">Gateway</span><span class="w"> </span><span class="err">广播</span><span class="w"> </span><span class="n">exec</span><span class="p">.</span><span class="n">approval</span><span class="p">.</span><span class="n">requested</span><span class="w"></span>
+<span class="w">  </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">操作员通过</span><span class="w"> </span><span class="n">Control</span><span class="w"> </span><span class="n">UI</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">macOS</span><span class="w"> </span><span class="n">App</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">Chat</span><span class="w"> </span><span class="o">/</span><span class="n">approve</span><span class="w"> </span><span class="err">响应</span><span class="w"></span>
+<span class="w">  </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">Gateway</span><span class="w"> </span><span class="err">接收</span><span class="w"> </span><span class="n">exec</span><span class="p">.</span><span class="n">approval</span><span class="p">.</span><span class="n">resolve</span><span class="err">，通知等待方</span><span class="w"></span>
+<span class="w">  </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">命令执行后广播生命周期事件</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="14">1.4 关键源码路径</h3>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>职责</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>src/infra/exec-approvals.ts</code></td>
+<td>审批主文件（类型+逻辑）</td>
+</tr>
+<tr>
+<td><code>src/infra/exec-approvals-effective.ts</code></td>
+<td>生效策略计算</td>
+</tr>
+<tr>
+<td><code>src/infra/system-run-approval-binding.ts</code></td>
+<td>审批绑定+匹配</td>
+</tr>
+<tr>
+<td><code>src/gateway/exec-approval-manager.ts</code></td>
+<td>审批管理器</td>
+</tr>
+<tr>
+<td><code>src/agents/bash-tools.exec-host-gateway.ts</code></td>
+<td>Gateway 宿主执行</td>
+</tr>
+<tr>
+<td><code>src/agents/bash-tools.exec-host-node.ts</code></td>
+<td>Node 宿主执行</td>
+</tr>
+<tr>
+<td><code>src/agents/bash-tools.exec-approval-request.ts</code></td>
+<td>审批请求注册</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="2">2. 审批模式</h2>
+<h3 id="21-security-execsecurity">2.1 Security 模式 (<code>ExecSecurity</code>)</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kr">type</span> <span class="nx">ExecSecurity</span> <span class="o">=</span> <span class="s2">&quot;deny&quot;</span> <span class="o">|</span> <span class="s2">&quot;allowlist&quot;</span> <span class="o">|</span> <span class="s2">&quot;full&quot;</span><span class="p">;</span>
+</code></pre></div>
+
+<ul>
+<li><strong>deny</strong>: 阻止所有宿主执行</li>
+<li><strong>allowlist</strong>: 仅允许白名单中的命令</li>
+<li><strong>full</strong>: 允许一切</li>
+</ul>
+<h3 id="22-ask-execask">2.2 Ask 模式 (<code>ExecAsk</code>)</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kr">type</span> <span class="nx">ExecAsk</span> <span class="o">=</span> <span class="s2">&quot;off&quot;</span> <span class="o">|</span> <span class="s2">&quot;on-miss&quot;</span> <span class="o">|</span> <span class="s2">&quot;always&quot;</span><span class="p">;</span>
+</code></pre></div>
+
+<ul>
+<li><strong>off</strong>: 从不弹出审批提示</li>
+<li><strong>on-miss</strong>: 仅在白名单未匹配时弹提示</li>
+<li><strong>always</strong>: 每次执行都弹提示（allow-always 持久信任不能压制）</li>
+</ul>
+<h3 id="23-askfallback-ui">2.3 askFallback — 无 UI 兜底</h3>
+<p>当审批提示必须弹出但没有 UI 可以接受时：</p>
+<table>
+<thead>
+<tr>
+<th>askFallback</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>deny</code></td>
+<td>直接阻断</td>
+</tr>
+<tr>
+<td><code>allowlist</code></td>
+<td>仅白名单匹配才放行</td>
+</tr>
+<tr>
+<td><code>full</code>（默认）</td>
+<td>直接放行</td>
+</tr>
+</tbody>
+</table>
+<h3 id="24">2.4 规范化上下文绑定</h3>
+<p>审批通过后，系统绑定 <code>SystemRunApprovalBinding</code>（类型定义在 <code>src/infra/exec-approvals.ts</code>，操作函数在 <code>src/infra/system-run-approval-binding.ts</code>）:</p>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kr">type</span> <span class="nx">SystemRunApprovalBinding</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">argv</span>: <span class="kt">string</span><span class="p">[];</span>
+  <span class="nx">cwd</span>: <span class="kt">string</span> <span class="o">|</span> <span class="kc">null</span><span class="p">;</span>
+  <span class="nx">agentId</span>: <span class="kt">string</span> <span class="o">|</span> <span class="kc">null</span><span class="p">;</span>
+  <span class="nx">sessionKey</span>: <span class="kt">string</span> <span class="o">|</span> <span class="kc">null</span><span class="p">;</span>
+  <span class="nx">envHash</span>: <span class="kt">string</span> <span class="o">|</span> <span class="kc">null</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p>在 <code>matchSystemRunApprovalBinding</code> 中，系统验证每个字段完全匹配。如果审批后调用方篡改了任何字段，Gateway 以 <code>APPROVAL_REQUEST_MISMATCH</code> 拒绝。</p>
+<h3 id="25">2.5 是否需要审批的核心判定</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kd">function</span> <span class="nx">requiresExecApproval</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span>
+  <span class="nx">ask</span>: <span class="kt">ExecAsk</span><span class="p">;</span> <span class="nx">security</span>: <span class="kt">ExecSecurity</span><span class="p">;</span>
+  <span class="nx">analysisOk</span>: <span class="kt">boolean</span><span class="p">;</span> <span class="nx">allowlistSatisfied</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">durableApprovalSatisfied?</span>: <span class="kt">boolean</span><span class="p">;</span>
+<span class="p">})</span><span class="o">:</span> <span class="kt">boolean</span> <span class="p">{</span>
+  <span class="k">if</span> <span class="p">(</span><span class="nx">params</span><span class="p">.</span><span class="nx">ask</span> <span class="o">===</span> <span class="s2">&quot;always&quot;</span><span class="p">)</span> <span class="k">return</span> <span class="kc">true</span><span class="p">;</span>
+  <span class="k">if</span> <span class="p">(</span><span class="nx">params</span><span class="p">.</span><span class="nx">durableApprovalSatisfied</span> <span class="o">===</span> <span class="kc">true</span><span class="p">)</span> <span class="k">return</span> <span class="kc">false</span><span class="p">;</span>
+  <span class="k">return</span> <span class="nx">params</span><span class="p">.</span><span class="nx">ask</span> <span class="o">===</span> <span class="s2">&quot;on-miss&quot;</span> <span class="o">&amp;&amp;</span> <span class="nx">params</span><span class="p">.</span><span class="nx">security</span> <span class="o">===</span> <span class="s2">&quot;allowlist&quot;</span>
+    <span class="o">&amp;&amp;</span> <span class="p">(</span><span class="o">!</span><span class="nx">params</span><span class="p">.</span><span class="nx">analysisOk</span> <span class="o">||</span> <span class="o">!</span><span class="nx">params</span><span class="p">.</span><span class="nx">allowlistSatisfied</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<hr />
+<h2 id="3">3. 脚本文件绑定</h2>
+<h3 id="31">3.1 核心设计</h3>
+<p>当审批涉及解释器命令（如 <code>python script.py</code>）时，系统绑定<strong>具体的本地文件操作数</strong>，并在执行前重新验证文件内容。</p>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kr">type</span> <span class="nx">SystemRunApprovalFileOperand</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">argvIndex</span>: <span class="kt">number</span><span class="p">;</span>    <span class="c1">// 在 argv 中的索引位置</span>
+  <span class="nx">path</span>: <span class="kt">string</span><span class="p">;</span>         <span class="c1">// 文件路径</span>
+  <span class="nx">sha256</span>: <span class="kt">string</span><span class="p">;</span>       <span class="c1">// 文件内容的 SHA-256 哈希</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="32">3.2 执行前的验证链</h3>
+<p>在 <code>src/node-host/invoke-system-run.ts</code> 的 <code>executeSystemRunPhase</code> 中:</p>
+<ol>
+<li><strong>CWD 漂移检测</strong>: 检查 cwd 是否被修改</li>
+<li><strong>脚本操作数快照</strong>: 计算当前 argv 中脚本文件的 SHA-256</li>
+<li><strong>脚本绑定存在性检查</strong>: 如果当前存在脚本操作数但审批 plan 中没有，拒绝</li>
+<li><strong>脚本漂移检测</strong>: 比对当前 SHA-256 与审批时的 SHA-256</li>
+</ol>
+<p>如果脚本文件在审批后被修改，执行被拒绝。</p>
+<h3 id="33-strict-inline-eval">3.3 Strict Inline Eval 模式</h3>
+<p><code>tools.exec.strictInlineEval=true</code> 时，<code>python -c</code> / <code>node -e</code> / <code>ruby -e</code> 等内联代码求值即使解释器在白名单中也需要显式审批。</p>
+<hr />
+<h2 id="4">4. 沙箱系统架构 — 多后端设计</h2>
+<h3 id="41">4.1 后端注册表模式</h3>
+<p>核心抽象 <code>src/agents/sandbox/backend.ts</code>:</p>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kr">type</span> <span class="nx">SandboxBackendHandle</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">id</span>: <span class="kt">SandboxBackendId</span><span class="p">;</span>
+  <span class="nx">runtimeId</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">runtimeLabel</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">configLabel?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">configLabelKind?</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">workdir</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">env?</span>: <span class="kt">Record</span><span class="o">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="kt">string</span><span class="o">&gt;</span><span class="p">;</span>
+  <span class="nx">capabilities</span><span class="o">?:</span> <span class="p">{</span> <span class="nx">browser?</span>: <span class="kt">boolean</span> <span class="p">};</span>
+  <span class="nx">buildExecSpec</span><span class="p">(</span><span class="nx">params</span><span class="p">)</span><span class="o">:</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="nx">SandboxBackendExecSpec</span><span class="o">&gt;</span><span class="p">;</span>
+  <span class="nx">finalizeExec</span><span class="o">?:</span> <span class="p">(</span><span class="nx">params</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="ow">void</span><span class="o">&gt;</span><span class="p">;</span>
+  <span class="nx">runShellCommand</span><span class="p">(</span><span class="nx">params</span><span class="p">)</span><span class="o">:</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="nx">SandboxBackendCommandResult</span><span class="o">&gt;</span><span class="p">;</span>
+  <span class="nx">createFsBridge</span><span class="o">?:</span> <span class="p">(</span><span class="nx">params</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="nx">SandboxFsBridge</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p>内置后端注册:</p>
+<div class="codehilite"><pre><span></span><code><span class="nx">registerSandboxBackend</span><span class="p">(</span><span class="s2">&quot;docker&quot;</span><span class="p">,</span> <span class="p">{</span> <span class="nx">factory</span>: <span class="kt">createDockerSandboxBackend</span><span class="p">,</span> <span class="nx">manager</span>: <span class="kt">dockerSandboxBackendManager</span> <span class="p">});</span>
+<span class="nx">registerSandboxBackend</span><span class="p">(</span><span class="s2">&quot;ssh&quot;</span><span class="p">,</span> <span class="p">{</span> <span class="nx">factory</span>: <span class="kt">createSshSandboxBackend</span><span class="p">,</span> <span class="nx">manager</span>: <span class="kt">sshSandboxBackendManager</span> <span class="p">});</span>
+</code></pre></div>
+
+<p>OpenShell 通过<strong>插件系统</strong>注册。</p>
+<hr />
+<h2 id="5">5. 沙箱配置</h2>
+<h3 id="51">5.1 核心类型</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kr">type</span> <span class="nx">SandboxConfig</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">mode</span><span class="o">:</span> <span class="s2">&quot;off&quot;</span> <span class="o">|</span> <span class="s2">&quot;non-main&quot;</span> <span class="o">|</span> <span class="s2">&quot;all&quot;</span><span class="p">;</span>
+  <span class="nx">backend</span>: <span class="kt">SandboxBackendId</span><span class="p">;</span>         <span class="c1">// &quot;docker&quot; | &quot;ssh&quot; | &quot;openshell&quot;</span>
+  <span class="nx">scope</span>: <span class="kt">SandboxScope</span><span class="p">;</span>               <span class="c1">// &quot;session&quot; | &quot;agent&quot; | &quot;shared&quot;</span>
+  <span class="nx">workspaceAccess</span>: <span class="kt">SandboxWorkspaceAccess</span><span class="p">;</span> <span class="c1">// &quot;none&quot; | &quot;ro&quot; | &quot;rw&quot;</span>
+  <span class="nx">workspaceRoot</span>: <span class="kt">string</span><span class="p">;</span>
+  <span class="nx">docker</span>: <span class="kt">SandboxDockerConfig</span><span class="p">;</span>
+  <span class="nx">ssh</span>: <span class="kt">SandboxSshConfig</span><span class="p">;</span>
+  <span class="nx">browser</span>: <span class="kt">SandboxBrowserConfig</span><span class="p">;</span>
+  <span class="nx">tools</span>: <span class="kt">SandboxToolPolicy</span><span class="p">;</span>
+  <span class="nx">prune</span>: <span class="kt">SandboxPruneConfig</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="52-mode">5.2 模式 (mode)</h3>
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>off</code></td>
+<td>不使用沙箱</td>
+</tr>
+<tr>
+<td><code>non-main</code></td>
+<td>仅非 main 会话使用沙箱</td>
+</tr>
+<tr>
+<td><code>all</code></td>
+<td>所有会话都在沙箱中运行</td>
+</tr>
+</tbody>
+</table>
+<h3 id="53-scope">5.3 范围 (scope)</h3>
+<table>
+<thead>
+<tr>
+<th>范围</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agent</code>（默认）</td>
+<td>每个 agent 一个容器</td>
+</tr>
+<tr>
+<td><code>session</code></td>
+<td>每个会话一个容器</td>
+</tr>
+<tr>
+<td><code>shared</code></td>
+<td>所有沙箱会话共享一个容器</td>
+</tr>
+</tbody>
+</table>
+<h3 id="54-workspaceaccess">5.4 工作区访问 (workspaceAccess)</h3>
+<table>
+<thead>
+<tr>
+<th>访问模式</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>none</code>（默认）</td>
+<td>独立沙箱工作区</td>
+</tr>
+<tr>
+<td><code>ro</code></td>
+<td>代理工作区只读挂载到 <code>/agent</code></td>
+</tr>
+<tr>
+<td><code>rw</code></td>
+<td>代理工作区读写挂载到 <code>/workspace</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="6-docker">6. Docker 沙箱</h2>
+<h3 id="61">6.1 安全默认值</h3>
+<table>
+<thead>
+<tr>
+<th>配置项</th>
+<th>默认值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>network</td>
+<td><code>"none"</code></td>
+</tr>
+<tr>
+<td>readOnlyRoot</td>
+<td><code>true</code></td>
+</tr>
+<tr>
+<td>capDrop</td>
+<td><code>["ALL"]</code></td>
+</tr>
+<tr>
+<td>tmpfs</td>
+<td><code>["/tmp", "/var/tmp", "/run"]</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="62">6.2 容器安全验证</h3>
+<p><code>src/agents/sandbox/validate-sandbox-security.ts</code>:</p>
+<p><strong>被阻断的宿主路径</strong>:</p>
+<div class="codehilite"><pre><span></span><code><span class="o">/</span><span class="n">etc</span><span class="p">,</span><span class="w"> </span><span class="o">/</span><span class="n">private</span><span class="o">/</span><span class="n">etc</span><span class="p">,</span><span class="w"> </span><span class="o">/</span><span class="n">proc</span><span class="p">,</span><span class="w"> </span><span class="o">/</span><span class="n">sys</span><span class="p">,</span><span class="w"> </span><span class="o">/</span><span class="n">dev</span><span class="p">,</span><span class="w"> </span><span class="o">/</span><span class="n">root</span><span class="p">,</span><span class="w"> </span><span class="o">/</span><span class="n">boot</span><span class="p">,</span><span class="w"></span>
+<span class="o">/</span><span class="n">run</span><span class="p">,</span><span class="w"> </span><span class="o">/</span><span class="k">var</span><span class="o">/</span><span class="n">run</span><span class="p">,</span><span class="w"> </span><span class="o">/</span><span class="n">private</span><span class="o">/</span><span class="k">var</span><span class="o">/</span><span class="n">run</span><span class="p">,</span><span class="w"></span>
+<span class="o">/</span><span class="k">var</span><span class="o">/</span><span class="n">run</span><span class="o">/</span><span class="n">docker</span><span class="o">.</span><span class="n">sock</span><span class="p">,</span><span class="w"> </span><span class="o">/</span><span class="n">private</span><span class="o">/</span><span class="k">var</span><span class="o">/</span><span class="n">run</span><span class="o">/</span><span class="n">docker</span><span class="o">.</span><span class="n">sock</span><span class="p">,</span><span class="w"> </span><span class="o">/</span><span class="n">run</span><span class="o">/</span><span class="n">docker</span><span class="o">.</span><span class="n">sock</span><span class="w"></span>
+</code></pre></div>
+
+<p><strong>被阻断的 home 子路径</strong>:</p>
+<div class="codehilite"><pre><span></span><code><span class="na">.aws</span><span class="p">,</span><span class="w"> </span><span class="no">.cargo</span><span class="p">,</span><span class="w"> </span><span class="no">.config</span><span class="p">,</span><span class="w"> </span><span class="no">.docker</span><span class="p">,</span><span class="w"> </span><span class="no">.gnupg</span><span class="p">,</span><span class="w"> </span><span class="no">.netrc</span><span class="p">,</span><span class="w"> </span><span class="no">.npm</span><span class="p">,</span><span class="w"> </span><span class="no">.ssh</span><span class="w"></span>
+</code></pre></div>
+
+<p><strong>网络模式验证</strong>: <code>host</code> 模式被阻断
+<strong>符号链接逃逸加固</strong>: 绑定挂载源路径通过 <code>resolveSandboxHostPathViaExistingAncestor</code> 解析</p>
+<h3 id="63-novnc">6.3 noVNC 浏览器沙箱</h3>
+<ul>
+<li>独立 Docker 网络（默认 <code>openclaw-sandbox-browser</code>）</li>
+<li>CDP 端口、VNC 端口、noVNC 端口</li>
+<li>可选的 CDP 源范围限制</li>
+<li>密码保护的 noVNC 访问</li>
+</ul>
+<hr />
+<h2 id="7-ssh">7. SSH 沙箱</h2>
+<p>SSH 后端采用 <strong>remote-canonical</strong> 模型:</p>
+<ol>
+<li>在远程创建 per-scope 的工作区</li>
+<li>首次使用时将本地工作区种子到远程</li>
+<li>之后工具直接操作远程工作区</li>
+<li>不自动将远程变更同步回本地</li>
+</ol>
+<p>支持两种认证: 文件路径 (<code>identityFile</code>) 和数据注入 (<code>identityData</code>，写入临时文件 0600 权限)。</p>
+<hr />
+<h2 id="8-openshell">8. OpenShell 沙箱</h2>
+<p>通过插件系统集成的受管沙箱后端：</p>
+<p><strong>两种工作区模式:</strong>
+- <strong>mirror</strong>: 本地工作区保持权威，exec 前/后双向同步
+- <strong>remote</strong>: 远程工作区为权威，只在创建时种子一次</p>
+<hr />
+<h2 id="9-elevated">9. Elevated 执行</h2>
+<p>Elevated 是 exec 专用的<strong>沙箱逃逸口</strong>，有四个级别（<code>ElevatedLevel</code> 定义在 <code>src/auto-reply/thinking.shared.ts</code>）:</p>
+<table>
+<thead>
+<tr>
+<th>指令</th>
+<th>ElevatedLevel</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/elevated off</code></td>
+<td><code>"off"</code></td>
+<td>回到沙箱内执行</td>
+</tr>
+<tr>
+<td><code>/elevated on</code></td>
+<td><code>"on"</code></td>
+<td>在宿主路径执行，保留审批</td>
+</tr>
+<tr>
+<td><code>/elevated ask</code></td>
+<td><code>"ask"</code></td>
+<td>等同于 <code>on</code>（保留审批的别名）</td>
+</tr>
+<tr>
+<td><code>/elevated full</code></td>
+<td><code>"full"</code></td>
+<td>在宿主路径执行，跳过审批</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_1">双重门控</h3>
+<ol>
+<li><code>tools.elevated.enabled</code> 必须为 <code>true</code></li>
+<li><code>tools.elevated.allowFrom.&lt;channel&gt;</code> 中必须包含发送者</li>
+<li>Per-agent 门控可进一步限制</li>
+<li>Per-agent 白名单发送者必须同时匹配全局和 per-agent</li>
+</ol>
+<hr />
+<h2 id="10">10. 工具策略</h2>
+<h3 id="101">10.1 八层过滤体系</h3>
+<ol>
+<li>Tool profile (<code>tools.profile</code>)</li>
+<li>Provider tool profile</li>
+<li>Global tool policy (<code>tools.allow</code> / <code>tools.deny</code>)</li>
+<li>Provider tool policy</li>
+<li>Agent tool policy</li>
+<li>Agent provider policy</li>
+<li>Sandbox tool policy</li>
+<li>Subagent tool policy</li>
+</ol>
+<p><strong>关键规则</strong>: <code>deny</code> 总是胜出，每层只能进一步限制。</p>
+<h3 id="102-safe-binsstdin-only">10.2 Safe Bins（stdin-only 安全二进制）</h3>
+<p>默认列表: <code>cut</code>, <code>uniq</code>, <code>head</code>, <code>tail</code>, <code>tr</code>, <code>wc</code></p>
+<p>限制: 拒绝位置文件参数、argv token 强制为字面文本、必须从受信任目录解析、长选项 fail-closed。</p>
+<hr />
+<h2 id="11_1">11. 多代理沙箱</h2>
+<ul>
+<li>不同 agent 可以使用不同的沙箱模式</li>
+<li><code>scope: "agent"</code> 确保每个 agent 独立容器</li>
+<li>认证数据按 agent 隔离</li>
+<li>Per-agent 白名单独立</li>
+</ul>
+<hr />
+<h2 id="12_1">12. 渠道集成 — 审批交互</h2>
+<h3 id="_2">审批转发配置</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kr">type</span> <span class="nx">ExecApprovalForwardingConfig</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">enabled?</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">mode</span><span class="o">?:</span> <span class="s2">&quot;session&quot;</span> <span class="o">|</span> <span class="s2">&quot;targets&quot;</span> <span class="o">|</span> <span class="s2">&quot;both&quot;</span><span class="p">;</span>
+  <span class="nx">agentFilter?</span>: <span class="kt">string</span><span class="p">[];</span>
+  <span class="nx">sessionFilter?</span>: <span class="kt">string</span><span class="p">[];</span>
+  <span class="nx">targets?</span>: <span class="kt">ExecApprovalForwardTarget</span><span class="p">[];</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="approve">/approve 命令</h3>
+<p>支持: <code>allow/once</code>, <code>always/allow-always</code>, <code>deny/reject/block</code></p>
+<h3 id="_3">渠道适配</h3>
+<ul>
+<li>Slack: 按钮交互</li>
+<li>Telegram: 按钮交互</li>
+<li>Matrix: emoji 反应（✅ allow once, ❌ deny, ♾️ allow always）</li>
+</ul>
+<hr />
+<h2 id="13_1">13. 安全模型</h2>
+<h3 id="_4">信任边界</h3>
+<ol>
+<li>Gateway 认证调用方是受信任操作员</li>
+<li>配对节点延伸信任</li>
+<li>审批降低意外执行风险，但不是 per-user 认证</li>
+</ol>
+<h3 id="_5">防篡改</h3>
+<ul>
+<li><code>SystemRunApprovalBinding</code> 绑定 argv + cwd + agentId + sessionKey + envHash</li>
+<li>allow-once 通过 <code>consumeAllowOnce</code> 原子消费，防止重放</li>
+<li>审批超时: 默认 30 分钟</li>
+</ul>
+<h3 id="_6">环境变量安全</h3>
+<ul>
+<li>拒绝 <code>env.PATH</code> 和 <code>LD_*</code> / <code>DYLD_*</code> 覆盖</li>
+<li>Shell 包装器中的 env 限制在显式白名单</li>
+<li>沙箱 exec 不继承宿主 <code>process.env</code></li>
+</ul>
+<hr />
+<h2 id="14_1">14. 关键设计决策</h2>
+<h3 id="141">14.1 为什么是双层策略？</h3>
+<p>分离请求侧（config）和宿主侧（exec-approvals.json）使得: 部署人员设定组织级策略，节点操作员在宿主级别进一步收紧。</p>
+<h3 id="142-safe-bins-stdin-only">14.2 为什么 Safe Bins 只允许 stdin-only？</h3>
+<p>避免文件存在性 oracle 行为——如果 allow/deny 的差异暴露了主机文件是否存在，就创造了信息泄漏通道。</p>
+<h3 id="143">14.3 为什么是注册表模式的后端？</h3>
+<p>通过 <code>registerSandboxBackend</code>，OpenShell 等后端可以作为插件注入，不需修改核心代码。</p>
+<h3 id="144">14.4 为什么审批是两阶段注册？</h3>
+<p><code>registerExecApprovalRequest</code> 使用 <code>twoPhase: true</code>，防止 <code>/approve</code> 命令与审批注册之间的竞态条件。</p>
+</body>
+</html>

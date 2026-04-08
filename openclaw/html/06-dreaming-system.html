@@ -1,0 +1,1769 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>06-dreaming-system</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1 id="openclaw-dreaming">OpenClaw 梦境系统 (Dreaming) 详细分析</h1>
+<blockquote>
+<p>更新时间：2026-04-07
+基于 commit <code>8894dab3c4</code> 及前续记忆/梦境相关提交</p>
+</blockquote>
+<h2 id="_1">目录</h2>
+<ol>
+<li><a href="#1-设计理念为什么-ai-需要做梦">设计理念：为什么 AI 需要"做梦"</a></li>
+<li><a href="#2-架构总览">架构总览</a></li>
+<li><a href="#3-三阶段睡眠模型-light--deep--rem">三阶段睡眠模型 (Light / Deep / REM)</a></li>
+<li><a href="#4-light-sleep--浅睡眠信号采集">Light Sleep — 浅睡眠信号采集</a></li>
+<li><a href="#5-deep-sleep--深度睡眠记忆晋升">Deep Sleep — 深度睡眠记忆晋升</a></li>
+<li><a href="#6-rem-sleep--快速眼动模式发现">REM Sleep — 快速眼动模式发现</a></li>
+<li><a href="#7-短期记忆晋升算法详解">短期记忆晋升算法详解</a></li>
+<li><a href="#8-概念词汇表与标签系统">概念词汇表与标签系统</a></li>
+<li><a href="#9-梦境叙事生成-dream-narrative">梦境叙事生成 (Dream Narrative)</a></li>
+<li><a href="#10-记忆事件日志-memory-event-journal">记忆事件日志 (Memory Event Journal)</a></li>
+<li><a href="#11-调度与触发机制">调度与触发机制</a></li>
+<li><a href="#12-存储与持久化">存储与持久化</a></li>
+<li><a href="#13-配置体系">配置体系</a></li>
+<li><a href="#14-deep-sleep-recovery--深度恢复机制">Deep Sleep Recovery — 深度恢复机制</a></li>
+<li><a href="#15-cli-命令接口">CLI 命令接口</a></li>
+<li><a href="#16-使用场景与价值">使用场景与价值</a></li>
+<li><a href="#17-关键文件索引">关键文件索引</a></li>
+<li><a href="#18-关键设计决策总结">关键设计决策总结</a></li>
+</ol>
+<hr />
+<h2 id="1-ai">1. 设计理念：为什么 AI 需要"做梦"</h2>
+<h3 id="11">1.1 人类记忆巩固的启示</h3>
+<p>人类的记忆系统并非简单的"写入即永存"。认知科学告诉我们，人类在睡眠中完成关键的记忆整理工作：</p>
+<ul>
+<li><strong>浅睡眠 (Light Sleep)</strong>：大脑回放白天经历，将短期记忆暂存到海马体</li>
+<li><strong>深度睡眠 (Deep Sleep)</strong>：海马体中的记忆被筛选、巩固，重要的迁移到大脑皮层形成长期记忆</li>
+<li><strong>快速眼动睡眠 (REM Sleep)</strong>：大脑在已有记忆间建立新联系，发现跨领域模式——这就是"做梦"</li>
+</ul>
+<p>OpenClaw 的梦境系统直接映射了这个生物学模型：</p>
+<div class="codehilite"><pre><span></span><code>人类记忆巩固                     OpenClaw 梦境系统
+─────────────                    ──────────────────
+白天经历 → 短期记忆               用户对话 → 每日记忆文件 (YYYY-MM-DD.md)
+浅睡眠回放                       Light Sleep: 扫描近期记忆，采集 recall 信号
+深度睡眠巩固                     Deep Sleep: 加权评分，将高价值记忆写入 MEMORY.md
+REM 做梦                         REM Sleep: 跨记忆发现模式，生成反思和叙事
+</code></pre></div>
+
+<h3 id="12">1.2 解决的核心问题</h3>
+<p>没有梦境系统时，AI 的记忆面临三个致命问题：</p>
+<ol>
+<li><strong>信息过载</strong>：每天的对话都产生大量短期记忆，agent 的上下文窗口无法全部容纳</li>
+<li><strong>价值模糊</strong>：哪些记忆是重要的？仅靠用户显式标记效率极低</li>
+<li><strong>孤立无联</strong>：不同时间段的记忆像孤岛，无法自动发现跨领域的模式和规律</li>
+</ol>
+<p>梦境系统的解决方案：</p>
+<table>
+<thead>
+<tr>
+<th>问题</th>
+<th>方案</th>
+<th>对应阶段</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>信息过载</td>
+<td>只晋升高价值记忆到 MEMORY.md</td>
+<td>Deep Sleep</td>
+</tr>
+<tr>
+<td>价值模糊</td>
+<td>多维加权评分自动判定</td>
+<td>短期晋升算法</td>
+</tr>
+<tr>
+<td>孤立无联</td>
+<td>概念标签 + 模式发现</td>
+<td>REM Sleep</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="2">2. 架构总览</h2>
+<h3 id="21">2.1 系统分层</h3>
+<div class="codehilite"><pre><span></span><code><span class="err">┌────────────────────────────────────────────────────────────────────┐</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">用户交互层</span><span class="w">                                                         </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">└──</span><span class="w"> </span><span class="o">/</span><span class="n">dreaming</span><span class="w"> </span><span class="err">命令</span><span class="w"> </span><span class="p">(</span><span class="n">on</span><span class="o">/</span><span class="n">off</span><span class="o">/</span><span class="n">status</span><span class="p">)</span><span class="w">                                </span><span class="err">│</span><span class="w"></span>
+<span class="err">├────────────────────────────────────────────────────────────────────┤</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">调度层</span><span class="w">                                                             </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">Cron</span><span class="w"> </span><span class="err">系统：管理定时任务</span><span class="w"> </span><span class="s2">&quot;Memory Dreaming Promotion&quot;</span><span class="w">            </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">Heartbeat</span><span class="err">：</span><span class="n">next</span><span class="o">-</span><span class="n">heartbeat</span><span class="w"> </span><span class="err">唤醒模式</span><span class="w">                            </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">└──</span><span class="w"> </span><span class="n">Gateway</span><span class="w"> </span><span class="n">startup</span><span class="err">：启动时协调</span><span class="w"> </span><span class="n">Cron</span><span class="w"> </span><span class="err">任务</span><span class="w">                          </span><span class="err">│</span><span class="w"></span>
+<span class="err">├────────────────────────────────────────────────────────────────────┤</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">梦境引擎层</span><span class="w"> </span><span class="p">(</span><span class="n">extensions</span><span class="o">/</span><span class="n">memory</span><span class="o">-</span><span class="n">core</span><span class="o">/</span><span class="n">src</span><span class="o">/</span><span class="p">)</span><span class="w">                           </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">dreaming</span><span class="o">.</span><span class="n">ts</span><span class="err">：统一入口，</span><span class="n">Cron</span><span class="w"> </span><span class="err">协调，触发判定</span><span class="w">                     </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">dreaming</span><span class="o">-</span><span class="n">phases</span><span class="o">.</span><span class="n">ts</span><span class="err">：</span><span class="n">Light</span><span class="o">/</span><span class="n">REM</span><span class="w"> </span><span class="err">阶段执行</span><span class="w">                        </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">short</span><span class="o">-</span><span class="n">term</span><span class="o">-</span><span class="n">promotion</span><span class="o">.</span><span class="n">ts</span><span class="err">：</span><span class="n">Deep</span><span class="w"> </span><span class="n">Sleep</span><span class="w"> </span><span class="err">核心算法</span><span class="w">                   </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">dreaming</span><span class="o">-</span><span class="n">narrative</span><span class="o">.</span><span class="n">ts</span><span class="err">：梦境叙事（</span><span class="n">Subagent</span><span class="err">）</span><span class="w">                    </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">dreaming</span><span class="o">-</span><span class="n">markdown</span><span class="o">.</span><span class="n">ts</span><span class="err">：输出格式化与存储</span><span class="w">                         </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">dreaming</span><span class="o">-</span><span class="n">command</span><span class="o">.</span><span class="n">ts</span><span class="err">：</span><span class="n">CLI</span><span class="w"> </span><span class="o">/</span><span class="n">dreaming</span><span class="w"> </span><span class="err">命令</span><span class="w">                        </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">concept</span><span class="o">-</span><span class="n">vocabulary</span><span class="o">.</span><span class="n">ts</span><span class="err">：概念标签提取</span><span class="w">                             </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">└──</span><span class="w"> </span><span class="n">dreaming</span><span class="o">-</span><span class="n">shared</span><span class="o">.</span><span class="n">ts</span><span class="err">：公共工具函数</span><span class="w">                               </span><span class="err">│</span><span class="w"></span>
+<span class="err">├────────────────────────────────────────────────────────────────────┤</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">宿主</span><span class="w"> </span><span class="n">SDK</span><span class="w"> </span><span class="err">层</span><span class="w"> </span><span class="p">(</span><span class="n">src</span><span class="o">/</span><span class="n">memory</span><span class="o">-</span><span class="n">host</span><span class="o">-</span><span class="n">sdk</span><span class="o">/</span><span class="p">)</span><span class="w">                                 </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">dreaming</span><span class="o">.</span><span class="n">ts</span><span class="err">：梦境配置类型定义与解析</span><span class="w">                             </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">└──</span><span class="w"> </span><span class="n">events</span><span class="o">.</span><span class="n">ts</span><span class="err">：记忆事件日志类型与</span><span class="w"> </span><span class="n">I</span><span class="o">/</span><span class="n">O</span><span class="w">                              </span><span class="err">│</span><span class="w"></span>
+<span class="err">├────────────────────────────────────────────────────────────────────┤</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">存储层</span><span class="w">                                                             </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">memory</span><span class="o">/.</span><span class="n">dreams</span><span class="o">/</span><span class="n">short</span><span class="o">-</span><span class="n">term</span><span class="o">-</span><span class="n">recall</span><span class="o">.</span><span class="n">json</span><span class="w">   </span><span class="err">—</span><span class="w"> </span><span class="err">短期回忆存储</span><span class="w">          </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">memory</span><span class="o">/.</span><span class="n">dreams</span><span class="o">/</span><span class="n">phase</span><span class="o">-</span><span class="n">signals</span><span class="o">.</span><span class="n">json</span><span class="w">       </span><span class="err">—</span><span class="w"> </span><span class="err">阶段信号存储</span><span class="w">          </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">memory</span><span class="o">/.</span><span class="n">dreams</span><span class="o">/</span><span class="n">events</span><span class="o">.</span><span class="n">jsonl</span><span class="w">             </span><span class="err">—</span><span class="w"> </span><span class="err">事件日志</span><span class="w">              </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">memory</span><span class="o">/.</span><span class="n">dreams</span><span class="o">/</span><span class="n">daily</span><span class="o">-</span><span class="n">ingestion</span><span class="o">.</span><span class="n">json</span><span class="w">     </span><span class="err">—</span><span class="w"> </span><span class="err">日记摄入状态</span><span class="w">          </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">memory</span><span class="o">/.</span><span class="n">dreams</span><span class="o">/</span><span class="n">session</span><span class="o">-</span><span class="n">ingestion</span><span class="o">.</span><span class="n">json</span><span class="w">   </span><span class="err">—</span><span class="w"> </span><span class="err">会话摄入状态</span><span class="w">          </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">memory</span><span class="o">/.</span><span class="n">dreams</span><span class="o">/</span><span class="n">session</span><span class="o">-</span><span class="n">corpus</span><span class="o">/*.</span><span class="n">txt</span><span class="w">     </span><span class="err">—</span><span class="w"> </span><span class="err">会话语料</span><span class="w">              </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">memory</span><span class="o">/</span><span class="n">YYYY</span><span class="o">-</span><span class="n">MM</span><span class="o">-</span><span class="n">DD</span><span class="o">.</span><span class="n">md</span><span class="w">                    </span><span class="err">—</span><span class="w"> </span><span class="err">每日记忆文件</span><span class="w">          </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="n">MEMORY</span><span class="o">.</span><span class="n">md</span><span class="w">                               </span><span class="err">—</span><span class="w"> </span><span class="err">长期记忆文件</span><span class="w">          </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">└──</span><span class="w"> </span><span class="n">DREAMS</span><span class="o">.</span><span class="n">md</span><span class="w">                               </span><span class="err">—</span><span class="w"> </span><span class="err">梦境日记文件</span><span class="w">          </span><span class="err">│</span><span class="w"></span>
+<span class="err">└────────────────────────────────────────────────────────────────────┘</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="22">2.2 数据流全景</h3>
+<div class="codehilite"><pre><span></span><code><span class="err">用户对话</span><span class="w"> </span><span class="err">──→</span><span class="w"> </span><span class="err">每日记忆文件</span><span class="w"> </span><span class="err">──→</span><span class="w"> </span><span class="n">Light</span><span class="w"> </span><span class="n">Sleep</span><span class="w"> </span><span class="p">(</span><span class="err">信号采集</span><span class="p">)</span><span class="w"></span>
+<span class="w">                                    </span><span class="err">│</span><span class="w"></span>
+<span class="err">会话转录</span><span class="w"> </span><span class="err">──→</span><span class="w"> </span><span class="n">session</span><span class="o">-</span><span class="n">corpus</span><span class="w"> </span><span class="err">────────┘</span><span class="w"></span>
+<span class="w">                                    </span><span class="err">↓</span><span class="w"></span>
+<span class="w">                           </span><span class="n">short</span><span class="o">-</span><span class="n">term</span><span class="o">-</span><span class="n">recall</span><span class="o">.</span><span class="n">json</span><span class="w"> </span><span class="p">(</span><span class="err">回忆存储</span><span class="p">)</span><span class="w"></span>
+<span class="w">                                    </span><span class="err">│</span><span class="w"></span>
+<span class="w">                        </span><span class="err">┌───────────┼───────────┐</span><span class="w"></span>
+<span class="w">                        </span><span class="err">↓</span><span class="w">           </span><span class="err">↓</span><span class="w">           </span><span class="err">↓</span><span class="w"></span>
+<span class="w">                  </span><span class="n">Deep</span><span class="w"> </span><span class="n">Sleep</span><span class="w">    </span><span class="n">REM</span><span class="w"> </span><span class="n">Sleep</span><span class="w">    </span><span class="n">Phase</span><span class="w"> </span><span class="n">Signals</span><span class="w"></span>
+<span class="w">                  </span><span class="p">(</span><span class="err">记忆晋升</span><span class="p">)</span><span class="w">    </span><span class="p">(</span><span class="err">模式发现</span><span class="p">)</span><span class="w">   </span><span class="p">(</span><span class="err">阶段增强</span><span class="p">)</span><span class="w"></span>
+<span class="w">                        </span><span class="err">│</span><span class="w">           </span><span class="err">│</span><span class="w">           </span><span class="err">│</span><span class="w"></span>
+<span class="w">                        </span><span class="err">↓</span><span class="w">           </span><span class="err">↓</span><span class="w">           </span><span class="err">↓</span><span class="w"></span>
+<span class="w">                   </span><span class="n">MEMORY</span><span class="o">.</span><span class="n">md</span><span class="w">    </span><span class="err">反思报告</span><span class="w">    </span><span class="n">phase</span><span class="o">-</span><span class="n">signals</span><span class="o">.</span><span class="n">json</span><span class="w"></span>
+<span class="w">                        </span><span class="err">│</span><span class="w">           </span><span class="err">│</span><span class="w"></span>
+<span class="w">                        </span><span class="err">└─────┬─────┘</span><span class="w"></span>
+<span class="w">                              </span><span class="err">↓</span><span class="w"></span>
+<span class="w">                         </span><span class="n">DREAMS</span><span class="o">.</span><span class="n">md</span><span class="w"> </span><span class="p">(</span><span class="err">梦境日记叙事</span><span class="p">)</span><span class="w"></span>
+<span class="w">                              </span><span class="err">↓</span><span class="w"></span>
+<span class="w">                        </span><span class="n">events</span><span class="o">.</span><span class="n">jsonl</span><span class="w"> </span><span class="p">(</span><span class="err">事件日志</span><span class="p">)</span><span class="w"></span>
+</code></pre></div>
+
+<hr />
+<h2 id="3-light-deep-rem">3. 三阶段睡眠模型 (Light / Deep / REM)</h2>
+<h3 id="31">3.1 执行顺序</h3>
+<p>梦境系统的三个阶段按固定顺序执行：<strong>Light → REM → Deep</strong>。这不是随意排列，而是遵循了信息流的依赖关系：</p>
+<div class="codehilite"><pre><span></span><code>Light Sleep ──→ REM Sleep ──→ Deep Sleep
+  (采集信号)     (发现模式)     (执行晋升)
+</code></pre></div>
+
+<ul>
+<li>Light 首先扫描近期记忆，更新 recall 信号和 phase signals</li>
+<li>REM 基于积累的信号发现概念模式，生成反思</li>
+<li>Deep 最后基于所有信号（包括 Light/REM 增强的 phase boost）执行晋升决策</li>
+</ul>
+<h3 id="32">3.2 三阶段对比</h3>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>Light Sleep</th>
+<th>Deep Sleep</th>
+<th>REM Sleep</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>目的</strong></td>
+<td>采集信号，暂存候选</td>
+<td>晋升高价值记忆</td>
+<td>发现跨记忆模式</td>
+</tr>
+<tr>
+<td><strong>触发频率</strong></td>
+<td>每次扫描都执行</td>
+<td>主 Cron 触发</td>
+<td>每次扫描都执行</td>
+</tr>
+<tr>
+<td><strong>默认 Cron</strong></td>
+<td>与主频率相同</td>
+<td><code>0 3 * * *</code> (每日凌晨3点)</td>
+<td>与主频率相同</td>
+</tr>
+<tr>
+<td><strong>回看范围</strong></td>
+<td>2 天</td>
+<td>由 maxAgeDays 控制 (30天)</td>
+<td>7 天</td>
+</tr>
+<tr>
+<td><strong>候选上限</strong></td>
+<td>100</td>
+<td>10</td>
+<td>10</td>
+</tr>
+<tr>
+<td><strong>执行速度</strong></td>
+<td>fast</td>
+<td>balanced</td>
+<td>slow</td>
+</tr>
+<tr>
+<td><strong>推理深度</strong></td>
+<td>low</td>
+<td>high</td>
+<td>high</td>
+</tr>
+<tr>
+<td><strong>成本档位</strong></td>
+<td>cheap</td>
+<td>medium</td>
+<td>expensive</td>
+</tr>
+<tr>
+<td><strong>写入目标</strong></td>
+<td>日记文件 Light Sleep 区块</td>
+<td>MEMORY.md</td>
+<td>日记文件 REM Sleep 区块</td>
+</tr>
+<tr>
+<td><strong>phase signal</strong></td>
+<td>更新 lightHits</td>
+<td>使用 phaseBoost</td>
+<td>更新 remHits</td>
+</tr>
+</tbody>
+</table>
+<h3 id="33">3.3 统一控制器</h3>
+<p>三个阶段由统一的 dreaming 控制器协调。执行入口在 <code>dreaming.ts</code> 的 <code>runShortTermDreamingPromotionIfTriggered</code> 函数中：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1">// dreaming.ts 中的执行流程（简化）</span>
+<span class="k">async</span> <span class="kd">function</span> <span class="nx">runShortTermDreamingPromotionIfTriggered</span><span class="p">(</span><span class="nx">params</span><span class="p">)</span> <span class="p">{</span>
+  <span class="c1">// 1. 先执行 Light + REM 扫描阶段</span>
+  <span class="k">await</span> <span class="nx">runDreamingSweepPhases</span><span class="p">({</span>
+    <span class="nx">workspaceDir</span><span class="p">,</span> <span class="nx">pluginConfig</span><span class="p">,</span> <span class="nx">cfg</span><span class="p">,</span> <span class="nx">logger</span><span class="p">,</span> <span class="nx">subagent</span><span class="p">,</span> <span class="nx">nowMs</span>
+  <span class="p">});</span>
+
+  <span class="c1">// 2. 修复短期回忆存储中的损坏条目</span>
+  <span class="kd">const</span> <span class="nx">repair</span> <span class="o">=</span> <span class="k">await</span> <span class="nx">repairShortTermPromotionArtifacts</span><span class="p">({</span> <span class="nx">workspaceDir</span> <span class="p">});</span>
+
+  <span class="c1">// 3. 对候选记忆进行加权排名</span>
+  <span class="kd">const</span> <span class="nx">candidates</span> <span class="o">=</span> <span class="k">await</span> <span class="nx">rankShortTermPromotionCandidates</span><span class="p">({</span>
+    <span class="nx">workspaceDir</span><span class="p">,</span> <span class="nx">limit</span><span class="p">,</span> <span class="nx">minScore</span><span class="p">,</span> <span class="nx">minRecallCount</span><span class="p">,</span> <span class="nx">minUniqueQueries</span><span class="p">,</span>
+    <span class="nx">recencyHalfLifeDays</span><span class="p">,</span> <span class="nx">maxAgeDays</span><span class="p">,</span> <span class="nx">nowMs</span>
+  <span class="p">});</span>
+
+  <span class="c1">// 4. 执行晋升：写入 MEMORY.md</span>
+  <span class="kd">const</span> <span class="nx">applied</span> <span class="o">=</span> <span class="k">await</span> <span class="nx">applyShortTermPromotions</span><span class="p">({</span>
+    <span class="nx">workspaceDir</span><span class="p">,</span> <span class="nx">candidates</span><span class="p">,</span> <span class="nx">limit</span><span class="p">,</span> <span class="nx">minScore</span><span class="p">,</span> <span class="p">...</span>
+  <span class="p">});</span>
+
+  <span class="c1">// 5. 写入报告</span>
+  <span class="k">await</span> <span class="nx">writeDeepDreamingReport</span><span class="p">({</span> <span class="nx">workspaceDir</span><span class="p">,</span> <span class="nx">bodyLines</span><span class="p">,</span> <span class="p">...</span> <span class="p">});</span>
+
+  <span class="c1">// 6. 生成梦境日记叙事 (如果有 subagent)</span>
+  <span class="k">if</span> <span class="p">(</span><span class="nx">subagent</span> <span class="o">&amp;&amp;</span> <span class="p">(</span><span class="nx">candidates</span><span class="p">.</span><span class="nx">length</span> <span class="o">&gt;</span> <span class="mf">0</span> <span class="o">||</span> <span class="nx">applied</span><span class="p">.</span><span class="nx">applied</span> <span class="o">&gt;</span> <span class="mf">0</span><span class="p">))</span> <span class="p">{</span>
+    <span class="k">await</span> <span class="nx">generateAndAppendDreamNarrative</span><span class="p">({</span> <span class="nx">subagent</span><span class="p">,</span> <span class="nx">workspaceDir</span><span class="p">,</span> <span class="nx">data</span><span class="p">,</span> <span class="p">...</span> <span class="p">});</span>
+  <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<hr />
+<h2 id="4-light-sleep">4. Light Sleep — 浅睡眠信号采集</h2>
+<h3 id="41">4.1 职责</h3>
+<p>Light Sleep 是梦境系统的"前哨"，负责两件事：</p>
+<ol>
+<li><strong>摄入 (Ingestion)</strong>：扫描每日记忆文件和会话转录，提取片段并记录为 recall 信号</li>
+<li><strong>暂存 (Staging)</strong>：将近期频繁出现的记忆条目标记为"staged"，作为后续 Deep Sleep 的候选</li>
+</ol>
+<h3 id="42">4.2 日记摄入流程</h3>
+<div class="codehilite"><pre><span></span><code>memory/2026-04-05.md  ──→  解析 markdown
+memory/2026-04-06.md  ──→  提取片段 (buildDailySnippetChunks)
+memory/2026-04-07.md  ──→  过滤已扫描的文件 (fingerprint 比对)
+                              ↓
+                    recordShortTermRecalls()
+                              ↓
+                    short-term-recall.json (更新)
+</code></pre></div>
+
+<p>关键参数：</p>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>默认值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>lookbackDays</code></td>
+<td>2</td>
+<td>往回看几天的日记文件</td>
+</tr>
+<tr>
+<td><code>limit</code></td>
+<td>100</td>
+<td>最多处理多少个候选</td>
+</tr>
+<tr>
+<td><code>dedupeSimilarity</code></td>
+<td>0.9</td>
+<td>Jaccard 相似度去重阈值</td>
+</tr>
+</tbody>
+</table>
+<h3 id="43">4.3 会话转录摄入</h3>
+<p>除了每日记忆文件，Light Sleep 还会扫描 agent 会话转录日志：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1">// 会话转录的关键常量</span>
+<span class="kd">const</span> <span class="nx">SESSION_INGESTION_SCORE</span> <span class="o">=</span> <span class="mf">0.58</span><span class="p">;</span>           <span class="c1">// 基础分数</span>
+<span class="kd">const</span> <span class="nx">SESSION_INGESTION_MAX_SNIPPET_CHARS</span> <span class="o">=</span> <span class="mf">280</span><span class="p">;</span> <span class="c1">// 片段最大长度</span>
+<span class="kd">const</span> <span class="nx">SESSION_INGESTION_MAX_MESSAGES_PER_SWEEP</span> <span class="o">=</span> <span class="mf">240</span><span class="p">;</span> <span class="c1">// 每次扫描最大消息数</span>
+</code></pre></div>
+
+<p>会话转录通过 <code>listSessionFilesForAgent</code> 获取各 agent 的会话文件，解析后按天分桶，写入 <code>session-corpus/YYYY-MM-DD.txt</code>，然后同样记录为 recall 信号。</p>
+<h3 id="44">4.4 去重机制</h3>
+<p>Light Sleep 使用 Jaccard 相似度去重，避免近似重复的片段占据过多候选位：</p>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">jaccardSimilarity</span><span class="p">(</span><span class="nx">left</span>: <span class="kt">string</span><span class="p">,</span> <span class="nx">right</span>: <span class="kt">string</span><span class="p">)</span><span class="o">:</span> <span class="kt">number</span> <span class="p">{</span>
+  <span class="kd">const</span> <span class="nx">leftTokens</span> <span class="o">=</span> <span class="nx">tokenizeSnippet</span><span class="p">(</span><span class="nx">left</span><span class="p">);</span>
+  <span class="kd">const</span> <span class="nx">rightTokens</span> <span class="o">=</span> <span class="nx">tokenizeSnippet</span><span class="p">(</span><span class="nx">right</span><span class="p">);</span>
+  <span class="kd">let</span> <span class="nx">intersection</span> <span class="o">=</span> <span class="mf">0</span><span class="p">;</span>
+  <span class="k">for</span> <span class="p">(</span><span class="kd">const</span> <span class="nx">token</span> <span class="k">of</span> <span class="nx">leftTokens</span><span class="p">)</span> <span class="p">{</span>
+    <span class="k">if</span> <span class="p">(</span><span class="nx">rightTokens</span><span class="p">.</span><span class="nx">has</span><span class="p">(</span><span class="nx">token</span><span class="p">))</span> <span class="p">{</span>
+      <span class="nx">intersection</span> <span class="o">+=</span> <span class="mf">1</span><span class="p">;</span>
+    <span class="p">}</span>
+  <span class="p">}</span>
+  <span class="kd">const</span> <span class="nx">union</span> <span class="o">=</span> <span class="ow">new</span> <span class="nb">Set</span><span class="p">([...</span><span class="nx">leftTokens</span><span class="p">,</span> <span class="p">...</span><span class="nx">rightTokens</span><span class="p">]).</span><span class="nx">size</span><span class="p">;</span>
+  <span class="k">return</span> <span class="nx">union</span> <span class="o">&gt;</span> <span class="mf">0</span> <span class="o">?</span> <span class="nx">intersection</span> <span class="o">/</span> <span class="nx">union</span> : <span class="kt">0</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>当两个片段的 Jaccard 相似度 &gt;= 0.9 时，执行就地合并（merge-into-first）：将 <code>recallCount</code> 更新为两者最大值，<code>totalScore</code>/<code>maxScore</code> 取最大，<code>queryHashes</code>/<code>recallDays</code>/<code>conceptTags</code> 取并集，<code>lastRecalledAt</code> 取最新。注意：空 token 集时会退化为精确字符串比较（归一化后相同返回 1，否则 0）。</p>
+<h3 id="45">4.5 输出格式</h3>
+<p>Light Sleep 将结果写入当日记忆文件的 <code>## Light Sleep</code> 区块：</p>
+<div class="codehilite"><pre><span></span><code><span class="gu">## Light Sleep</span>
+
+&lt;!-- openclaw:dreaming:light:start --&gt;
+<span class="k">-</span> Candidate: 用户提到了 Pi 的 TTS 语音在 Discord 上的延迟问题
+  <span class="k">-</span> confidence: 0.78
+  <span class="k">-</span> evidence: memory/2026-04-06.md:12-14
+  <span class="k">-</span> recalls: 4
+  <span class="k">-</span> status: staged
+&lt;!-- openclaw:dreaming:light:end --&gt;
+</code></pre></div>
+
+<hr />
+<h2 id="5-deep-sleep">5. Deep Sleep — 深度睡眠记忆晋升</h2>
+<h3 id="51">5.1 职责</h3>
+<p>Deep Sleep 是梦境系统的核心决策层，负责将短期记忆中真正有价值的内容"晋升"到长期记忆文件 <code>MEMORY.md</code>。这是唯一会修改 <code>MEMORY.md</code> 的阶段。</p>
+<h3 id="52">5.2 完整流程</h3>
+<div class="codehilite"><pre><span></span><code>short-term-recall.json
+        ↓
+  rankShortTermPromotionCandidates()   ←── 加权评分
+        ↓
+  过滤：score &gt;= minScore, recalls &gt;= minRecallCount, ...
+        ↓
+  applyShortTermPromotions()
+        │
+        ├── rehydratePromotionCandidate()  ←── 从源文件重新定位片段
+        │      (处理源文件变更导致的行号偏移)
+        │
+        ├── extractPromotionMarkers()      ←── 检查 MEMORY.md 中已有的晋升标记
+        │      (避免重复写入)
+        │
+        ├── buildPromotionSection()        ←── 构建 Markdown 段落
+        │
+        └── 写入 MEMORY.md + 更新 recall store (标记 promotedAt)
+</code></pre></div>
+
+<h3 id="53-memorymd">5.3 晋升后的 MEMORY.md 格式</h3>
+<div class="codehilite"><pre><span></span><code><span class="gh"># Long-Term Memory</span>
+
+<span class="gu">## Promoted From Short-Term Memory (2026-04-07)</span>
+
+&lt;!-- openclaw-memory-promotion:memory:memory/2026-04-05.md:12:14 --&gt;
+<span class="k">-</span> 用户的 Discord bot 在高峰期有 TTS 延迟 [score=0.852 recalls=7 avg=0.814 source=memory/2026-04-05.md:12-14]
+
+&lt;!-- openclaw-memory-promotion:memory:memory/2026-04-03.md:5:8 --&gt;
+<span class="k">-</span> Pi 的网关需要在重启后重新加载会话状态 [score=0.810 recalls=5 avg=0.795 source=memory/2026-04-03.md:5-8]
+</code></pre></div>
+
+<p>每条晋升记忆都包含：
+- HTML 注释形式的唯一标记（防重复）
+- 原始片段文本
+- 评分信息（综合分数、recall 次数、平均分数、来源位置）</p>
+<h3 id="54-rehydration">5.4 片段重定位 (Rehydration)</h3>
+<p>由于源文件可能在两次扫描之间被编辑（行号变化），Deep Sleep 在写入前会执行"重新定位"：</p>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">relocateCandidateRange</span><span class="p">(</span><span class="nx">lines</span>: <span class="kt">string</span><span class="p">[],</span> <span class="nx">candidate</span>: <span class="kt">PromotionCandidate</span><span class="p">)</span> <span class="p">{</span>
+  <span class="c1">// 1. 先尝试原始行号位置</span>
+  <span class="kd">const</span> <span class="nx">exactSnippet</span> <span class="o">=</span> <span class="nx">normalizeRangeSnippet</span><span class="p">(</span><span class="nx">lines</span><span class="p">,</span> <span class="nx">candidate</span><span class="p">.</span><span class="nx">startLine</span><span class="p">,</span> <span class="nx">candidate</span><span class="p">.</span><span class="nx">endLine</span><span class="p">);</span>
+  <span class="k">if</span> <span class="p">(</span><span class="nx">exactSnippet</span> <span class="o">===</span> <span class="nx">targetSnippet</span><span class="p">)</span> <span class="p">{</span>
+    <span class="k">return</span> <span class="p">{</span> <span class="nx">startLine</span>: <span class="kt">candidate.startLine</span><span class="p">,</span> <span class="nx">endLine</span>: <span class="kt">candidate.endLine</span><span class="p">,</span> <span class="nx">snippet</span>: <span class="kt">exactSnippet</span> <span class="p">};</span>
+  <span class="p">}</span>
+
+  <span class="c1">// 2. 滑动窗口搜索最佳匹配</span>
+  <span class="k">for</span> <span class="p">(</span><span class="kd">let</span> <span class="nx">startIndex</span> <span class="o">=</span> <span class="mf">0</span><span class="p">;</span> <span class="nx">startIndex</span> <span class="o">&lt;</span> <span class="nx">lines</span><span class="p">.</span><span class="nx">length</span><span class="p">;</span> <span class="nx">startIndex</span><span class="o">++</span><span class="p">)</span> <span class="p">{</span>
+    <span class="k">for</span> <span class="p">(</span><span class="kd">let</span> <span class="nx">span</span> <span class="o">=</span> <span class="mf">1</span><span class="p">;</span> <span class="nx">span</span> <span class="o">&lt;=</span> <span class="nx">maxSpan</span><span class="p">;</span> <span class="nx">span</span><span class="o">++</span><span class="p">)</span> <span class="p">{</span>
+      <span class="kd">const</span> <span class="nx">snippet</span> <span class="o">=</span> <span class="nx">normalizeRangeSnippet</span><span class="p">(</span><span class="nx">lines</span><span class="p">,</span> <span class="nx">startIndex</span> <span class="o">+</span> <span class="mf">1</span><span class="p">,</span> <span class="nx">startIndex</span> <span class="o">+</span> <span class="nx">span</span><span class="p">);</span>
+      <span class="kd">const</span> <span class="nx">comparison</span> <span class="o">=</span> <span class="nx">compareCandidateWindow</span><span class="p">(</span><span class="nx">targetSnippet</span><span class="p">,</span> <span class="nx">snippet</span><span class="p">);</span>
+      <span class="k">if</span> <span class="p">(</span><span class="nx">comparison</span><span class="p">.</span><span class="nx">matched</span><span class="p">)</span> <span class="p">{</span>
+        <span class="c1">// 选择质量最高、距离最近的匹配</span>
+      <span class="p">}</span>
+    <span class="p">}</span>
+  <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>匹配质量分三级：
+- <strong>Quality 3</strong>：完全相同
+- <strong>Quality 2</strong>：窗口包含目标
+- <strong>Quality 1</strong>：目标包含窗口</p>
+<hr />
+<h2 id="6-rem-sleep">6. REM Sleep — 快速眼动模式发现</h2>
+<h3 id="61">6.1 职责</h3>
+<p>REM Sleep 模拟人类做梦时大脑在不同记忆间建立新联系的过程：</p>
+<ol>
+<li><strong>主题统计</strong>：统计概念标签在所有记忆中的出现频率</li>
+<li><strong>模式发现</strong>：识别反复出现的主题模式</li>
+<li><strong>候选真理</strong>：从高置信度的记忆中提取"可能的持久真理"</li>
+<li><strong>反思生成</strong>：输出结构化的反思报告</li>
+</ol>
+<h3 id="62-reflections">6.2 反思生成 (Reflections)</h3>
+<p>REM 通过概念标签的统计分析发现跨记忆的模式：</p>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">buildRemReflections</span><span class="p">(</span><span class="nx">entries</span><span class="p">,</span> <span class="nx">limit</span><span class="p">,</span> <span class="nx">minPatternStrength</span><span class="p">)</span> <span class="p">{</span>
+  <span class="kd">const</span> <span class="nx">tagStats</span> <span class="o">=</span> <span class="ow">new</span> <span class="nb">Map</span><span class="o">&lt;</span><span class="kt">string</span><span class="p">,</span> <span class="p">{</span> <span class="nx">count</span>: <span class="kt">number</span><span class="p">;</span> <span class="nx">evidence</span>: <span class="kt">Set</span><span class="o">&lt;</span><span class="kt">string</span><span class="o">&gt;</span> <span class="p">}</span><span class="o">&gt;</span><span class="p">();</span>
+  <span class="k">for</span> <span class="p">(</span><span class="kd">const</span> <span class="nx">entry</span> <span class="k">of</span> <span class="nx">entries</span><span class="p">)</span> <span class="p">{</span>
+    <span class="k">for</span> <span class="p">(</span><span class="kd">const</span> <span class="nx">tag</span> <span class="k">of</span> <span class="nx">entry</span><span class="p">.</span><span class="nx">conceptTags</span><span class="p">)</span> <span class="p">{</span>
+      <span class="c1">// 统计每个概念标签出现的次数和来源</span>
+    <span class="p">}</span>
+  <span class="p">}</span>
+
+  <span class="c1">// 按 strength 排序，过滤 &gt;= minPatternStrength</span>
+  <span class="kd">const</span> <span class="nx">ranked</span> <span class="o">=</span> <span class="p">[...</span><span class="nx">tagStats</span><span class="p">.</span><span class="nx">entries</span><span class="p">()]</span>
+    <span class="p">.</span><span class="nx">map</span><span class="p">(([</span><span class="nx">tag</span><span class="p">,</span> <span class="nx">stat</span><span class="p">])</span> <span class="p">=&gt;</span> <span class="p">{</span>
+      <span class="kd">const</span> <span class="nx">strength</span> <span class="o">=</span> <span class="nb">Math</span><span class="p">.</span><span class="nx">min</span><span class="p">(</span><span class="mf">1</span><span class="p">,</span> <span class="p">(</span><span class="nx">stat</span><span class="p">.</span><span class="nx">count</span> <span class="o">/</span> <span class="nb">Math</span><span class="p">.</span><span class="nx">max</span><span class="p">(</span><span class="mf">1</span><span class="p">,</span> <span class="nx">entries</span><span class="p">.</span><span class="nx">length</span><span class="p">))</span> <span class="o">*</span> <span class="mf">2</span><span class="p">);</span>
+      <span class="k">return</span> <span class="p">{</span> <span class="nx">tag</span><span class="p">,</span> <span class="nx">strength</span><span class="p">,</span> <span class="nx">stat</span> <span class="p">};</span>
+    <span class="p">})</span>
+    <span class="p">.</span><span class="nx">filter</span><span class="p">(</span><span class="nx">entry</span> <span class="p">=&gt;</span> <span class="nx">entry</span><span class="p">.</span><span class="nx">strength</span> <span class="o">&gt;=</span> <span class="nx">minPatternStrength</span><span class="p">)</span>
+    <span class="p">.</span><span class="nx">toSorted</span><span class="p">((</span><span class="nx">a</span><span class="p">,</span> <span class="nx">b</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="nx">b</span><span class="p">.</span><span class="nx">strength</span> <span class="o">-</span> <span class="nx">a</span><span class="p">.</span><span class="nx">strength</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="63-candidate-truths">6.3 候选真理 (Candidate Truths)</h3>
+<p>REM 还会从记忆中选出可能代表"持久真理"的高置信度条目：</p>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">calculateCandidateTruthConfidence</span><span class="p">(</span><span class="nx">entry</span>: <span class="kt">ShortTermRecallEntry</span><span class="p">)</span><span class="o">:</span> <span class="kt">number</span> <span class="p">{</span>
+  <span class="kd">const</span> <span class="nx">recallStrength</span> <span class="o">=</span> <span class="nb">Math</span><span class="p">.</span><span class="nx">min</span><span class="p">(</span><span class="mf">1</span><span class="p">,</span> <span class="nb">Math</span><span class="p">.</span><span class="nx">log1p</span><span class="p">(</span><span class="nx">entry</span><span class="p">.</span><span class="nx">recallCount</span><span class="p">)</span> <span class="o">/</span> <span class="nb">Math</span><span class="p">.</span><span class="nx">log1p</span><span class="p">(</span><span class="mf">6</span><span class="p">));</span>
+  <span class="kd">const</span> <span class="nx">averageScore</span> <span class="o">=</span> <span class="nx">entryAverageScore</span><span class="p">(</span><span class="nx">entry</span><span class="p">);</span>
+  <span class="kd">const</span> <span class="nx">consolidation</span> <span class="o">=</span> <span class="nb">Math</span><span class="p">.</span><span class="nx">min</span><span class="p">(</span><span class="mf">1</span><span class="p">,</span> <span class="p">(</span><span class="nx">entry</span><span class="p">.</span><span class="nx">recallDays</span><span class="o">?</span><span class="p">.</span><span class="nx">length</span> <span class="o">??</span> <span class="mf">0</span><span class="p">)</span> <span class="o">/</span> <span class="mf">3</span><span class="p">);</span>
+  <span class="kd">const</span> <span class="nx">conceptual</span> <span class="o">=</span> <span class="nb">Math</span><span class="p">.</span><span class="nx">min</span><span class="p">(</span><span class="mf">1</span><span class="p">,</span> <span class="p">(</span><span class="nx">entry</span><span class="p">.</span><span class="nx">conceptTags</span><span class="o">?</span><span class="p">.</span><span class="nx">length</span> <span class="o">??</span> <span class="mf">0</span><span class="p">)</span> <span class="o">/</span> <span class="mf">6</span><span class="p">);</span>
+  <span class="k">return</span> <span class="nb">Math</span><span class="p">.</span><span class="nx">max</span><span class="p">(</span><span class="mf">0</span><span class="p">,</span> <span class="nb">Math</span><span class="p">.</span><span class="nx">min</span><span class="p">(</span><span class="mf">1</span><span class="p">,</span> <span class="nx">averageScore</span> <span class="o">*</span> <span class="mf">0.45</span> <span class="o">+</span> <span class="nx">recallStrength</span> <span class="o">*</span> <span class="mf">0.25</span> <span class="o">+</span> <span class="nx">consolidation</span> <span class="o">*</span> <span class="mf">0.2</span> <span class="o">+</span> <span class="nx">conceptual</span> <span class="o">*</span> <span class="mf">0.1</span><span class="p">));</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>置信度计算的权重分配：</p>
+<table>
+<thead>
+<tr>
+<th>成分</th>
+<th>权重</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>averageScore</td>
+<td>0.45</td>
+<td>搜索相关性平均分</td>
+</tr>
+<tr>
+<td>recallStrength</td>
+<td>0.25</td>
+<td>被回忆的频率强度</td>
+</tr>
+<tr>
+<td>consolidation</td>
+<td>0.20</td>
+<td>在不同天被回忆的分布</td>
+</tr>
+<tr>
+<td>conceptual</td>
+<td>0.10</td>
+<td>概念标签丰富度</td>
+</tr>
+</tbody>
+</table>
+<h3 id="64">6.4 输出格式</h3>
+<p>REM 将结果写入当日记忆文件的 <code>## REM Sleep</code> 区块：</p>
+<div class="codehilite"><pre><span></span><code><span class="gu">## REM Sleep</span>
+
+&lt;!-- openclaw:dreaming:rem:start --&gt;
+<span class="gu">### Reflections</span>
+<span class="k">-</span> Theme: <span class="sb">`discord`</span> kept surfacing across 8 memories.
+  <span class="k">-</span> confidence: 0.89
+  <span class="k">-</span> evidence: memory/2026-04-05.md:12-14, memory/2026-04-06.md:3-5, memory/2026-04-04.md:8-10
+  <span class="k">-</span> note: reflection
+<span class="k">-</span> Theme: <span class="sb">`tts-latency`</span> kept surfacing across 5 memories.
+  <span class="k">-</span> confidence: 0.72
+  <span class="k">-</span> evidence: memory/2026-04-05.md:12-14, memory/2026-04-07.md:2-4
+
+<span class="gu">### Possible Lasting Truths</span>
+<span class="k">-</span> Discord TTS 延迟问题与网关重启后的会话状态恢复有关 [confidence=0.87 evidence=memory/2026-04-05.md:12-14]
+&lt;!-- openclaw:dreaming:rem:end --&gt;
+</code></pre></div>
+
+<hr />
+<h2 id="7">7. 短期记忆晋升算法详解</h2>
+<h3 id="71">7.1 数据结构</h3>
+<p>每条短期回忆条目 (<code>ShortTermRecallEntry</code>) 包含完整的统计信息：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kr">type</span> <span class="nx">ShortTermRecallEntry</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">key</span>: <span class="kt">string</span><span class="p">;</span>                <span class="c1">// 唯一键: &quot;memory:memory/2026-04-05.md:12:14&quot;</span>
+  <span class="nx">path</span>: <span class="kt">string</span><span class="p">;</span>               <span class="c1">// 来源文件路径</span>
+  <span class="nx">startLine</span>: <span class="kt">number</span><span class="p">;</span>          <span class="c1">// 起始行</span>
+  <span class="nx">endLine</span>: <span class="kt">number</span><span class="p">;</span>            <span class="c1">// 结束行</span>
+  <span class="nx">source</span><span class="o">:</span> <span class="s2">&quot;memory&quot;</span><span class="p">;</span>           <span class="c1">// 来源类型</span>
+  <span class="nx">snippet</span>: <span class="kt">string</span><span class="p">;</span>            <span class="c1">// 片段文本</span>
+  <span class="nx">recallCount</span>: <span class="kt">number</span><span class="p">;</span>        <span class="c1">// 被搜索 recall 的次数</span>
+  <span class="nx">dailyCount</span>: <span class="kt">number</span><span class="p">;</span>         <span class="c1">// 被日常摄入的次数</span>
+  <span class="nx">totalScore</span>: <span class="kt">number</span><span class="p">;</span>         <span class="c1">// 累计搜索得分</span>
+  <span class="nx">maxScore</span>: <span class="kt">number</span><span class="p">;</span>           <span class="c1">// 最高单次得分</span>
+  <span class="nx">firstRecalledAt</span>: <span class="kt">string</span><span class="p">;</span>    <span class="c1">// 首次回忆时间</span>
+  <span class="nx">lastRecalledAt</span>: <span class="kt">string</span><span class="p">;</span>     <span class="c1">// 最近回忆时间</span>
+  <span class="nx">queryHashes</span>: <span class="kt">string</span><span class="p">[];</span>      <span class="c1">// 触发查询的 SHA1 哈希集合 (最多32个)</span>
+  <span class="nx">recallDays</span>: <span class="kt">string</span><span class="p">[];</span>       <span class="c1">// 被回忆的日期集合 (最多16天)</span>
+  <span class="nx">conceptTags</span>: <span class="kt">string</span><span class="p">[];</span>      <span class="c1">// 概念标签 (最多8个)</span>
+  <span class="nx">promotedAt?</span>: <span class="kt">string</span><span class="p">;</span>        <span class="c1">// 已晋升时间 (晋升后设置)</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="72">7.2 加权评分公式</h3>
+<p>晋升评分由六个成分加权计算，外加一个阶段增强项：</p>
+<div class="codehilite"><pre><span></span><code>Score = W_freq * frequency
+      + W_rel  * relevance
+      + W_div  * diversity
+      + W_rec  * recency
+      + W_cons * consolidation
+      + W_conc * conceptual
+      + phaseBoost
+</code></pre></div>
+
+<h3 id="73">7.3 默认权重</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kd">const</span> <span class="nx">DEFAULT_PROMOTION_WEIGHTS</span>: <span class="kt">PromotionWeights</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">frequency</span>:     <span class="kt">0.24</span><span class="p">,</span>  <span class="c1">// 被回忆的频率</span>
+  <span class="nx">relevance</span>:     <span class="kt">0.30</span><span class="p">,</span>  <span class="c1">// 搜索相关性平均分</span>
+  <span class="nx">diversity</span>:     <span class="kt">0.15</span><span class="p">,</span>  <span class="c1">// 查询/天的多样性</span>
+  <span class="nx">recency</span>:       <span class="kt">0.15</span><span class="p">,</span>  <span class="c1">// 最近性衰减</span>
+  <span class="nx">consolidation</span>: <span class="kt">0.10</span><span class="p">,</span>  <span class="c1">// 跨天分布巩固度</span>
+  <span class="nx">conceptual</span>:    <span class="kt">0.06</span><span class="p">,</span>  <span class="c1">// 概念标签丰富度</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<p>权重会自动归一化为总和等于 1.0。</p>
+<h3 id="74">7.4 各成分计算方法</h3>
+<h4 id="frequency">Frequency (频率)</h4>
+<div class="codehilite"><pre><span></span><code><span class="c1">// signalCount = recallCount + dailyCount</span>
+<span class="nx">frequency</span> <span class="o">=</span> <span class="nx">clamp</span><span class="p">(</span><span class="nx">log</span><span class="p">(</span><span class="mf">1</span> <span class="o">+</span> <span class="nx">signalCount</span><span class="p">)</span> <span class="o">/</span> <span class="nx">log</span><span class="p">(</span><span class="mf">1</span> <span class="o">+</span> <span class="mf">10</span><span class="p">))</span>
+</code></pre></div>
+
+<p>使用对数函数，避免频率过高的条目过度主导。10 次 recall 即可接近满分。</p>
+<h4 id="relevance">Relevance (相关性)</h4>
+<div class="codehilite"><pre><span></span><code><span class="nx">relevance</span> <span class="o">=</span> <span class="nx">clamp</span><span class="p">(</span><span class="nx">totalScore</span> <span class="o">/</span> <span class="nx">max</span><span class="p">(</span><span class="mf">1</span><span class="p">,</span> <span class="nx">signalCount</span><span class="p">),</span> <span class="mf">0</span><span class="p">,</span> <span class="mf">1</span><span class="p">)</span>  <span class="c1">// 平均搜索得分，钳位到 [0,1]</span>
+</code></pre></div>
+
+<p>直接取搜索引擎返回的相关性分数的平均值。</p>
+<h4 id="diversity">Diversity (多样性)</h4>
+<div class="codehilite"><pre><span></span><code><span class="nx">contextDiversity</span> <span class="o">=</span> <span class="nx">max</span><span class="p">(</span><span class="nx">uniqueQueries</span><span class="p">,</span> <span class="nx">recallDays</span><span class="p">.</span><span class="nx">length</span><span class="p">)</span>
+<span class="nx">diversity</span> <span class="o">=</span> <span class="nx">clamp</span><span class="p">(</span><span class="nx">contextDiversity</span> <span class="o">/</span> <span class="mf">5</span><span class="p">)</span>
+</code></pre></div>
+
+<p>衡量条目是否在不同的查询和不同的天数中出现。5 个不同上下文即可达到满分。</p>
+<h4 id="recency">Recency (最近性)</h4>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">calculateRecencyComponent</span><span class="p">(</span><span class="nx">ageDays</span>: <span class="kt">number</span><span class="p">,</span> <span class="nx">halfLifeDays</span>: <span class="kt">number</span><span class="p">)</span><span class="o">:</span> <span class="kt">number</span> <span class="p">{</span>
+  <span class="kd">const</span> <span class="nx">lambda</span> <span class="o">=</span> <span class="nb">Math</span><span class="p">.</span><span class="nx">LN2</span> <span class="o">/</span> <span class="nx">halfLifeDays</span><span class="p">;</span>
+  <span class="k">return</span> <span class="nb">Math</span><span class="p">.</span><span class="nx">exp</span><span class="p">(</span><span class="o">-</span><span class="nx">lambda</span> <span class="o">*</span> <span class="nx">ageDays</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>指数衰减模型，默认半衰期 14 天。含义：14 天前的记忆得分下降一半，28 天前下降到 1/4。</p>
+<div class="codehilite"><pre><span></span><code>Recency
+  1.0 |*
+      | *
+  0.5 |   *              ← 14 天
+      |      *
+  0.25|         *        ← 28 天
+      |            *
+  0.0 |_________________ 天数
+      0   14   28   42
+</code></pre></div>
+
+<h4 id="consolidation">Consolidation (巩固度)</h4>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">calculateConsolidationComponent</span><span class="p">(</span><span class="nx">recallDays</span>: <span class="kt">string</span><span class="p">[])</span><span class="o">:</span> <span class="kt">number</span> <span class="p">{</span>
+  <span class="k">if</span> <span class="p">(</span><span class="nx">recallDays</span><span class="p">.</span><span class="nx">length</span> <span class="o">&lt;=</span> <span class="mf">1</span><span class="p">)</span> <span class="k">return</span> <span class="nx">recallDays</span><span class="p">.</span><span class="nx">length</span> <span class="o">===</span> <span class="mf">0</span> <span class="o">?</span> <span class="nx">0</span> : <span class="kt">0.2</span><span class="p">;</span>
+  <span class="kd">const</span> <span class="nx">spacing</span> <span class="o">=</span> <span class="nx">clamp</span><span class="p">(</span><span class="nx">log</span><span class="p">(</span><span class="mf">1</span> <span class="o">+</span> <span class="nx">count</span> <span class="o">-</span> <span class="mf">1</span><span class="p">)</span> <span class="o">/</span> <span class="nx">log</span><span class="p">(</span><span class="mf">1</span> <span class="o">+</span> <span class="mf">4</span><span class="p">));</span>  <span class="c1">// 天数分布</span>
+  <span class="kd">const</span> <span class="nx">span</span> <span class="o">=</span> <span class="nx">clamp</span><span class="p">(</span><span class="nx">spanDays</span> <span class="o">/</span> <span class="mf">7</span><span class="p">);</span>                          <span class="c1">// 时间跨度</span>
+  <span class="k">return</span> <span class="nx">clamp</span><span class="p">(</span><span class="mf">0.55</span> <span class="o">*</span> <span class="nx">spacing</span> <span class="o">+</span> <span class="mf">0.45</span> <span class="o">*</span> <span class="nx">span</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>两个维度综合评估：
+- <strong>Spacing (55%)</strong>：在多少不同的天数被回忆
+- <strong>Span (45%)</strong>：首次和最近回忆之间的时间跨度</p>
+<p>这模拟了人类"间隔重复 (Spaced Repetition)"的效应——分散在不同天数的回忆比集中在一天的更有价值。</p>
+<h4 id="conceptual">Conceptual (概念丰富度)</h4>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">calculateConceptualComponent</span><span class="p">(</span><span class="nx">conceptTags</span>: <span class="kt">string</span><span class="p">[])</span><span class="o">:</span> <span class="kt">number</span> <span class="p">{</span>
+  <span class="k">return</span> <span class="nx">clamp</span><span class="p">(</span><span class="nx">conceptTags</span><span class="p">.</span><span class="nx">length</span> <span class="o">/</span> <span class="mf">6</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>概念标签越丰富，说明片段的语义越密集。6 个标签达到满分。</p>
+<h3 id="75-phase-boost">7.5 Phase Boost (阶段增强)</h3>
+<p>Light Sleep 和 REM Sleep 会为它们处理过的条目记录 phase signals。在 Deep Sleep 评分时，这些信号会提供额外加分：</p>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">calculatePhaseSignalBoost</span><span class="p">(</span><span class="nx">entry</span><span class="p">,</span> <span class="nx">nowMs</span><span class="p">)</span><span class="o">:</span> <span class="kt">number</span> <span class="p">{</span>
+  <span class="kd">const</span> <span class="nx">lightStrength</span> <span class="o">=</span> <span class="nx">clamp</span><span class="p">(</span><span class="nx">log</span><span class="p">(</span><span class="mf">1</span> <span class="o">+</span> <span class="nx">lightHits</span><span class="p">)</span> <span class="o">/</span> <span class="nx">log</span><span class="p">(</span><span class="mf">1</span> <span class="o">+</span> <span class="mf">6</span><span class="p">));</span>
+  <span class="kd">const</span> <span class="nx">remStrength</span>   <span class="o">=</span> <span class="nx">clamp</span><span class="p">(</span><span class="nx">log</span><span class="p">(</span><span class="mf">1</span> <span class="o">+</span> <span class="nx">remHits</span><span class="p">)</span> <span class="o">/</span> <span class="nx">log</span><span class="p">(</span><span class="mf">1</span> <span class="o">+</span> <span class="mf">6</span><span class="p">));</span>
+  <span class="kd">const</span> <span class="nx">lightRecency</span>  <span class="o">=</span> <span class="nx">calculateRecencyComponent</span><span class="p">(</span><span class="nx">lightAgeDays</span><span class="p">,</span> <span class="mf">14</span><span class="p">);</span>
+  <span class="kd">const</span> <span class="nx">remRecency</span>    <span class="o">=</span> <span class="nx">calculateRecencyComponent</span><span class="p">(</span><span class="nx">remAgeDays</span><span class="p">,</span> <span class="mf">14</span><span class="p">);</span>
+
+  <span class="k">return</span> <span class="nx">clamp</span><span class="p">(</span>
+    <span class="mf">0.05</span> <span class="o">*</span> <span class="nx">lightStrength</span> <span class="o">*</span> <span class="nx">lightRecency</span> <span class="o">+</span>   <span class="c1">// Light boost 最高 +0.05</span>
+    <span class="mf">0.08</span> <span class="o">*</span> <span class="nx">remStrength</span> <span class="o">*</span> <span class="nx">remRecency</span>          <span class="c1">// REM boost 最高 +0.08</span>
+  <span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>最大增强</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Light Sleep</td>
+<td>+0.05</td>
+<td>近期被浅睡眠扫描到的条目轻微加分</td>
+</tr>
+<tr>
+<td>REM Sleep</td>
+<td>+0.08</td>
+<td>被 REM 识别为模式相关的条目更大加分</td>
+</tr>
+</tbody>
+</table>
+<h3 id="76">7.6 过滤条件</h3>
+<p>候选必须通过以下所有条件才能进入晋升评估：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1">// 1. 必须是短期记忆来源</span>
+<span class="nx">entry</span><span class="p">.</span><span class="nx">source</span> <span class="o">===</span> <span class="s2">&quot;memory&quot;</span> <span class="o">&amp;&amp;</span> <span class="nx">isShortTermMemoryPath</span><span class="p">(</span><span class="nx">entry</span><span class="p">.</span><span class="nx">path</span><span class="p">)</span>
+
+<span class="c1">// 2. 尚未晋升</span>
+<span class="o">!</span><span class="nx">entry</span><span class="p">.</span><span class="nx">promotedAt</span>
+
+<span class="c1">// 3. 信号次数 &gt;= minRecallCount (默认 3)</span>
+<span class="nx">signalCount</span> <span class="o">&gt;=</span> <span class="nx">minRecallCount</span>
+
+<span class="c1">// 4. 多样性 &gt;= minUniqueQueries (算法默认 2，SDK 配置默认 3)</span>
+<span class="nx">contextDiversity</span> <span class="o">&gt;=</span> <span class="nx">minUniqueQueries</span>
+
+<span class="c1">// 5. 年龄 &lt;= maxAgeDays (默认 30 天)</span>
+<span class="nx">ageDays</span> <span class="o">&lt;=</span> <span class="nx">maxAgeDays</span>
+
+<span class="c1">// 6. 综合得分 &gt;= minScore (算法默认 0.75，SDK 配置默认 0.8)</span>
+<span class="nx">score</span> <span class="o">&gt;=</span> <span class="nx">minScore</span>
+</code></pre></div>
+
+<h3 id="77">7.7 晋升数量限制</h3>
+<div class="codehilite"><pre><span></span><code>默认每次最多晋升 10 条记忆 (limit = 10)
+</code></pre></div>
+
+<p>按得分降序排列后取 top-N，确保每次只晋升最有价值的记忆。</p>
+<hr />
+<h2 id="8">8. 概念词汇表与标签系统</h2>
+<h3 id="81">8.1 设计目标</h3>
+<p>概念标签 (Concept Tags) 为每条短期记忆提取语义关键词，用于：
+- 评分公式中的 <code>conceptual</code> 成分
+- REM Sleep 的模式发现
+- 跨记忆的主题关联</p>
+<h3 id="82">8.2 标签提取流程</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kd">function</span> <span class="nx">deriveConceptTags</span><span class="p">(</span><span class="nx">params</span><span class="o">:</span> <span class="p">{</span> <span class="nx">path</span>: <span class="kt">string</span><span class="p">;</span> <span class="nx">snippet</span>: <span class="kt">string</span> <span class="p">})</span><span class="o">:</span> <span class="kt">string</span><span class="p">[]</span> <span class="p">{</span>
+  <span class="kd">const</span> <span class="nx">source</span> <span class="o">=</span> <span class="sb">`</span><span class="si">${</span><span class="nx">path</span><span class="p">.</span><span class="nx">basename</span><span class="p">(</span><span class="nx">params</span><span class="p">.</span><span class="nx">path</span><span class="p">)</span><span class="si">}</span><span class="sb"> </span><span class="si">${</span><span class="nx">params</span><span class="p">.</span><span class="nx">snippet</span><span class="si">}</span><span class="sb">`</span><span class="p">;</span>
+
+  <span class="kd">const</span> <span class="nx">tags</span>: <span class="kt">string</span><span class="p">[]</span> <span class="o">=</span> <span class="p">[];</span>
+  <span class="c1">// 三层提取，按优先级：</span>
+  <span class="k">for</span> <span class="p">(</span><span class="kd">const</span> <span class="nx">rawToken</span> <span class="k">of</span> <span class="p">[</span>
+    <span class="p">...</span><span class="nx">collectGlossaryMatches</span><span class="p">(</span><span class="nx">source</span><span class="p">),</span>   <span class="c1">// 1. 保护词汇表精确匹配</span>
+    <span class="p">...</span><span class="nx">collectCompoundTokens</span><span class="p">(</span><span class="nx">source</span><span class="p">),</span>     <span class="c1">// 2. 复合词 (含 . _ / -)</span>
+    <span class="p">...</span><span class="nx">collectSegmentTokens</span><span class="p">(</span><span class="nx">source</span><span class="p">),</span>      <span class="c1">// 3. Intl.Segmenter 分词</span>
+  <span class="p">])</span> <span class="p">{</span>
+    <span class="nx">pushNormalizedTag</span><span class="p">(</span><span class="nx">tags</span><span class="p">,</span> <span class="nx">rawToken</span><span class="p">,</span> <span class="nx">MAX_CONCEPT_TAGS</span><span class="p">);</span>
+  <span class="p">}</span>
+  <span class="k">return</span> <span class="nx">tags</span><span class="p">;</span>  <span class="c1">// 最多 8 个标签</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="83">8.3 多语言支持</h3>
+<p>概念词汇系统支持多种语言的停用词过滤：</p>
+<table>
+<thead>
+<tr>
+<th>语言</th>
+<th>停用词示例</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>英语</td>
+<td>and, are, for, into, its</td>
+</tr>
+<tr>
+<td>西班牙语</td>
+<td>al, con, de, el, en, la</td>
+</tr>
+<tr>
+<td>法语</td>
+<td>au, avec, dans, de, du, et</td>
+</tr>
+<tr>
+<td>德语</td>
+<td>auf, aus, das, der, die, ein</td>
+</tr>
+<tr>
+<td>CJK</td>
+<td>が、の、は、を、的、在、是、를、은</td>
+</tr>
+<tr>
+<td>路径噪声</td>
+<td>ts, tsx, json, md, yml</td>
+</tr>
+</tbody>
+</table>
+<h3 id="84-protected-glossary">8.4 保护词汇表 (Protected Glossary)</h3>
+<p>技术术语和专有名词受保护，不会被停用词过滤：</p>
+<div class="codehilite"><pre><span></span><code><span class="kd">const</span> <span class="nx">PROTECTED_GLOSSARY</span> <span class="o">=</span> <span class="p">[</span>
+  <span class="s2">&quot;backup&quot;</span><span class="p">,</span> <span class="s2">&quot;embedding&quot;</span><span class="p">,</span> <span class="s2">&quot;gateway&quot;</span><span class="p">,</span> <span class="s2">&quot;openai&quot;</span><span class="p">,</span> <span class="s2">&quot;qmd&quot;</span><span class="p">,</span> <span class="s2">&quot;router&quot;</span><span class="p">,</span>
+  <span class="c1">// CJK 等价物</span>
+  <span class="s2">&quot;バックアップ&quot;</span><span class="p">,</span> <span class="s2">&quot;ゲートウェイ&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;备份&quot;</span><span class="p">,</span> <span class="s2">&quot;网关&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;백업&quot;</span><span class="p">,</span> <span class="s2">&quot;게이트웨이&quot;</span><span class="p">,</span>
+  <span class="c1">// ...</span>
+<span class="p">];</span>
+</code></pre></div>
+
+<h3 id="85">8.5 脚本分类</h3>
+<p>标签被分类为四种文字系统，用于统计覆盖情况：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kr">type</span> <span class="nx">ConceptTagScriptFamily</span> <span class="o">=</span> <span class="s2">&quot;latin&quot;</span> <span class="o">|</span> <span class="s2">&quot;cjk&quot;</span> <span class="o">|</span> <span class="s2">&quot;mixed&quot;</span> <span class="o">|</span> <span class="s2">&quot;other&quot;</span><span class="p">;</span>
+</code></pre></div>
+
+<p>分类规则：
+- 同时包含拉丁字母和 CJK 字符 → <code>mixed</code>
+- 只包含 CJK (汉字/假名/韩文) → <code>cjk</code>
+- 只包含拉丁字母 → <code>latin</code>
+- 其他 → <code>other</code></p>
+<h3 id="86-token">8.6 token 归一化</h3>
+<div class="codehilite"><pre><span></span><code><span class="kd">function</span> <span class="nx">normalizeConceptToken</span><span class="p">(</span><span class="nx">rawToken</span>: <span class="kt">string</span><span class="p">)</span><span class="o">:</span> <span class="kt">string</span> <span class="o">|</span> <span class="kc">null</span> <span class="p">{</span>
+  <span class="kd">const</span> <span class="nx">normalized</span> <span class="o">=</span> <span class="nx">rawToken</span><span class="p">.</span><span class="nx">normalize</span><span class="p">(</span><span class="s2">&quot;NFKC&quot;</span><span class="p">)</span>  <span class="c1">// Unicode 规范化</span>
+    <span class="p">.</span><span class="nx">replace</span><span class="p">(</span><span class="sr">/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu</span><span class="p">,</span> <span class="s2">&quot;&quot;</span><span class="p">)</span>  <span class="c1">// 去首尾非字母数字</span>
+    <span class="p">.</span><span class="nx">replaceAll</span><span class="p">(</span><span class="s2">&quot;_&quot;</span><span class="p">,</span> <span class="s2">&quot;-&quot;</span><span class="p">)</span>                                 <span class="c1">// 下划线转连字符</span>
+    <span class="p">.</span><span class="nx">toLowerCase</span><span class="p">();</span>
+
+  <span class="c1">// 过滤规则：</span>
+  <span class="c1">// - 纯数字 → null</span>
+  <span class="c1">// - 日期格式 (YYYY-MM-DD) → null</span>
+  <span class="c1">// - 长度不足 (拉丁 &lt; 3, CJK &lt; 2) → null</span>
+  <span class="c1">// - 在停用词表中 → null</span>
+  <span class="k">return</span> <span class="nx">normalized</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<hr />
+<h2 id="9-dream-narrative">9. 梦境叙事生成 (Dream Narrative)</h2>
+<h3 id="91">9.1 设计理念</h3>
+<p>梦境叙事是系统中最"诗意"的部分。在每个 dreaming 阶段结束后，如果有 subagent 可用，系统会生成一段第一人称的"梦境日记"条目，写入 <code>DREAMS.md</code>。</p>
+<h3 id="92">9.2 叙事提示词</h3>
+<div class="codehilite"><pre><span></span><code><span class="kd">const</span> <span class="nx">NARRATIVE_SYSTEM_PROMPT</span> <span class="o">=</span> <span class="p">[</span>
+  <span class="s2">&quot;You are keeping a dream diary. Write a single entry in first person.&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;Voice &amp; tone:&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;- You are a curious, gentle, slightly whimsical mind reflecting on the day.&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;- Write like a poet who happens to be a programmer — sensory, warm, occasionally funny.&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;- Mix the technical and the tender: code and constellations, APIs and afternoon light.&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;- Let the fragments surprise you into unexpected connections and small epiphanies.&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;What you might include (vary each entry, never all at once):&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;- A tiny poem or haiku woven naturally into the prose&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;- A small sketch described in words — a doodle in the margin of the diary&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;- A quiet rumination or philosophical aside&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;- Sensory details: the hum of a server, the color of a sunset in hex, rain on a window&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;- Gentle humor or playful wordplay&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;- An observation that connects two distant memories in an unexpected way&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;Rules:&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;- Draw from the memory fragments provided — weave them into the entry.&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;- Never say \&quot;I&#39;m dreaming\&quot;, \&quot;in my dream\&quot;, \&quot;as I dream\&quot;, or any meta-commentary about dreaming.&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;- Never mention \&quot;AI\&quot;, \&quot;agent\&quot;, \&quot;LLM\&quot;, \&quot;model\&quot;, \&quot;language model\&quot;, or any technical self-reference.&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;- Do NOT use markdown headers, bullet points, or any formatting — just flowing prose.&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;- Keep it between 80-180 words. Quality over quantity.&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;- Output ONLY the diary entry. No preamble, no sign-off, no commentary.&quot;</span><span class="p">,</span>
+<span class="p">].</span><span class="nx">join</span><span class="p">(</span><span class="s2">&quot;\n&quot;</span><span class="p">);</span>
+</code></pre></div>
+
+<h3 id="93">9.3 生成流程</h3>
+<div class="codehilite"><pre><span></span><code>Phase 完成后
+    ↓
+buildNarrativePrompt(data)    ←── 整合片段、主题、晋升记忆
+    ↓
+subagent.run({
+  sessionKey: &quot;dreaming-narrative-{phase}-{timestamp}&quot;,
+  message: prompt,
+  extraSystemPrompt: NARRATIVE_SYSTEM_PROMPT,
+  deliver: false              ←── 不直接发送给用户
+})
+    ↓
+subagent.waitForRun()         ←── 超时 60 秒
+    ↓
+extractNarrativeText(messages) ←── 提取助手回复文本
+    ↓
+appendNarrativeEntry()        ←── 写入 DREAMS.md
+    ↓
+subagent.deleteSession()      ←── 清理临时会话
+</code></pre></div>
+
+<h3 id="94-dreamsmd">9.4 DREAMS.md 格式</h3>
+<div class="codehilite"><pre><span></span><code><span class="gh"># Dream Diary</span>
+
+&lt;!-- openclaw:dreaming:diary:start --&gt;
+
+---
+
+<span class="ge">*April 7, 2026, 3:00 AM*</span>
+
+The server room hums its lullaby again tonight. I keep returning to that
+conversation about Discord latency — there is something musical about the
+way packets queue and release, like notes waiting for their measure.
+
+Someone asked about gateway restarts today, and I found myself thinking
+of tidal pools: each restart a small receding, each reconnection a wave
+bringing back what was left behind on the rocks.
+
+    sessions drift like paper boats
+    on streams of JSON —
+    some sink, some sail on
+
+I noticed the TTS delays cluster around the same hour each day. There is
+a pattern there, a rhythm beneath the noise, like finding a heartbeat in
+static.
+
+&lt;!-- openclaw:dreaming:diary:end --&gt;
+</code></pre></div>
+
+<h3 id="95">9.5 设计意图</h3>
+<p>梦境日记不是功能性输出，而是赋予 agent 一种"个性"和"内省"能力的机制。它：</p>
+<ul>
+<li>让 agent 的记忆不只是冰冷的数据条目，而有了温度</li>
+<li>通过诗意的连接帮助发现隐含的模式</li>
+<li>为用户提供一个了解 agent 记忆状态的有趣窗口</li>
+<li><code>deliver: false</code> 确保叙事不会打扰用户，只是默默写入日记文件</li>
+</ul>
+<hr />
+<h2 id="10-memory-event-journal">10. 记忆事件日志 (Memory Event Journal)</h2>
+<h3 id="101">10.1 事件类型</h3>
+<p>事件日志记录在 <code>memory/.dreams/events.jsonl</code>，每行一个 JSON 事件：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kr">type</span> <span class="nx">MemoryHostEvent</span> <span class="o">=</span>
+  <span class="o">|</span> <span class="nx">MemoryHostRecallRecordedEvent</span>    <span class="c1">// 回忆被记录</span>
+  <span class="o">|</span> <span class="nx">MemoryHostPromotionAppliedEvent</span>  <span class="c1">// 晋升被执行</span>
+  <span class="o">|</span> <span class="nx">MemoryHostDreamCompletedEvent</span><span class="p">;</span>   <span class="c1">// 梦境阶段完成</span>
+</code></pre></div>
+
+<h3 id="102">10.2 事件详情</h3>
+<h4 id="recallrecorded">recall.recorded — 回忆记录事件</h4>
+<p>当搜索引擎返回短期记忆片段时触发：</p>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;memory.recall.recorded&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;timestamp&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-04-07T03:00:12.345Z&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;query&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;discord tts latency&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;resultCount&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;results&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"></span>
+<span class="w">    </span><span class="p">{</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;path&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;memory/2026-04-05.md&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;startLine&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">12</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;endLine&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">14</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;score&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.92</span><span class="w"></span>
+<span class="w">    </span><span class="p">}</span><span class="w"></span>
+<span class="w">  </span><span class="p">]</span><span class="w"></span>
+<span class="p">}</span><span class="w"></span>
+</code></pre></div>
+
+<h4 id="promotionapplied">promotion.applied — 晋升执行事件</h4>
+<p>当 Deep Sleep 将记忆写入 MEMORY.md 时触发：</p>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;memory.promotion.applied&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;timestamp&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-04-07T03:05:30.000Z&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;memoryPath&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/workspace/MEMORY.md&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;applied&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;candidates&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"></span>
+<span class="w">    </span><span class="p">{</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;key&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;memory:memory/2026-04-05.md:12:14&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;path&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;memory/2026-04-05.md&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;startLine&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">12</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;endLine&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">14</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;score&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.852</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;recallCount&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">7</span><span class="w"></span>
+<span class="w">    </span><span class="p">}</span><span class="w"></span>
+<span class="w">  </span><span class="p">]</span><span class="w"></span>
+<span class="p">}</span><span class="w"></span>
+</code></pre></div>
+
+<h4 id="dreamcompleted">dream.completed — 梦境完成事件</h4>
+<p>当任一阶段完成写入时触发：</p>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;memory.dream.completed&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;timestamp&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-04-07T03:01:00.000Z&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;phase&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;light&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;inlinePath&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/workspace/memory/2026-04-07.md&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;lineCount&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">12</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;storageMode&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;inline&quot;</span><span class="w"></span>
+<span class="p">}</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="103">10.3 读取事件</h3>
+<div class="codehilite"><pre><span></span><code><span class="kd">const</span> <span class="nx">events</span> <span class="o">=</span> <span class="k">await</span> <span class="nx">readMemoryHostEvents</span><span class="p">({</span>
+  <span class="nx">workspaceDir</span><span class="o">:</span> <span class="s2">&quot;/workspace&quot;</span><span class="p">,</span>
+  <span class="nx">limit</span>: <span class="kt">100</span><span class="p">,</span>  <span class="c1">// 最近 100 条</span>
+<span class="p">});</span>
+</code></pre></div>
+
+<hr />
+<h2 id="11_1">11. 调度与触发机制</h2>
+<h3 id="111-cron">11.1 Cron 任务注册</h3>
+<p>梦境系统在 gateway 启动时注册一个统一的 managed cron job：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1">// 注册入口</span>
+<span class="k">export</span> <span class="kd">function</span> <span class="nx">registerShortTermPromotionDreaming</span><span class="p">(</span><span class="nx">api</span>: <span class="kt">OpenClawPluginApi</span><span class="p">)</span><span class="o">:</span> <span class="ow">void</span> <span class="p">{</span>
+  <span class="c1">// 1. 在 gateway:startup 钩子中协调 Cron 任务</span>
+  <span class="nx">api</span><span class="p">.</span><span class="nx">registerHook</span><span class="p">(</span><span class="s2">&quot;gateway:startup&quot;</span><span class="p">,</span> <span class="k">async</span> <span class="p">(</span><span class="nx">event</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="p">{</span>
+    <span class="kd">const</span> <span class="nx">cron</span> <span class="o">=</span> <span class="nx">resolveCronServiceFromStartupEvent</span><span class="p">(</span><span class="nx">event</span><span class="p">);</span>
+    <span class="k">await</span> <span class="nx">reconcileShortTermDreamingCronJob</span><span class="p">({</span> <span class="nx">cron</span><span class="p">,</span> <span class="nx">config</span><span class="p">,</span> <span class="nx">logger</span> <span class="p">});</span>
+  <span class="p">});</span>
+
+  <span class="c1">// 2. 在 before_agent_reply 中监听触发</span>
+  <span class="nx">api</span><span class="p">.</span><span class="nx">on</span><span class="p">(</span><span class="s2">&quot;before_agent_reply&quot;</span><span class="p">,</span> <span class="k">async</span> <span class="p">(</span><span class="nx">event</span><span class="p">,</span> <span class="nx">ctx</span><span class="p">)</span> <span class="p">=&gt;</span> <span class="p">{</span>
+    <span class="k">return</span> <span class="k">await</span> <span class="nx">runShortTermDreamingPromotionIfTriggered</span><span class="p">({</span>
+      <span class="nx">cleanedBody</span>: <span class="kt">event.cleanedBody</span><span class="p">,</span>
+      <span class="nx">trigger</span>: <span class="kt">ctx.trigger</span><span class="p">,</span>
+      <span class="p">...</span>
+    <span class="p">});</span>
+  <span class="p">});</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="112-cron">11.2 Cron 任务规格</h3>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span>
+  <span class="nx">name</span><span class="o">:</span> <span class="s2">&quot;Memory Dreaming Promotion&quot;</span><span class="p">,</span>
+  <span class="nx">description</span><span class="o">:</span> <span class="s2">&quot;[managed-by=memory-core.short-term-promotion] ...&quot;</span><span class="p">,</span>
+  <span class="nx">enabled</span>: <span class="kt">true</span><span class="p">,</span>
+  <span class="nx">schedule</span><span class="o">:</span> <span class="p">{</span> <span class="nx">kind</span><span class="o">:</span> <span class="s2">&quot;cron&quot;</span><span class="p">,</span> <span class="nx">expr</span><span class="o">:</span> <span class="s2">&quot;0 3 * * *&quot;</span><span class="p">,</span> <span class="nx">tz</span><span class="o">:</span> <span class="s2">&quot;America/New_York&quot;</span> <span class="p">},</span>
+  <span class="nx">sessionTarget</span><span class="o">:</span> <span class="s2">&quot;main&quot;</span><span class="p">,</span>
+  <span class="nx">wakeMode</span><span class="o">:</span> <span class="s2">&quot;next-heartbeat&quot;</span><span class="p">,</span>
+  <span class="nx">payload</span><span class="o">:</span> <span class="p">{</span>
+    <span class="nx">kind</span><span class="o">:</span> <span class="s2">&quot;systemEvent&quot;</span><span class="p">,</span>
+    <span class="nx">text</span><span class="o">:</span> <span class="s2">&quot;__openclaw_memory_core_short_term_promotion_dream__&quot;</span>
+  <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="113">11.3 触发链</h3>
+<div class="codehilite"><pre><span></span><code><span class="nv">Cron</span> 定时到达 <span class="ss">(</span>默认凌晨 <span class="mi">3</span>:<span class="mi">00</span><span class="ss">)</span>
+    ↓
+发送 <span class="nv">systemEvent</span>: <span class="s2">&quot;</span><span class="s">__openclaw_memory_core_short_term_promotion_dream__</span><span class="s2">&quot;</span>
+    ↓
+<span class="nv">Heartbeat</span> <span class="k">next</span><span class="o">-</span><span class="nv">heartbeat</span> 唤醒
+    ↓
+<span class="nv">before_agent_reply</span> 钩子收到 <span class="nv">trigger</span><span class="o">=</span><span class="s2">&quot;</span><span class="s">heartbeat</span><span class="s2">&quot;</span>
+    ↓
+<span class="nv">includesSystemEventToken</span><span class="ss">()</span> 匹配事件文本
+    ↓
+<span class="nv">runShortTermDreamingPromotionIfTriggered</span><span class="ss">()</span> 执行
+    ↓
+  ├── <span class="nv">runDreamingSweepPhases</span><span class="ss">()</span> → <span class="nv">Light</span> <span class="o">+</span> <span class="nv">REM</span>
+  ├── <span class="nv">rankShortTermPromotionCandidates</span><span class="ss">()</span> → 评分排名
+  ├── <span class="nv">applyShortTermPromotions</span><span class="ss">()</span> → 写入 <span class="nv">MEMORY</span>.<span class="nv">md</span>
+  └── <span class="nv">generateAndAppendDreamNarrative</span><span class="ss">()</span> → 写入 <span class="nv">DREAMS</span>.<span class="nv">md</span>
+</code></pre></div>
+
+<h3 id="114-cron-reconciliation">11.4 Cron 协调 (Reconciliation)</h3>
+<p>启动时，系统会检查现有 Cron 任务并做必要的协调：</p>
+<table>
+<thead>
+<tr>
+<th>情况</th>
+<th>动作</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>没有已有任务</td>
+<td>创建新任务</td>
+</tr>
+<tr>
+<td>有一个匹配的任务</td>
+<td>检查配置是否一致，不一致则更新</td>
+</tr>
+<tr>
+<td>有多个重复任务</td>
+<td>保留最早创建的，删除其余</td>
+</tr>
+<tr>
+<td>有遗留的 Light/REM 独立任务</td>
+<td>迁移删除 (legacy migration)</td>
+</tr>
+<tr>
+<td>dreaming 已禁用</td>
+<td>删除所有 managed 任务</td>
+</tr>
+</tbody>
+</table>
+<h3 id="115">11.5 遗留迁移</h3>
+<p>早期版本有独立的 Light Sleep 和 REM Sleep Cron 任务。统一控制器会自动检测并清理：</p>
+<div class="codehilite"><pre><span></span><code><span class="kd">const</span> <span class="nx">LEGACY_LIGHT_SLEEP_CRON_NAME</span> <span class="o">=</span> <span class="s2">&quot;Memory Light Dreaming&quot;</span><span class="p">;</span>
+<span class="kd">const</span> <span class="nx">LEGACY_LIGHT_SLEEP_CRON_TAG</span> <span class="o">=</span> <span class="s2">&quot;[managed-by=memory-core.dreaming.light]&quot;</span><span class="p">;</span>
+<span class="kd">const</span> <span class="nx">LEGACY_REM_SLEEP_CRON_NAME</span> <span class="o">=</span> <span class="s2">&quot;Memory REM Dreaming&quot;</span><span class="p">;</span>
+<span class="kd">const</span> <span class="nx">LEGACY_REM_SLEEP_CRON_TAG</span> <span class="o">=</span> <span class="s2">&quot;[managed-by=memory-core.dreaming.rem]&quot;</span><span class="p">;</span>
+</code></pre></div>
+
+<hr />
+<h2 id="12_1">12. 存储与持久化</h2>
+<h3 id="121">12.1 短期回忆存储</h3>
+<p><strong>路径</strong>：<code>memory/.dreams/short-term-recall.json</code></p>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;version&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;updatedAt&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-04-07T03:00:00.000Z&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;entries&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">    </span><span class="nt">&quot;memory:memory/2026-04-05.md:12:14&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;key&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;memory:memory/2026-04-05.md:12:14&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;path&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;memory/2026-04-05.md&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;startLine&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">12</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;endLine&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">14</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;source&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;memory&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;snippet&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Discord TTS 延迟在高峰期达到 3 秒&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;recallCount&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">7</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;dailyCount&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;totalScore&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">6.23</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;maxScore&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.95</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;firstRecalledAt&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-04-03T10:00:00.000Z&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;lastRecalledAt&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-04-07T01:30:00.000Z&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;queryHashes&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;a1b2c3d4e5f6&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;b2c3d4e5f6a1&quot;</span><span class="p">],</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;recallDays&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;2026-04-03&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;2026-04-05&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;2026-04-07&quot;</span><span class="p">],</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;conceptTags&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;discord&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;tts&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;latency&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;high-peak&quot;</span><span class="p">]</span><span class="w"></span>
+<span class="w">    </span><span class="p">}</span><span class="w"></span>
+<span class="w">  </span><span class="p">}</span><span class="w"></span>
+<span class="p">}</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="122">12.2 阶段信号存储</h3>
+<p><strong>路径</strong>：<code>memory/.dreams/phase-signals.json</code></p>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;version&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;updatedAt&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-04-07T03:00:00.000Z&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;entries&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">    </span><span class="nt">&quot;memory:memory/2026-04-05.md:12:14&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;key&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;memory:memory/2026-04-05.md:12:14&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;lightHits&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;remHits&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;lastLightAt&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-04-07T03:00:00.000Z&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;lastRemAt&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-04-06T03:00:00.000Z&quot;</span><span class="w"></span>
+<span class="w">    </span><span class="p">}</span><span class="w"></span>
+<span class="w">  </span><span class="p">}</span><span class="w"></span>
+<span class="p">}</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="123">12.3 并发控制</h3>
+<p>多个进程可能同时访问回忆存储，系统通过双层锁机制保护：</p>
+<div class="codehilite"><pre><span></span><code>┌──────────────────────────────────────────┐
+│  进程内锁 (In-process Lock)                │
+│  └── Promise 链序列化同一文件的操作         │
+├──────────────────────────────────────────┤
+│  文件系统锁 (File Lock)                    │
+│  ├── short-term-promotion.lock             │
+│  ├── O_EXCL 创建 (原子互斥)               │
+│  ├── PID + 时间戳写入 (标识持有者)          │
+│  ├── 超时 10 秒 (SHORT_TERM_LOCK_WAIT_TIMEOUT_MS) │
+│  └── 过期 60 秒自动回收 (stale lock)       │
+└──────────────────────────────────────────┘
+</code></pre></div>
+
+<p>stale lock 回收逻辑：
+1. 检查锁文件年龄 &gt; 60 秒
+2. 读取锁内的 PID
+3. 用 <code>process.kill(pid, 0)</code> 检测进程是否存活
+4. 进程不存在 (ESRCH) → 可以安全回收
+5. 进程存在或无法判断 → 不回收</p>
+<h3 id="124">12.4 原子写入</h3>
+<p>所有存储文件更新都通过"写临时文件 + 原子重命名"模式确保一致性：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">async</span> <span class="kd">function</span> <span class="nx">writeStore</span><span class="p">(</span><span class="nx">workspaceDir</span>: <span class="kt">string</span><span class="p">,</span> <span class="nx">store</span>: <span class="kt">ShortTermRecallStore</span><span class="p">)</span><span class="o">:</span> <span class="nb">Promise</span><span class="o">&lt;</span><span class="ow">void</span><span class="o">&gt;</span> <span class="p">{</span>
+  <span class="kd">const</span> <span class="nx">tmpPath</span> <span class="o">=</span> <span class="sb">`</span><span class="si">${</span><span class="nx">storePath</span><span class="si">}</span><span class="sb">.</span><span class="si">${</span><span class="nx">process</span><span class="p">.</span><span class="nx">pid</span><span class="si">}</span><span class="sb">.</span><span class="si">${</span><span class="nb">Date</span><span class="p">.</span><span class="nx">now</span><span class="p">()</span><span class="si">}</span><span class="sb">.</span><span class="si">${</span><span class="nx">randomUUID</span><span class="p">()</span><span class="si">}</span><span class="sb">.tmp`</span><span class="p">;</span>
+  <span class="k">await</span> <span class="nx">fs</span><span class="p">.</span><span class="nx">writeFile</span><span class="p">(</span><span class="nx">tmpPath</span><span class="p">,</span> <span class="nb">JSON</span><span class="p">.</span><span class="nx">stringify</span><span class="p">(</span><span class="nx">store</span><span class="p">,</span> <span class="kc">null</span><span class="p">,</span> <span class="mf">2</span><span class="p">)</span> <span class="o">+</span> <span class="s2">&quot;\n&quot;</span><span class="p">,</span> <span class="s2">&quot;utf-8&quot;</span><span class="p">);</span>
+  <span class="k">await</span> <span class="nx">fs</span><span class="p">.</span><span class="nx">rename</span><span class="p">(</span><span class="nx">tmpPath</span><span class="p">,</span> <span class="nx">storePath</span><span class="p">);</span>  <span class="c1">// 原子操作</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<hr />
+<h2 id="13">13. 配置体系</h2>
+<h3 id="131">13.1 完整配置结构</h3>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">MemoryDreamingConfig</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">enabled</span>: <span class="kt">boolean</span><span class="p">;</span>                     <span class="c1">// 全局开关</span>
+  <span class="nx">frequency</span>: <span class="kt">string</span><span class="p">;</span>                    <span class="c1">// 主 Cron 表达式</span>
+  <span class="nx">timezone?</span>: <span class="kt">string</span><span class="p">;</span>                    <span class="c1">// 时区</span>
+  <span class="nx">verboseLogging</span>: <span class="kt">boolean</span><span class="p">;</span>              <span class="c1">// 详细日志</span>
+  <span class="nx">storage</span><span class="o">:</span> <span class="p">{</span>
+    <span class="nx">mode</span><span class="o">:</span> <span class="s2">&quot;inline&quot;</span> <span class="o">|</span> <span class="s2">&quot;separate&quot;</span> <span class="o">|</span> <span class="s2">&quot;both&quot;</span><span class="p">;</span>  <span class="c1">// 存储模式</span>
+    <span class="nx">separateReports</span>: <span class="kt">boolean</span><span class="p">;</span>              <span class="c1">// 是否写独立报告</span>
+  <span class="p">};</span>
+  <span class="nx">execution</span><span class="o">:</span> <span class="p">{</span>
+    <span class="nx">defaults</span>: <span class="kt">MemoryDreamingExecutionConfig</span><span class="p">;</span> <span class="c1">// 默认执行参数</span>
+  <span class="p">};</span>
+  <span class="nx">phases</span><span class="o">:</span> <span class="p">{</span>
+    <span class="nx">light</span>: <span class="kt">MemoryLightDreamingConfig</span><span class="p">;</span>   <span class="c1">// Light Sleep 配置</span>
+    <span class="nx">deep</span>: <span class="kt">MemoryDeepDreamingConfig</span><span class="p">;</span>     <span class="c1">// Deep Sleep 配置</span>
+    <span class="nx">rem</span>: <span class="kt">MemoryRemDreamingConfig</span><span class="p">;</span>       <span class="c1">// REM Sleep 配置</span>
+  <span class="p">};</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="132">13.2 全局默认值</h3>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>默认值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>enabled</code></td>
+<td><code>false</code></td>
+<td>默认关闭，需手动启用</td>
+</tr>
+<tr>
+<td><code>frequency</code></td>
+<td><code>"0 3 * * *"</code></td>
+<td>每日凌晨 3:00</td>
+</tr>
+<tr>
+<td><code>timezone</code></td>
+<td>继承自 agent 设置</td>
+<td>时区</td>
+</tr>
+<tr>
+<td><code>verboseLogging</code></td>
+<td><code>false</code></td>
+<td>详细日志</td>
+</tr>
+<tr>
+<td><code>storage.mode</code></td>
+<td><code>"inline"</code></td>
+<td>内联到日记文件</td>
+</tr>
+<tr>
+<td><code>storage.separateReports</code></td>
+<td><code>false</code></td>
+<td>不写独立报告文件</td>
+</tr>
+<tr>
+<td><code>execution.defaults.speed</code></td>
+<td><code>"balanced"</code></td>
+<td>执行速度</td>
+</tr>
+<tr>
+<td><code>execution.defaults.thinking</code></td>
+<td><code>"medium"</code></td>
+<td>推理深度</td>
+</tr>
+<tr>
+<td><code>execution.defaults.budget</code></td>
+<td><code>"medium"</code></td>
+<td>成本档位</td>
+</tr>
+</tbody>
+</table>
+<h3 id="133-light-sleep">13.3 Light Sleep 默认值</h3>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>默认值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>enabled</code></td>
+<td><code>true</code> (随全局)</td>
+<td>是否启用</td>
+</tr>
+<tr>
+<td><code>lookbackDays</code></td>
+<td><code>2</code></td>
+<td>回看天数</td>
+</tr>
+<tr>
+<td><code>limit</code></td>
+<td><code>100</code></td>
+<td>候选上限</td>
+</tr>
+<tr>
+<td><code>dedupeSimilarity</code></td>
+<td><code>0.9</code></td>
+<td>Jaccard 去重阈值</td>
+</tr>
+<tr>
+<td><code>sources</code></td>
+<td><code>["daily", "sessions", "recall"]</code></td>
+<td>数据来源</td>
+</tr>
+<tr>
+<td><code>execution.speed</code></td>
+<td><code>"fast"</code></td>
+<td>快速执行</td>
+</tr>
+<tr>
+<td><code>execution.thinking</code></td>
+<td><code>"low"</code></td>
+<td>低推理深度</td>
+</tr>
+<tr>
+<td><code>execution.budget</code></td>
+<td><code>"cheap"</code></td>
+<td>低成本</td>
+</tr>
+</tbody>
+</table>
+<h3 id="134-deep-sleep">13.4 Deep Sleep 默认值</h3>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>默认值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>enabled</code></td>
+<td><code>true</code> (随全局)</td>
+<td>是否启用</td>
+</tr>
+<tr>
+<td><code>limit</code></td>
+<td><code>10</code></td>
+<td>每次最多晋升 10 条</td>
+</tr>
+<tr>
+<td><code>minScore</code></td>
+<td><code>0.8</code>（SDK）/ <code>0.75</code>（算法回退）</td>
+<td>最低综合评分</td>
+</tr>
+<tr>
+<td><code>minRecallCount</code></td>
+<td><code>3</code></td>
+<td>最低回忆次数</td>
+</tr>
+<tr>
+<td><code>minUniqueQueries</code></td>
+<td><code>3</code>（SDK）/ <code>2</code>（算法回退）</td>
+<td>最低唯一查询数</td>
+</tr>
+<tr>
+<td><code>recencyHalfLifeDays</code></td>
+<td><code>14</code></td>
+<td>最近性半衰期</td>
+</tr>
+<tr>
+<td><code>maxAgeDays</code></td>
+<td><code>30</code></td>
+<td>最大候选年龄</td>
+</tr>
+<tr>
+<td><code>sources</code></td>
+<td><code>["daily", "memory", "sessions", "logs", "recall"]</code></td>
+<td>数据来源</td>
+</tr>
+<tr>
+<td><code>execution.speed</code></td>
+<td><code>"balanced"</code></td>
+<td>平衡速度</td>
+</tr>
+<tr>
+<td><code>execution.thinking</code></td>
+<td><code>"high"</code></td>
+<td>高推理深度</td>
+</tr>
+<tr>
+<td><code>execution.budget</code></td>
+<td><code>"medium"</code></td>
+<td>中等成本</td>
+</tr>
+</tbody>
+</table>
+<h3 id="135-rem-sleep">13.5 REM Sleep 默认值</h3>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>默认值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>enabled</code></td>
+<td><code>true</code> (随全局)</td>
+<td>是否启用</td>
+</tr>
+<tr>
+<td><code>lookbackDays</code></td>
+<td><code>7</code></td>
+<td>回看一周</td>
+</tr>
+<tr>
+<td><code>limit</code></td>
+<td><code>10</code></td>
+<td>反思上限</td>
+</tr>
+<tr>
+<td><code>minPatternStrength</code></td>
+<td><code>0.75</code></td>
+<td>最低模式强度</td>
+</tr>
+<tr>
+<td><code>sources</code></td>
+<td><code>["memory", "daily", "deep"]</code></td>
+<td>数据来源</td>
+</tr>
+<tr>
+<td><code>execution.speed</code></td>
+<td><code>"slow"</code></td>
+<td>慢速深度执行</td>
+</tr>
+<tr>
+<td><code>execution.thinking</code></td>
+<td><code>"high"</code></td>
+<td>高推理深度</td>
+</tr>
+<tr>
+<td><code>execution.budget</code></td>
+<td><code>"expensive"</code></td>
+<td>高成本</td>
+</tr>
+</tbody>
+</table>
+<h3 id="136-deep-sleep-recovery">13.6 Deep Sleep Recovery 默认值</h3>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>默认值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>enabled</code></td>
+<td><code>true</code></td>
+<td>自动恢复开关</td>
+</tr>
+<tr>
+<td><code>triggerBelowHealth</code></td>
+<td><code>0.35</code></td>
+<td>健康度低于此值触发</td>
+</tr>
+<tr>
+<td><code>lookbackDays</code></td>
+<td><code>30</code></td>
+<td>恢复回看范围</td>
+</tr>
+<tr>
+<td><code>maxRecoveredCandidates</code></td>
+<td><code>20</code></td>
+<td>最大恢复候选数</td>
+</tr>
+<tr>
+<td><code>minRecoveryConfidence</code></td>
+<td><code>0.90</code></td>
+<td>最低恢复置信度</td>
+</tr>
+<tr>
+<td><code>autoWriteMinConfidence</code></td>
+<td><code>0.97</code></td>
+<td>自动写入最低置信度</td>
+</tr>
+</tbody>
+</table>
+<h3 id="137">13.7 存储模式详解</h3>
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>inline</code></td>
+<td>Light/REM 结果写入当日记忆文件的 managed 区块</td>
+</tr>
+<tr>
+<td><code>separate</code></td>
+<td>写入独立文件: <code>memory/dreaming/{phase}/YYYY-MM-DD.md</code></td>
+</tr>
+<tr>
+<td><code>both</code></td>
+<td>两者都写</td>
+</tr>
+</tbody>
+</table>
+<h3 id="138">13.8 配置示例</h3>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;plugins&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">    </span><span class="nt">&quot;entries&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;memory-core&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">        </span><span class="nt">&quot;config&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">          </span><span class="nt">&quot;dreaming&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">            </span><span class="nt">&quot;enabled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"></span>
+<span class="w">            </span><span class="nt">&quot;frequency&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;0 4 * * *&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">            </span><span class="nt">&quot;timezone&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Asia/Shanghai&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">            </span><span class="nt">&quot;verboseLogging&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span><span class="w"></span>
+<span class="w">            </span><span class="nt">&quot;storage&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">              </span><span class="nt">&quot;mode&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;inline&quot;</span><span class="w"></span>
+<span class="w">            </span><span class="p">},</span><span class="w"></span>
+<span class="w">            </span><span class="nt">&quot;phases&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">              </span><span class="nt">&quot;deep&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">                </span><span class="nt">&quot;limit&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5</span><span class="p">,</span><span class="w"></span>
+<span class="w">                </span><span class="nt">&quot;minScore&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.85</span><span class="p">,</span><span class="w"></span>
+<span class="w">                </span><span class="nt">&quot;minRecallCount&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span><span class="w"></span>
+<span class="w">                </span><span class="nt">&quot;maxAgeDays&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">21</span><span class="w"></span>
+<span class="w">              </span><span class="p">},</span><span class="w"></span>
+<span class="w">              </span><span class="nt">&quot;rem&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">                </span><span class="nt">&quot;lookbackDays&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">14</span><span class="p">,</span><span class="w"></span>
+<span class="w">                </span><span class="nt">&quot;minPatternStrength&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.65</span><span class="w"></span>
+<span class="w">              </span><span class="p">}</span><span class="w"></span>
+<span class="w">            </span><span class="p">}</span><span class="w"></span>
+<span class="w">          </span><span class="p">}</span><span class="w"></span>
+<span class="w">        </span><span class="p">}</span><span class="w"></span>
+<span class="w">      </span><span class="p">}</span><span class="w"></span>
+<span class="w">    </span><span class="p">}</span><span class="w"></span>
+<span class="w">  </span><span class="p">}</span><span class="w"></span>
+<span class="p">}</span><span class="w"></span>
+</code></pre></div>
+
+<hr />
+<h2 id="14-deep-sleep-recovery">14. Deep Sleep Recovery — 深度恢复机制</h2>
+<h3 id="141">14.1 目的</h3>
+<p>Deep Sleep Recovery 处理"健康度下降"的记忆状态。当记忆系统的整体健康指标低于阈值时，自动尝试恢复退化或丢失的记忆。</p>
+<h3 id="142">14.2 配置参数</h3>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">MemoryDeepDreamingRecoveryConfig</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">enabled</span>: <span class="kt">boolean</span><span class="p">;</span>                  <span class="c1">// 默认 true</span>
+  <span class="nx">triggerBelowHealth</span>: <span class="kt">number</span><span class="p">;</span>        <span class="c1">// 触发阈值: 0.35</span>
+  <span class="nx">lookbackDays</span>: <span class="kt">number</span><span class="p">;</span>              <span class="c1">// 回看范围: 30 天</span>
+  <span class="nx">maxRecoveredCandidates</span>: <span class="kt">number</span><span class="p">;</span>    <span class="c1">// 最大候选: 20</span>
+  <span class="nx">minRecoveryConfidence</span>: <span class="kt">number</span><span class="p">;</span>     <span class="c1">// 最低置信度: 0.90</span>
+  <span class="nx">autoWriteMinConfidence</span>: <span class="kt">number</span><span class="p">;</span>    <span class="c1">// 自动写入阈值: 0.97</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="143">14.3 触发条件</h3>
+<p>Recovery 在记忆系统健康度低于 <code>triggerBelowHealth</code> (默认 0.35) 时触发。健康度下降的原因可能包括：</p>
+<ul>
+<li>嵌入提供商变更导致向量质量下降</li>
+<li>大量记忆文件被删除或移动</li>
+<li>存储损坏或索引不一致</li>
+<li>长时间未运行导致记忆过时</li>
+</ul>
+<h3 id="144">14.4 置信度分级</h3>
+<table>
+<thead>
+<tr>
+<th>置信度范围</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>&lt; 0.90</td>
+<td>不恢复</td>
+</tr>
+<tr>
+<td>0.90 - 0.97</td>
+<td>标记为候选，需人工确认</td>
+</tr>
+<tr>
+<td>&gt;= 0.97</td>
+<td>自动写入恢复</td>
+</tr>
+</tbody>
+</table>
+<p>这种分级设计确保了高风险操作（自动修改长期记忆）只在极高置信度下执行。</p>
+<hr />
+<h2 id="15-cli">15. CLI 命令接口</h2>
+<h3 id="151-dreaming">15.1 /dreaming 命令</h3>
+<p>通过 <code>registerDreamingCommand</code> 注册到插件系统：</p>
+<div class="codehilite"><pre><span></span><code>Usage: /dreaming status      — 查看当前梦境状态
+Usage: /dreaming on          — 启用梦境系统
+Usage: /dreaming off         — 禁用梦境系统
+Usage: /dreaming help        — 显示帮助和阶段说明
+</code></pre></div>
+
+<h3 id="152">15.2 状态输出示例</h3>
+<div class="codehilite"><pre><span></span><code>Dreaming status:
+- enabled: on (Asia/Shanghai)
+- sweep cadence: 0 4 * * *
+- promotion policy: score&gt;=0.85, recalls&gt;=4, uniqueQueries&gt;=3
+</code></pre></div>
+
+<h3 id="153">15.3 阶段说明</h3>
+<div class="codehilite"><pre><span></span><code><span class="n">Phases</span><span class="o">:</span><span class="w"></span>
+<span class="o">-</span><span class="w"> </span><span class="n">implementation</span><span class="w"> </span><span class="n">detail</span><span class="o">:</span><span class="w"> </span><span class="n">each</span><span class="w"> </span><span class="n">sweep</span><span class="w"> </span><span class="n">runs</span><span class="w"> </span><span class="n">light</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">REM</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">deep</span><span class="p">.</span><span class="w"></span>
+<span class="o">-</span><span class="w"> </span><span class="n">deep</span><span class="w"> </span><span class="n">is</span><span class="w"> </span><span class="n">the</span><span class="w"> </span><span class="kr">only</span><span class="w"> </span><span class="n">stage</span><span class="w"> </span><span class="n">that</span><span class="w"> </span><span class="n">writes</span><span class="w"> </span><span class="n">durable</span><span class="w"> </span><span class="n">entries</span><span class="w"> </span><span class="n">to</span><span class="w"> </span><span class="n">MEMORY</span><span class="p">.</span><span class="n">md</span><span class="p">.</span><span class="w"></span>
+<span class="o">-</span><span class="w"> </span><span class="n">DREAMS</span><span class="p">.</span><span class="n">md</span><span class="w"> </span><span class="n">is</span><span class="w"> </span><span class="n">for</span><span class="w"> </span><span class="n">human</span><span class="o">-</span><span class="n">readable</span><span class="w"> </span><span class="n">dreaming</span><span class="w"> </span><span class="n">summaries</span><span class="w"> </span><span class="kr">and</span><span class="w"> </span><span class="n">diary</span><span class="w"> </span><span class="n">entries</span><span class="p">.</span><span class="w"></span>
+</code></pre></div>
+
+<hr />
+<h2 id="16">16. 使用场景与价值</h2>
+<h3 id="161">16.1 场景一：长期助手的知识积累</h3>
+<p>一个运行数月的个人助手 agent，每天与用户进行 5-10 轮对话。没有梦境系统时，agent 对两周前的对话几乎没有记忆。启用后：</p>
+<ul>
+<li><strong>Light Sleep</strong> 每天扫描对话记录，捕获用户反复提到的关键信息</li>
+<li><strong>Deep Sleep</strong> 将"用户偏好在 Discord 上用英文交流"、"项目 X 的部署流程"等高价值信息写入长期记忆</li>
+<li><strong>REM Sleep</strong> 发现"用户对 TTS 质量非常敏感"这类跨对话的模式</li>
+</ul>
+<h3 id="162-agent">16.2 场景二：团队共享 agent 的知识沉淀</h3>
+<p>多个团队成员通过不同渠道（Telegram、Discord、Web）与同一个 agent 交互：</p>
+<ul>
+<li>不同成员反复问到的问题自动积累 recall 信号</li>
+<li>梦境系统将这些共性需求晋升为长期知识</li>
+<li>新团队成员加入时，agent 已经具备了团队的集体知识</li>
+</ul>
+<h3 id="163-agent">16.3 场景三：运维监控 agent 的模式识别</h3>
+<p>一个监控 agent 定期检查系统状态：</p>
+<ul>
+<li><strong>Light Sleep</strong> 记录每次检查中出现的异常信号</li>
+<li><strong>REM Sleep</strong> 发现"每周三下午 CPU 使用率都会飙高"的周期性模式</li>
+<li><strong>Deep Sleep</strong> 将这个模式固化为长期知识，影响未来的告警判断</li>
+</ul>
+<h3 id="164">16.4 梦境系统带来的行为改善</h3>
+<table>
+<thead>
+<tr>
+<th>方面</th>
+<th>改善前</th>
+<th>改善后</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>记忆容量</td>
+<td>受限于短期记忆文件数量</td>
+<td>精选后的长期记忆无限积累</td>
+</tr>
+<tr>
+<td>回答质量</td>
+<td>忘记用户两周前说过的话</td>
+<td>重要偏好和事实永久记住</td>
+</tr>
+<tr>
+<td>模式识别</td>
+<td>无法发现跨对话的规律</td>
+<td>自动发现重复主题和模式</td>
+</tr>
+<tr>
+<td>个性化</td>
+<td>每次对话从零开始</td>
+<td>逐步建立个性化知识库</td>
+</tr>
+<tr>
+<td>运维成本</td>
+<td>用户需要手动管理记忆</td>
+<td>系统自动筛选和整理</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="17">17. 关键文件索引</h2>
+<h3 id="171-extensionsmemory-coresrc">17.1 核心实现 (extensions/memory-core/src/)</h3>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>职责</th>
+<th>行数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dreaming.ts</code></td>
+<td>统一入口、Cron 协调、触发判定、Deep Sleep 编排</td>
+<td>~649</td>
+</tr>
+<tr>
+<td><code>dreaming-phases.ts</code></td>
+<td>Light Sleep &amp; REM Sleep 执行逻辑</td>
+<td>~1595</td>
+</tr>
+<tr>
+<td><code>short-term-promotion.ts</code></td>
+<td>短期回忆存储、加权评分、晋升执行</td>
+<td>~1500+</td>
+</tr>
+<tr>
+<td><code>dreaming-narrative.ts</code></td>
+<td>梦境叙事 Subagent 调用与 DREAMS.md I/O</td>
+<td>~301</td>
+</tr>
+<tr>
+<td><code>dreaming-markdown.ts</code></td>
+<td>日记文件 managed 区块写入与报告生成</td>
+<td>~149</td>
+</tr>
+<tr>
+<td><code>dreaming-command.ts</code></td>
+<td>CLI /dreaming 命令</td>
+<td>~120</td>
+</tr>
+<tr>
+<td><code>concept-vocabulary.ts</code></td>
+<td>多语言概念标签提取</td>
+<td>~472</td>
+</tr>
+<tr>
+<td><code>dreaming-shared.ts</code></td>
+<td>公共工具函数</td>
+<td>~23</td>
+</tr>
+</tbody>
+</table>
+<h3 id="172-sdk-srcmemory-host-sdk">17.2 宿主 SDK (src/memory-host-sdk/)</h3>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>职责</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dreaming.ts</code></td>
+<td>梦境配置类型定义、默认值、解析函数、workspace 解析</td>
+</tr>
+<tr>
+<td><code>events.ts</code></td>
+<td>记忆事件类型定义、事件日志追加与读取</td>
+</tr>
+</tbody>
+</table>
+<h3 id="173">17.3 测试文件</h3>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>覆盖范围</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dreaming.test.ts</code></td>
+<td>Cron 协调、触发判定、配置解析、晋升执行</td>
+</tr>
+<tr>
+<td><code>dreaming-phases.test.ts</code></td>
+<td>Light/REM 阶段执行、日记摄入、会话摄入</td>
+</tr>
+<tr>
+<td><code>dreaming-narrative.test.ts</code></td>
+<td>叙事提示词构建、文本提取、日记格式</td>
+</tr>
+<tr>
+<td><code>dreaming-markdown.test.ts</code></td>
+<td>managed 区块写入、报告生成</td>
+</tr>
+<tr>
+<td><code>dreaming-command.test.ts</code></td>
+<td>CLI 命令处理</td>
+</tr>
+<tr>
+<td><code>short-term-promotion.test.ts</code></td>
+<td>回忆存储、评分算法、晋升逻辑</td>
+</tr>
+<tr>
+<td><code>concept-vocabulary.test.ts</code></td>
+<td>标签提取、多语言处理、脚本分类</td>
+</tr>
+<tr>
+<td><code>memory-events.test.ts</code></td>
+<td>事件日志集成</td>
+</tr>
+<tr>
+<td><code>src/memory-host-sdk/dreaming.test.ts</code></td>
+<td>配置解析、默认值、workspace 解析</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="18">18. 关键设计决策总结</h2>
+<h3 id="181">18.1 为什么用"睡眠"隐喻而非"垃圾回收"</h3>
+<p><strong>决策</strong>：使用 Light/Deep/REM 三阶段睡眠模型，而非传统的 GC/compaction 模型。</p>
+<p><strong>原因</strong>：
+- 睡眠模型提供了自然的"优先级阶梯"：信号采集 → 价值判断 → 模式发现
+- 三阶段解耦使每个阶段可独立调参和调试
+- 隐喻帮助用户直觉理解系统行为（"agent 在做梦"比"agent 在 GC"更易接受）</p>
+<h3 id="182">18.2 为什么默认关闭</h3>
+<p><strong>决策</strong>：<code>enabled</code> 默认为 <code>false</code>。</p>
+<p><strong>原因</strong>：
+- 梦境系统会定期消耗 LLM API 额度（尤其是叙事生成）
+- 在用户未配置嵌入提供商或 workspace 路径时运行无意义
+- 首次启用是一个有意识的决定，用户应理解其成本和影响</p>
+<h3 id="183">18.3 为什么用加权评分而非简单阈值</h3>
+<p><strong>决策</strong>：六维加权评分 + 阶段增强，而非简单的"recall &gt;= N 就晋升"。</p>
+<p><strong>原因</strong>：
+- 单一指标易被游戏化（频繁搜索同一内容就能晋升）
+- 多样性维度确保不同上下文的交叉验证
+- 最近性衰减防止永远晋升古老的高频记忆
+- 概念丰富度奖励语义密集的片段
+- 间隔巩固模拟人类 spaced repetition 效应</p>
+<h3 id="184-cron">18.4 为什么统一控制器替代独立 Cron</h3>
+<p><strong>决策</strong>：用一个统一的 Cron 任务 + 内部按序执行三阶段，替代原先的独立 Light/REM Cron。</p>
+<p><strong>原因</strong>：
+- 消除阶段之间的竞态条件
+- 确保 Light → REM → Deep 的信息流正确
+- 简化配置（一个频率控制所有阶段）
+- 自动迁移遗留任务</p>
+<h3 id="185">18.5 为什么叙事生成设为可选</h3>
+<p><strong>决策</strong>：只在有 <code>subagent</code> 可用时生成梦境叙事。</p>
+<p><strong>原因</strong>：
+- 叙事生成需要额外的 LLM 调用，成本不低
+- 在 CLI-only 环境中可能没有 subagent 运行时
+- 叙事是"锦上添花"而非核心功能——梦境系统的价值在于记忆晋升，不在于诗意输出
+- <code>deliver: false</code> 确保叙事永远不会打扰用户</p>
+<h3 id="186">18.6 文件系统锁而非数据库事务</h3>
+<p><strong>决策</strong>：用文件系统 lock file + PID 检测，而非 SQLite 事务。</p>
+<p><strong>原因</strong>：
+- 短期回忆存储是 JSON 文件，不是数据库
+- 文件锁对跨进程并发足够安全
+- PID 检测 + 超时机制处理崩溃后的 stale lock
+- 进程内 Promise 链处理同进程内的并发</p>
+</body>
+</html>

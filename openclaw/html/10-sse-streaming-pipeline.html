@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>10-sse-streaming-pipeline</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1 id="10-sse">10 - SSE/流式输出管线深度调研</h1>
+<hr />
+<h2 id="1">1. 流式输出总体架构</h2>
+<p>OpenClaw 的流式输出架构由两个独立但可组合的层组成：</p>
+<p><strong>Layer 1: Block Streaming (块级流式)</strong> — 将 LLM 的持续输出按粗粒度块发射为独立渠道消息。这些不是 token-by-token 的 delta，而是完整的文本块（多段落、多句）。</p>
+<p><strong>Layer 2: Preview Streaming (预览流式)</strong> — 在 Telegram/Discord/Slack 上使用 send+edit 模式实时更新一条"草稿消息"，让用户在生成过程中看到逐步增长的文本。</p>
+<h3 id="11">1.1 完整管线数据流</h3>
+<div class="codehilite"><pre><span></span><code><span class="err">用户消息</span><span class="w"> </span><span class="p">(</span><span class="n">inbound</span><span class="p">)</span><span class="w"></span>
+<span class="w">  </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">getReplyFromConfig</span><span class="p">()</span><span class="w">             </span><span class="p">[</span><span class="n">src</span><span class="o">/</span><span class="n">auto</span><span class="o">-</span><span class="n">reply</span><span class="o">/</span><span class="n">reply</span><span class="o">/</span><span class="n">get</span><span class="o">-</span><span class="n">reply</span><span class="o">.</span><span class="n">ts</span><span class="p">]</span><span class="w"></span>
+<span class="w">    </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">resolveReplyDirectives</span><span class="p">()</span><span class="w">       </span><span class="err">解析</span><span class="w"> </span><span class="n">inline</span><span class="w"> </span><span class="n">directives</span><span class="p">,</span><span class="w"> </span><span class="err">解析</span><span class="w"> </span><span class="n">blockStreamingEnabled</span><span class="w"></span>
+<span class="w">    </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">runPreparedReply</span><span class="p">()</span><span class="w">             </span><span class="p">[</span><span class="n">src</span><span class="o">/</span><span class="n">auto</span><span class="o">-</span><span class="n">reply</span><span class="o">/</span><span class="n">reply</span><span class="o">/</span><span class="n">get</span><span class="o">-</span><span class="n">reply</span><span class="o">-</span><span class="n">run</span><span class="o">.</span><span class="n">ts</span><span class="p">]</span><span class="w"></span>
+<span class="w">      </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">resolveTypingMode</span><span class="p">()</span><span class="w">          </span><span class="err">决定</span><span class="w"> </span><span class="n">typing</span><span class="w"> </span><span class="n">indicator</span><span class="w"> </span><span class="err">策略</span><span class="w"></span>
+<span class="w">      </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">runReplyAgent</span><span class="p">()</span><span class="w">              </span><span class="p">[</span><span class="n">src</span><span class="o">/</span><span class="n">auto</span><span class="o">-</span><span class="n">reply</span><span class="o">/</span><span class="n">reply</span><span class="o">/</span><span class="n">agent</span><span class="o">-</span><span class="n">runner</span><span class="o">.</span><span class="n">ts</span><span class="p">]</span><span class="w"></span>
+<span class="w">        </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">createBlockReplyPipeline</span><span class="p">()</span><span class="w"> </span><span class="p">[</span><span class="n">src</span><span class="o">/</span><span class="n">auto</span><span class="o">-</span><span class="n">reply</span><span class="o">/</span><span class="n">reply</span><span class="o">/</span><span class="n">block</span><span class="o">-</span><span class="n">reply</span><span class="o">-</span><span class="n">pipeline</span><span class="o">.</span><span class="n">ts</span><span class="p">]</span><span class="w"></span>
+<span class="w">        </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">resolveEffectiveBlockStreamingConfig</span><span class="p">()</span><span class="w">  </span><span class="p">[</span><span class="n">src</span><span class="o">/</span><span class="n">auto</span><span class="o">-</span><span class="n">reply</span><span class="o">/</span><span class="n">reply</span><span class="o">/</span><span class="n">block</span><span class="o">-</span><span class="n">streaming</span><span class="o">.</span><span class="n">ts</span><span class="p">]</span><span class="w"></span>
+<span class="w">        </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">runAgentTurnWithFallback</span><span class="p">()</span><span class="w"> </span><span class="p">[</span><span class="n">src</span><span class="o">/</span><span class="n">auto</span><span class="o">-</span><span class="n">reply</span><span class="o">/</span><span class="n">reply</span><span class="o">/</span><span class="n">agent</span><span class="o">-</span><span class="n">runner</span><span class="o">-</span><span class="n">execution</span><span class="o">.</span><span class="n">ts</span><span class="p">]</span><span class="w"></span>
+<span class="w">          </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">runEmbeddedPiAgent</span><span class="p">()</span><span class="w">     </span><span class="err">实际调用</span><span class="w"> </span><span class="n">LLM</span><span class="w"></span>
+<span class="w">            </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">subscribeEmbeddedPiSession</span><span class="p">()</span><span class="w"> </span><span class="p">[</span><span class="n">src</span><span class="o">/</span><span class="n">agents</span><span class="o">/</span><span class="n">pi</span><span class="o">-</span><span class="n">embedded</span><span class="o">-</span><span class="n">subscribe</span><span class="o">.</span><span class="n">ts</span><span class="p">]</span><span class="w"></span>
+<span class="w">              </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">EmbeddedBlockChunker</span><span class="w"> </span><span class="p">[</span><span class="n">src</span><span class="o">/</span><span class="n">agents</span><span class="o">/</span><span class="n">pi</span><span class="o">-</span><span class="n">embedded</span><span class="o">-</span><span class="n">block</span><span class="o">-</span><span class="n">chunker</span><span class="o">.</span><span class="n">ts</span><span class="p">]</span><span class="w"></span>
+<span class="w">              </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">text_delta</span><span class="w"> </span><span class="n">events</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">chunker</span><span class="o">.</span><span class="n">append</span><span class="p">()</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">chunker</span><span class="o">.</span><span class="n">drain</span><span class="p">()</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">onBlockReply</span><span class="p">()</span><span class="w"></span>
+<span class="w">            </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">createBlockReplyDeliveryHandler</span><span class="p">()</span><span class="w"> </span><span class="p">[</span><span class="n">src</span><span class="o">/</span><span class="n">auto</span><span class="o">-</span><span class="n">reply</span><span class="o">/</span><span class="n">reply</span><span class="o">/</span><span class="n">reply</span><span class="o">-</span><span class="n">delivery</span><span class="o">.</span><span class="n">ts</span><span class="p">]</span><span class="w"></span>
+<span class="w">              </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">BlockReplyPipeline</span><span class="o">.</span><span class="n">enqueue</span><span class="p">()</span><span class="w"></span>
+<span class="w">                </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">BlockReplyCoalescer</span><span class="o">.</span><span class="n">enqueue</span><span class="p">()</span><span class="w">  </span><span class="p">[</span><span class="n">src</span><span class="o">/</span><span class="n">auto</span><span class="o">-</span><span class="n">reply</span><span class="o">/</span><span class="n">reply</span><span class="o">/</span><span class="n">block</span><span class="o">-</span><span class="n">reply</span><span class="o">-</span><span class="n">coalescer</span><span class="o">.</span><span class="n">ts</span><span class="p">]</span><span class="w"></span>
+<span class="w">                  </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">idle</span><span class="w"> </span><span class="n">timer</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">minChars</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">maxChars</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">flush</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">onBlockReply</span><span class="w"> </span><span class="n">callback</span><span class="w"></span>
+<span class="w">        </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">buildReplyPayloads</span><span class="p">()</span><span class="w">       </span><span class="err">去重、过滤已发送的块</span><span class="w"></span>
+<span class="w">        </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">ReplyDispatcher</span><span class="w">            </span><span class="p">[</span><span class="n">src</span><span class="o">/</span><span class="n">auto</span><span class="o">-</span><span class="n">reply</span><span class="o">/</span><span class="n">reply</span><span class="o">/</span><span class="n">reply</span><span class="o">-</span><span class="n">dispatcher</span><span class="o">.</span><span class="n">ts</span><span class="p">]</span><span class="w"></span>
+<span class="w">          </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">humanDelay</span><span class="w">               </span><span class="err">块间人性化延迟</span><span class="w"></span>
+<span class="w">          </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">deliver</span><span class="p">()</span><span class="w">                </span><span class="err">渠道最终发送</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="12">1.2 关键源码路径</h3>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>职责</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>src/auto-reply/reply/get-reply.ts</code></td>
+<td>入口</td>
+</tr>
+<tr>
+<td><code>src/auto-reply/reply/get-reply-run.ts</code></td>
+<td>准备并发起 agent run</td>
+</tr>
+<tr>
+<td><code>src/auto-reply/reply/agent-runner.ts</code></td>
+<td>核心 runner</td>
+</tr>
+<tr>
+<td><code>src/auto-reply/reply/agent-runner-execution.ts</code></td>
+<td>执行循环（含 fallback）</td>
+</tr>
+<tr>
+<td><code>src/agents/pi-embedded-subscribe.ts</code></td>
+<td>LLM 事件订阅</td>
+</tr>
+<tr>
+<td><code>src/agents/pi-embedded-block-chunker.ts</code></td>
+<td>Block Chunker 核心</td>
+</tr>
+<tr>
+<td><code>src/auto-reply/reply/block-reply-coalescer.ts</code></td>
+<td>块合并器</td>
+</tr>
+<tr>
+<td><code>src/auto-reply/reply/reply-delivery.ts</code></td>
+<td>块投递处理</td>
+</tr>
+<tr>
+<td><code>src/auto-reply/reply/reply-dispatcher.ts</code></td>
+<td>最终渠道发送</td>
+</tr>
+<tr>
+<td><code>src/auto-reply/reply/block-streaming.ts</code></td>
+<td>Block streaming 配置解析</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="2-block-streaming-embeddedblockchunker">2. Block Streaming — EmbeddedBlockChunker</h2>
+<h3 id="21">2.1 工作原理</h3>
+<p>核心类位于 <code>src/agents/pi-embedded-block-chunker.ts</code>:</p>
+<ol>
+<li>LLM 每产出一个 <code>text_delta</code> 事件，调用 <code>chunker.append(text)</code>，文本累积到内部 <code>#buffer</code></li>
+<li>根据 <code>blockStreamingBreak</code> 配置（<code>text_end</code> 或 <code>message_end</code>），在不同时机调用 <code>drain()</code></li>
+<li><code>drain()</code> 根据 <code>minChars</code>/<code>maxChars</code>/<code>breakPreference</code> 三个参数决定何时切割并发射块</li>
+</ol>
+<h3 id="22-pickbreakindex">2.2 切割算法 — <code>#pickBreakIndex()</code></h3>
+<p>按 breakPreference 级联查找切割点：</p>
+<table>
+<thead>
+<tr>
+<th>breakPreference</th>
+<th>查找顺序</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>paragraph</code>（默认）</td>
+<td><code>\n\n</code> 段落边界 → <code>\n</code> 换行 → <code>.!?</code> 句末 → 空白</td>
+</tr>
+<tr>
+<td><code>newline</code></td>
+<td><code>\n</code> 换行 → 空白（跳过 sentence）</td>
+</tr>
+<tr>
+<td><code>sentence</code></td>
+<td><code>.!?</code> 后跟空白的位置</td>
+</tr>
+</tbody>
+</table>
+<h3 id="23">2.3 代码围栏保护</h3>
+<p>两个辅助函数定义在 <code>src/markdown/fences.ts</code>，由 chunker 导入调用:</p>
+<ul>
+<li><code>parseFenceSpans()</code> 解析所有 <code>```</code> 围栏区间</li>
+<li><code>isSafeFenceBreak()</code> 检测切割点是否在围栏内</li>
+<li>如果 <code>maxChars</code> 强制切割落在围栏内，生成 <code>fenceSplit</code>：关闭当前围栏 + 在下一个块重新打开，保持 Markdown 有效性</li>
+</ul>
+<h3 id="24">2.4 关键类型定义</h3>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">BlockReplyChunking</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">minChars</span>: <span class="kt">number</span><span class="p">;</span>        <span class="c1">// 默认 800</span>
+  <span class="nx">maxChars</span>: <span class="kt">number</span><span class="p">;</span>        <span class="c1">// 默认 1200</span>
+  <span class="nx">breakPreference</span><span class="o">?:</span> <span class="s2">&quot;paragraph&quot;</span> <span class="o">|</span> <span class="s2">&quot;newline&quot;</span> <span class="o">|</span> <span class="s2">&quot;sentence&quot;</span><span class="p">;</span>
+  <span class="nx">flushOnParagraph?</span>: <span class="kt">boolean</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="25-flushonparagraph">2.5 <code>flushOnParagraph</code> 模式</h3>
+<p>当 <code>chunkMode="newline"</code> 时自动启用。一旦累积文本超过 <code>minChars</code> 且遇到段落边界（<code>\n\n</code>），立即切割发射，不等到 <code>maxChars</code>。</p>
+<hr />
+<h2 id="3-preview-streaming">3. Preview Streaming</h2>
+<h3 id="31">3.1 支持模式</h3>
+<p>配置键: <code>channels.&lt;channel&gt;.streaming</code></p>
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>off</code></td>
+<td>不启用预览</td>
+</tr>
+<tr>
+<td><code>partial</code></td>
+<td>单条预览消息，不断 edit 更新为最新文本</td>
+</tr>
+<tr>
+<td><code>block</code></td>
+<td>分块/追加式预览更新（Discord 使用 <code>draftChunk</code>）</td>
+</tr>
+<tr>
+<td><code>progress</code></td>
+<td>Slack 专有，显示进度状态文本，完成后替换为最终答案</td>
+</tr>
+</tbody>
+</table>
+<h3 id="32">3.2 渠道映射</h3>
+<ul>
+<li><strong>Telegram:</strong> <code>sendMessage</code> + <code>editMessageText</code>，preview 和 block streaming 互斥</li>
+<li><strong>Discord:</strong> send + edit，<code>block</code> 模式使用 <code>draftChunk</code> 配置</li>
+<li><strong>Slack:</strong> <code>partial</code> 可利用 Slack 原生流式 API（<code>chat.startStream</code>/<code>append</code>/<code>stop</code>），由 <code>nativeStreaming</code> 配置控制</li>
+</ul>
+<h3 id="33">3.3 配置解析</h3>
+<p><code>src/plugin-sdk/channel-streaming.ts</code> 提供:
+- <code>resolveChannelPreviewStreamMode()</code> — 解析 preview 模式，含 legacy 自动迁移
+- <code>resolveChannelStreamingBlockEnabled()</code> — 解析 block streaming 开关
+- <code>resolveChannelStreamingPreviewChunk()</code> — 解析 preview 分块配置
+- <code>resolveChannelStreamingNativeTransport()</code> — 解析 Slack nativeStreaming</p>
+<h3 id="34">3.4 类型定义</h3>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">ChannelStreamingConfig</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">mode</span><span class="o">?:</span> <span class="s2">&quot;off&quot;</span> <span class="o">|</span> <span class="s2">&quot;partial&quot;</span> <span class="o">|</span> <span class="s2">&quot;block&quot;</span> <span class="o">|</span> <span class="s2">&quot;progress&quot;</span><span class="p">;</span>
+  <span class="nx">chunkMode</span><span class="o">?:</span> <span class="s2">&quot;length&quot;</span> <span class="o">|</span> <span class="s2">&quot;newline&quot;</span><span class="p">;</span>
+  <span class="nx">nativeTransport?</span>: <span class="kt">boolean</span><span class="p">;</span>
+  <span class="nx">preview</span><span class="o">?:</span> <span class="p">{</span> <span class="nx">chunk?</span>: <span class="kt">BlockStreamingChunkConfig</span> <span class="p">};</span>
+  <span class="nx">block</span><span class="o">?:</span> <span class="p">{</span> <span class="nx">enabled?</span>: <span class="kt">boolean</span><span class="p">;</span> <span class="nx">coalesce?</span>: <span class="kt">BlockStreamingCoalesceConfig</span> <span class="p">};</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<hr />
+<h2 id="4-blockstreamingcoalesce">4. blockStreamingCoalesce — 流式块合并策略</h2>
+<h3 id="41">4.1 核心实现</h3>
+<p><code>src/auto-reply/reply/block-reply-coalescer.ts</code> 的 <code>createBlockReplyCoalescer()</code>:</p>
+<ol>
+<li><strong><code>idleMs</code> 空闲合并:</strong> 每次 enqueue 后重置空闲计时器。如果 <code>idleMs</code> 内没有新块到来，自动 flush</li>
+<li><strong><code>minChars</code> 最小累积:</strong> 缓冲区文本未达到 <code>minChars</code> 时不 flush（除非 force 或 idle timeout）</li>
+<li><strong><code>maxChars</code> 硬上限:</strong> 缓冲区超过 <code>maxChars</code> 时立即 flush</li>
+<li><strong><code>joiner</code> 连接符:</strong> 基于 <code>breakPreference</code> 派生 — <code>paragraph</code> → <code>"\n\n"</code>, <code>newline</code> → <code>"\n"</code>, <code>sentence</code> → <code>" "</code></li>
+</ol>
+<h3 id="42">4.2 冲突处理</h3>
+<ul>
+<li><code>replyToId</code> 不同 → 立即 flush 当前缓冲区</li>
+<li><code>audioAsVoice</code> 标志不同 → 立即 flush</li>
+<li><code>isReasoning</code> / <code>isCompactionNotice</code> 不同 → 立即 flush</li>
+<li>媒体 payload → 立即 flush 文本缓冲，直接透传媒体</li>
+</ul>
+<h3 id="43-flushonenqueue">4.3 <code>flushOnEnqueue</code> 逃逸阀</h3>
+<p>某些传输需要每个 enqueue 立即发送，设置此标志绕过合并逻辑。</p>
+<h3 id="44">4.4 默认值</h3>
+<p>定义在 <code>src/auto-reply/reply/block-streaming.ts</code>（非 coalescer 文件本身）:</p>
+<div class="codehilite"><pre><span></span><code><span class="kd">const</span> <span class="nx">DEFAULT_BLOCK_STREAM_COALESCE_IDLE_MS</span> <span class="o">=</span> <span class="mf">1000</span><span class="p">;</span>
+</code></pre></div>
+
+<p>渠道默认覆盖: Signal/Slack/Discord 的 <code>minChars</code> 默认被提升到 1500（通过 <code>ChannelStreamingAdapter.blockStreamingCoalesceDefaults</code>）。</p>
+<hr />
+<h2 id="5">5. 分块算法详解</h2>
+<h3 id="51">5.1 配置项</h3>
+<div class="codehilite"><pre><span></span><code><span class="kr">type</span> <span class="nx">BlockStreamingChunkConfig</span> <span class="o">=</span> <span class="p">{</span>
+  <span class="nx">minChars?</span>: <span class="kt">number</span><span class="p">;</span>     <span class="c1">// 低水位，默认 800</span>
+  <span class="nx">maxChars?</span>: <span class="kt">number</span><span class="p">;</span>     <span class="c1">// 高水位，默认 1200</span>
+  <span class="nx">breakPreference</span><span class="o">?:</span> <span class="s2">&quot;paragraph&quot;</span> <span class="o">|</span> <span class="s2">&quot;newline&quot;</span> <span class="o">|</span> <span class="s2">&quot;sentence&quot;</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+
+<h3 id="52">5.2 完整优先级链</h3>
+<p>对于 <code>paragraph</code> 模式（默认）：
+1. 在 <code>[minChars, maxChars]</code> 窗口内反向搜索 <code>\n\n</code> 段落边界
+2. 找不到 → 反向搜索 <code>\n</code> 换行边界
+3. 找不到 → 正向搜索 <code>.!?</code> 句末边界
+4. 找不到 → 反向搜索任意空白处
+5. 都找不到 → 如果 buffer &gt;= maxChars, 硬切 maxChars（可能需要 fence split）</p>
+<h3 id="53-maxchars">5.3 <code>maxChars</code> 夹紧</h3>
+<p>在 <code>resolveBlockStreamingChunking()</code> 中，<code>maxChars</code> 被 <code>Math.min(maxRequested, textLimit)</code> 夹紧到渠道 <code>textChunkLimit</code>，确保永远不超过渠道硬上限。</p>
+<hr />
+<h2 id="6-chunkmode-newline">6. chunkMode — newline 模式</h2>
+<h3 id="61">6.1 两种模式</h3>
+<p><code>src/auto-reply/chunk.ts</code>:</p>
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>length</code>（默认）</td>
+<td>只在文本超过 <code>textChunkLimit</code> 时切割，优先在换行/空白处切</td>
+</tr>
+<tr>
+<td><code>newline</code></td>
+<td>在段落边界（<code>\n\n</code> 空行）处切割，不要求超过长度限制</td>
+</tr>
+</tbody>
+</table>
+<h3 id="62-chunkbyparagraph">6.2 <code>chunkByParagraph()</code></h3>
+<ul>
+<li>用 <code>\n[\t ]*\n+</code> 正则识别段落边界</li>
+<li>利用 <code>parseFenceSpans()</code> 确保不在代码围栏内切割</li>
+<li>单个段落超长时回退到 <code>chunkText()</code> 按长度切割</li>
+</ul>
+<h3 id="63">6.3 渠道出站处理管线</h3>
+<div class="codehilite"><pre><span></span><code><span class="err">原始文本</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">chunkMode</span><span class="w"> </span><span class="err">分段</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">textChunkLimit</span><span class="w"> </span><span class="err">切割</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">逐条发送</span><span class="w"></span>
+</code></pre></div>
+
+<hr />
+<h2 id="7">7. 渠道适配</h2>
+<h3 id="71">7.1 各渠道流式支持差异</h3>
+<table>
+<thead>
+<tr>
+<th>渠道</th>
+<th>Preview Streaming</th>
+<th>Block Streaming</th>
+<th>特殊能力</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Telegram</td>
+<td>partial/block</td>
+<td>需显式开启</td>
+<td><code>editMessageText</code> preview</td>
+</tr>
+<tr>
+<td>Discord</td>
+<td>partial/block</td>
+<td>需显式开启</td>
+<td><code>maxLinesPerMessage</code> 软上限(默认17), <code>draftChunk</code></td>
+</tr>
+<tr>
+<td>Slack</td>
+<td>partial/block/progress</td>
+<td>需显式开启</td>
+<td><code>nativeStreaming</code> (Slack native stream API)</td>
+</tr>
+<tr>
+<td>WhatsApp</td>
+<td>不支持</td>
+<td>可启用</td>
+<td>无 preview</td>
+</tr>
+<tr>
+<td>Signal</td>
+<td>不支持</td>
+<td>可启用</td>
+<td>coalesce minChars 默认 1500</td>
+</tr>
+</tbody>
+</table>
+<h3 id="72-block-streaming">7.2 Block Streaming 开关逻辑</h3>
+<ul>
+<li>全局默认: <code>agents.defaults.blockStreamingDefault: "on"/"off"</code> (默认 off)</li>
+<li>渠道覆盖: <code>channels.&lt;channel&gt;.blockStreaming: true/false</code></li>
+<li>Preview streaming 和 block streaming 互斥</li>
+</ul>
+<hr />
+<h2 id="8-typing-indicators">8. 打字指示器 (Typing Indicators)</h2>
+<h3 id="81">8.1 四种模式</h3>
+<p><code>src/auto-reply/reply/typing-mode.ts</code>:</p>
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>触发时机</th>
+<th>适用场景</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>never</code></td>
+<td>永不</td>
+<td>静默场景</td>
+</tr>
+<tr>
+<td><code>instant</code></td>
+<td>model loop 开始即触发</td>
+<td>DM/被 mention 时默认</td>
+</tr>
+<tr>
+<td><code>thinking</code></td>
+<td>第一个 reasoning delta 到达时</td>
+<td>需要 reasoningLevel: "stream"</td>
+</tr>
+<tr>
+<td><code>message</code></td>
+<td>第一个非静默 text delta 到达时</td>
+<td>群聊无 mention 时默认</td>
+</tr>
+</tbody>
+</table>
+<h3 id="82">8.2 三层实现</h3>
+<ol>
+<li><strong>TypingSignaler</strong> (<code>typing-mode.ts</code>) — 信号层，决定何时触发</li>
+<li><code>signalRunStart()</code> — instant 模式</li>
+<li><code>signalTextDelta()</code> — message 模式</li>
+<li><code>signalReasoningDelta()</code> — thinking 模式</li>
+<li>
+<p><code>signalToolStart()</code> — 工具执行期间保持 typing</p>
+</li>
+<li>
+<p><strong>TypingController</strong> (<code>src/auto-reply/reply/typing.ts</code>) — 控制层</p>
+</li>
+<li>管理 <code>sealed</code> 状态防止 late callback 重启 typing</li>
+<li>TTL timer (默认 2 分钟) 防止 typing 无限运行</li>
+<li>
+<p><code>markRunComplete()</code> + <code>markDispatchIdle()</code> 双信号停止</p>
+</li>
+<li>
+<p><strong>TypingKeepaliveLoop</strong> (<code>src/channels/typing-lifecycle.ts</code>) — 保活层</p>
+</li>
+<li><code>setInterval</code> 循环，间隔 <code>typingIntervalSeconds</code> (默认 6 秒)</li>
+<li>每个 tick 调用渠道的 typing API</li>
+<li><code>TypingStartGuard</code> 断路器保护：连续 N 次失败后 trip</li>
+</ol>
+<hr />
+<h2 id="9">9. 工具调用的流式处理</h2>
+<h3 id="91">9.1 工具执行期间的行为</h3>
+<ol>
+<li><strong>Typing 保持:</strong> <code>signalToolStart()</code> 在工具开始执行时调用，即使没有文本 delta 也启动 typing indicator</li>
+<li><strong>Tool 结果发射:</strong> 如果 <code>verboseLevel != "off"</code>，工具结果通过 <code>onToolResult</code> 回调直接发送到渠道（不经过 block streaming pipeline）</li>
+<li><strong>Block Reply flush:</strong> 在工具执行前，<code>blockReplyPipeline.flush({ force: true })</code> 确保已累积文本先发送</li>
+<li><strong>直接发送跟踪:</strong> <code>directlySentBlockKeys</code> Set 跟踪工具 flush 期间直接发送的 payload key，避免最终 payload 重复</li>
+</ol>
+<hr />
+<h2 id="10">10. 错误处理</h2>
+<h3 id="101-block-reply-pipeline">10.1 Block Reply Pipeline 超时</h3>
+<ul>
+<li><code>BLOCK_REPLY_SEND_TIMEOUT_MS = 15_000</code> — 每个 block reply 的发送超时</li>
+<li>超时后设置 <code>aborted = true</code>，跳过后续所有 block replies</li>
+</ul>
+<h3 id="102-abort-graceful-degradation">10.2 Abort 后 Graceful Degradation</h3>
+<p>在 <code>buildReplyPayloads()</code> 中，如果 streaming 中途 abort，会回退到最终 payload 发送模式，保证用户收到完整回复。</p>
+<h3 id="103-gateway">10.3 Gateway 重启处理</h3>
+<ul>
+<li><code>GatewayDrainingError</code> / <code>CommandLaneClearedError</code> → 返回 "Gateway is restarting..."</li>
+<li><code>ReplyRunAlreadyActiveError</code> → "Previous run is still shutting down..."</li>
+</ul>
+<hr />
+<h2 id="11-sse">11. SSE 协议</h2>
+<h3 id="111-gateway-http-sse">11.1 Gateway HTTP SSE 端点</h3>
+<p><code>src/gateway/sessions-history-http.ts</code> 实现 session history 实时推送。</p>
+<h3 id="112-sse">11.2 SSE 头设置</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kd">function</span> <span class="nx">setSseHeaders</span><span class="p">(</span><span class="nx">res</span>: <span class="kt">ServerResponse</span><span class="p">)</span> <span class="p">{</span>
+  <span class="nx">res</span><span class="p">.</span><span class="nx">statusCode</span> <span class="o">=</span> <span class="mf">200</span><span class="p">;</span>
+  <span class="nx">res</span><span class="p">.</span><span class="nx">setHeader</span><span class="p">(</span><span class="s2">&quot;Content-Type&quot;</span><span class="p">,</span> <span class="s2">&quot;text/event-stream; charset=utf-8&quot;</span><span class="p">);</span>
+  <span class="nx">res</span><span class="p">.</span><span class="nx">setHeader</span><span class="p">(</span><span class="s2">&quot;Cache-Control&quot;</span><span class="p">,</span> <span class="s2">&quot;no-cache&quot;</span><span class="p">);</span>
+  <span class="nx">res</span><span class="p">.</span><span class="nx">setHeader</span><span class="p">(</span><span class="s2">&quot;Connection&quot;</span><span class="p">,</span> <span class="s2">&quot;keep-alive&quot;</span><span class="p">);</span>
+  <span class="nx">res</span><span class="p">.</span><span class="nx">flushHeaders</span><span class="o">?</span><span class="p">.();</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="113-eventframe">11.3 EventFrame 协议</h3>
+<div class="codehilite"><pre><span></span><code><span class="nx">EventFrameSchema</span> <span class="o">=</span> <span class="nx">Type</span><span class="p">.</span><span class="nb">Object</span><span class="p">({</span>
+  <span class="kr">type</span><span class="o">:</span> <span class="nx">Type</span><span class="p">.</span><span class="nx">Literal</span><span class="p">(</span><span class="s2">&quot;event&quot;</span><span class="p">),</span>
+  <span class="nx">event</span>: <span class="kt">NonEmptyString</span><span class="p">,</span>
+  <span class="nx">payload</span>: <span class="kt">Type.Optional</span><span class="p">(</span><span class="nx">Type</span><span class="p">.</span><span class="nx">Unknown</span><span class="p">()),</span>
+  <span class="nx">seq</span>: <span class="kt">Type.Optional</span><span class="p">(</span><span class="nx">Type</span><span class="p">.</span><span class="nx">Integer</span><span class="p">({</span> <span class="nx">minimum</span>: <span class="kt">0</span> <span class="p">})),</span>   <span class="c1">// 序列号</span>
+  <span class="nx">stateVersion</span>: <span class="kt">Type.Optional</span><span class="p">(</span><span class="nx">StateVersionSchema</span><span class="p">),</span>
+<span class="p">});</span>
+</code></pre></div>
+
+<h3 id="114-sequence">11.4 Sequence 追踪</h3>
+<ul>
+<li><code>SessionHistorySseState</code> 维护 <code>rawTranscriptSeq</code> 追踪序列号</li>
+<li>每条消息附带 <code>__openclaw.seq</code> 元数据</li>
+<li>客户端可用 <code>cursor=seq:N</code> 参数做分页/断点续传</li>
+<li>客户端断线检测: <code>watchClientDisconnect()</code> 监听 socket close 事件</li>
+</ul>
+<h3 id="115-done">11.5 <code>[DONE]</code> 终止信号</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span> <span class="kd">function</span> <span class="nx">writeDone</span><span class="p">(</span><span class="nx">res</span><span class="p">)</span> <span class="p">{</span> <span class="nx">res</span><span class="p">.</span><span class="nx">write</span><span class="p">(</span><span class="s2">&quot;data: [DONE]\n\n&quot;</span><span class="p">);</span> <span class="p">}</span>
+</code></pre></div>
+
+<hr />
+<h2 id="12_1">12. 性能优化</h2>
+<h3 id="121">12.1 入站消息防抖</h3>
+<ul>
+<li><code>messages.inbound.debounceMs</code> (全局默认 + per-channel override)</li>
+<li>同一发送者的快速连续消息合并为单次 agent turn</li>
+<li>仅对纯文本消息生效，媒体/附件立即 flush</li>
+<li>控制命令绕过 debounce</li>
+</ul>
+<h3 id="122">12.2 出站合并</h3>
+<ul>
+<li><code>idleMs</code> 空闲超时（默认 1000ms）— 避免单行刷屏</li>
+<li><code>minChars</code> 最小累积 — 确保发出的块足够大</li>
+<li>ACP live 模式特殊处理: <code>minChars=1</code>, <code>joiner=""</code>, <code>coalesceIdleMs=350</code> — 更低延迟</li>
+</ul>
+<h3 id="123-human-like-pacing">12.3 Human-like Pacing</h3>
+<ul>
+<li><code>agents.defaults.humanDelay</code> 配置</li>
+<li><code>mode: "natural"</code> → 800-2500ms 随机延迟</li>
+<li><code>mode: "custom"</code> → 自定义 <code>minMs</code>/<code>maxMs</code></li>
+<li>使用 <code>generateSecureInt()</code> 生成密码学安全的随机延迟</li>
+</ul>
+<h3 id="124-replydispatcher">12.4 ReplyDispatcher 串行化</h3>
+<ul>
+<li>所有回复通过 <code>sendChain</code> Promise 链串行发送</li>
+<li><code>pending</code> 计数器追踪飞行中的 delivery</li>
+<li><code>registerDispatcher()</code> 全局注册，防止 gateway 在消息飞行中重启</li>
+</ul>
+<h3 id="125-block-reply-pipeline">12.5 Block Reply Pipeline 去重</h3>
+<ul>
+<li><code>sentKeys</code> / <code>sentContentKeys</code> / <code>pendingKeys</code> / <code>seenKeys</code> 多层 Set 防止重复发送</li>
+<li><code>createBlockReplyContentKey()</code> 忽略 <code>replyToId</code>，同内容的 threaded 和非 threaded payload 也能去重</li>
+</ul>
+<hr />
+<h2 id="13">13. 关键设计决策</h2>
+<h3 id="131-token-delta-streaming">13.1 为什么不做 token-delta streaming？</h3>
+<p>OpenClaw 服务的是消息平台（Telegram/Discord/Slack/WhatsApp），这些平台不支持 SSE 式的 token 流。唯一可用手段是 send + edit（preview streaming），但频率太高会触发 rate limit。因此选择"粗粒度块"模型。</p>
+<h3 id="132-block-preview">13.2 两层设计（Block + Preview）解耦的好处</h3>
+<p>Block streaming 产出独立的新消息，适合长回复拆分。Preview streaming 更新同一条消息，适合"正在输入"反馈。两者互斥但配置独立。</p>
+<h3 id="133-coalescer">13.3 为什么需要 Coalescer？</h3>
+<p>EmbeddedBlockChunker 可能产出很多小块。Coalescer 在 chunker 和渠道发送之间再加一层缓冲，用 idle timer + min/max chars 把小块合并，减少消息数量。</p>
+<h3 id="134-maxchars-clamp-textchunklimit">13.4 为什么 maxChars 要 clamp 到 textChunkLimit？</h3>
+<p>渠道有硬性消息长度限制（如 WhatsApp 约 4096 字符）。所有 chunking/coalescing 的 maxChars 都被夹紧到这个限制。</p>
+<h3 id="135">13.5 代码围栏切割：关闭 + 重开</h3>
+<p>直接在围栏内切割会导致 Markdown 渲染异常。EmbeddedBlockChunker 在切割前追加闭合标记，在下一块开头追加重新打开标记。</p>
+<h3 id="136-abort-graceful-degradation">13.6 Abort 后 graceful degradation</h3>
+<p>如果 block reply 投递超时（15s），pipeline 会 abort。但 <code>buildReplyPayloads()</code> 检测到 abort 后 fallback 到正常最终回复模式，保证用户至少收到完整内容。</p>
+</body>
+</html>
