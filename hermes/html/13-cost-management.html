@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>13-cost-management</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1 id="hermes-agent">Hermes-Agent 成本管理深度分析</h1>
+<h2 id="1">1. 架构总览</h2>
+<p>Hermes-Agent 拥有一套完整的、多层次的成本控制体系，覆盖从定价查询、实时计费、预算限制到智能路由的全链路。核心模块分布如下：</p>
+<table>
+<thead>
+<tr>
+<th>模块</th>
+<th>路径</th>
+<th>职责</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>使用计费引擎</td>
+<td><code>agent/usage_pricing.py</code></td>
+<td>多提供商定价查询、Token 规范化、成本估算</td>
+</tr>
+<tr>
+<td>预算配置</td>
+<td><code>tools/budget_config.py</code></td>
+<td>工具结果持久化的三层预算体系</td>
+</tr>
+<tr>
+<td>工具结果持久化</td>
+<td><code>tools/tool_result_storage.py</code></td>
+<td>防止上下文窗口溢出的三层防御</td>
+</tr>
+<tr>
+<td>智能模型路由</td>
+<td><code>agent/smart_model_routing.py</code></td>
+<td>简单对话自动降级至低成本模型</td>
+</tr>
+<tr>
+<td>模型切换</td>
+<td><code>hermes_cli/model_switch.py</code></td>
+<td>运行时模型/提供商热切换</td>
+</tr>
+<tr>
+<td>Prompt 缓存</td>
+<td><code>agent/prompt_caching.py</code></td>
+<td>Anthropic 缓存策略，减少 ~75% 输入成本</td>
+</tr>
+<tr>
+<td>会话状态存储</td>
+<td><code>hermes_state.py</code></td>
+<td>SQLite 持久化 Token 计数和成本跟踪</td>
+</tr>
+<tr>
+<td>洞察引擎</td>
+<td><code>agent/insights.py</code></td>
+<td>历史成本分析和使用报告</td>
+</tr>
+<tr>
+<td>凭证池</td>
+<td>credential pools</td>
+<td>多 API Key 轮换，规避限速</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="2-agentusage_pricingpy">2. 使用计费引擎（agent/usage_pricing.py）</h2>
+<h3 id="21">2.1 数据模型</h3>
+<p>计费引擎采用不可变数据类（<code>frozen=True</code>）构建了完整的类型体系：</p>
+<ul>
+<li><strong><code>CanonicalUsage</code></strong>（L28-43）：规范化的 Token 使用数据，统一了不同提供商的 usage 格式</li>
+<li><code>input_tokens</code>、<code>output_tokens</code>：基础 Token 计数</li>
+<li><code>cache_read_tokens</code>、<code>cache_write_tokens</code>：缓存 Token（Anthropic/OpenAI）</li>
+<li><code>reasoning_tokens</code>：推理 Token（o3/o4 系列）</li>
+<li>
+<p><code>request_count</code>：请求次数（部分提供商按请求计费）</p>
+</li>
+<li>
+<p><strong><code>BillingRoute</code></strong>（L47-52）：计费路由，确定提供商、模型、计费模式</p>
+</li>
+<li>
+<p><code>billing_mode</code> 枚举：<code>subscription_included</code>（订阅包含）、<code>official_docs_snapshot</code>（官方定价）、<code>official_models_api</code>（动态定价）、<code>unknown</code></p>
+</li>
+<li>
+<p><strong><code>PricingEntry</code></strong>（L55-64）：定价条目，支持五维度定价</p>
+</li>
+<li><code>input_cost_per_million</code> / <code>output_cost_per_million</code>：标准输入输出</li>
+<li><code>cache_read_cost_per_million</code> / <code>cache_write_cost_per_million</code>：缓存读写</li>
+<li>
+<p><code>request_cost</code>：按请求计费（部分 OpenRouter 模型）</p>
+</li>
+<li>
+<p><strong><code>CostResult</code></strong>（L67-76）：成本计算结果</p>
+</li>
+<li><code>status</code>：<code>actual</code>（实际）/ <code>estimated</code>（估算）/ <code>included</code>（包含）/ <code>unknown</code>（未知）</li>
+<li><code>source</code>：定价数据来源追溯</li>
+</ul>
+<h3 id="22">2.2 定价数据源（多级回退）</h3>
+<p>定价解析采用优先级回退策略（<code>get_pricing_entry</code>，L390-417）：</p>
+<ol>
+<li><strong>订阅包含</strong>（<code>subscription_included</code>）：OpenAI Codex 等订阅模式，直接返回零成本</li>
+<li><strong>OpenRouter Models API</strong>：通过 <code>/models</code> 端点动态获取定价（<code>_openrouter_pricing_entry</code>，L337-343）</li>
+<li><strong>自定义端点 Models API</strong>：查询 <code>base_url/models</code> 获取 OpenAI 兼容端点的定价（L408-416）</li>
+<li><strong>官方文档快照</strong>（<code>_OFFICIAL_DOCS_PRICING</code>，L83-287）：硬编码的已知模型定价，覆盖：</li>
+<li>Anthropic：Claude Opus 4、Sonnet 4、3.5 Sonnet、3.5 Haiku、3 Opus、3 Haiku</li>
+<li>OpenAI：GPT-4o、GPT-4o-mini、GPT-4.1 系列、o3、o3-mini</li>
+<li>DeepSeek：deepseek-chat、deepseek-reasoner</li>
+<li>Google：Gemini 2.5 Pro/Flash、Gemini 2.0 Flash</li>
+</ol>
+<p>所有定价使用 <code>Decimal</code> 精度计算，避免浮点误差（L12-13，L529-536）。</p>
+<h3 id="23-usage">2.3 多提供商 Usage 规范化</h3>
+<p><code>normalize_usage</code>（L420-478）统一了三种 API 响应格式：</p>
+<ul>
+<li><strong>Anthropic Messages</strong>：<code>input_tokens</code> / <code>output_tokens</code> / <code>cache_read_input_tokens</code> / <code>cache_creation_input_tokens</code></li>
+<li><strong>OpenAI Codex Responses</strong>：<code>input_tokens</code>（含缓存）→ 减去 <code>input_tokens_details.cached_tokens</code></li>
+<li><strong>OpenAI Chat Completions</strong>：<code>prompt_tokens</code>（含缓存）→ 减去 <code>prompt_tokens_details.cached_tokens</code></li>
+</ul>
+<h3 id="24">2.4 计费路由解析</h3>
+<p><code>resolve_billing_route</code>（L306-330）根据 provider + model + base_url 组合确定计费路由：</p>
+<ul>
+<li><code>openai-codex</code> → <code>subscription_included</code>（零成本）</li>
+<li><code>openrouter</code> / <code>openrouter.ai</code> → <code>official_models_api</code>（动态定价）</li>
+<li><code>anthropic</code> / <code>openai</code> → <code>official_docs_snapshot</code></li>
+<li><code>custom</code> / <code>local</code> / <code>localhost</code> → <code>unknown</code></li>
+</ul>
+<hr />
+<h2 id="3-run_agentpy">3. 实时成本跟踪（run_agent.py）</h2>
+<h3 id="31">3.1 会话级累积</h3>
+<p>每次 API 调用后（<code>run_agent.py</code> L7846-7856），系统执行：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">cost_result</span> <span class="o">=</span> <span class="n">estimate_usage_cost</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">model</span><span class="p">,</span> <span class="n">canonical_usage</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">session_estimated_cost_usd</span> <span class="o">+=</span> <span class="nb">float</span><span class="p">(</span><span class="n">cost_result</span><span class="o">.</span><span class="n">amount_usd</span><span class="p">)</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">session_cost_status</span> <span class="o">=</span> <span class="n">cost_result</span><span class="o">.</span><span class="n">status</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">session_cost_source</span> <span class="o">=</span> <span class="n">cost_result</span><span class="o">.</span><span class="n">source</span>
+</code></pre></div>
+
+<p>会话重置时（L1277-1279），成本计数器归零：</p>
+<div class="codehilite"><pre><span></span><code><span class="bp">self</span><span class="o">.</span><span class="n">session_estimated_cost_usd</span> <span class="o">=</span> <span class="mf">0.0</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">session_cost_status</span> <span class="o">=</span> <span class="s2">&quot;unknown&quot;</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">session_cost_source</span> <span class="o">=</span> <span class="s2">&quot;none&quot;</span>
+</code></pre></div>
+
+<h3 id="32-sqlite">3.2 持久化到 SQLite</h3>
+<p>每次 API 调用后自动同步到 <code>hermes_state.py</code> 中的 SQLite 数据库（L7865-7885）：</p>
+<p>数据库 schema（<code>hermes_state.py</code> L41-68）包含完整的成本字段：
+- <code>input_tokens</code> / <code>output_tokens</code> / <code>cache_read_tokens</code> / <code>cache_write_tokens</code> / <code>reasoning_tokens</code>
+- <code>billing_provider</code> / <code>billing_base_url</code> / <code>billing_mode</code>
+- <code>estimated_cost_usd</code> / <code>actual_cost_usd</code>
+- <code>cost_status</code> / <code>cost_source</code> / <code>pricing_version</code></p>
+<h3 id="33">3.3 用户可见的成本信息</h3>
+<p>CLI 通过 <code>/status</code> 命令展示（<code>cli.py</code> L5438-5476）：
+- Cost status、Cost source
+- Total cost（带 <code>~</code> 前缀表示估算值）
+- 对于 unknown 状态给出提示</p>
+<p>响应元数据中始终包含成本信息（<code>run_agent.py</code> L9251-9253）：</p>
+<div class="codehilite"><pre><span></span><code><span class="s2">&quot;estimated_cost_usd&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">session_estimated_cost_usd</span><span class="p">,</span>
+<span class="s2">&quot;cost_status&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">session_cost_status</span><span class="p">,</span>
+<span class="s2">&quot;cost_source&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">session_cost_source</span><span class="p">,</span>
+</code></pre></div>
+
+<hr />
+<h2 id="4-agentinsightspy">4. 洞察引擎（agent/insights.py）</h2>
+<p><code>InsightsEngine</code> 类（L103-150）提供历史成本分析能力：</p>
+<ul>
+<li>跨会话的 Token 消耗汇总</li>
+<li>按模型/平台的成本分解</li>
+<li>活动趋势可视化（柱状图）</li>
+<li>支持按时间范围（days）和来源平台（source）过滤</li>
+<li>调用 <code>estimate_usage_cost</code> 进行事后成本重算（L51-87）</li>
+</ul>
+<hr />
+<h2 id="5">5. 工具结果预算控制（三层防御体系）</h2>
+<h3 id="51-budgetconfigtoolsbudget_configpy">5.1 BudgetConfig（tools/budget_config.py）</h3>
+<p>三层阈值配置（L23-48）：</p>
+<table>
+<thead>
+<tr>
+<th>层级</th>
+<th>参数</th>
+<th>默认值</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Layer 2（per-result）</td>
+<td><code>default_result_size</code></td>
+<td>100,000 字符</td>
+<td>单个工具结果持久化阈值</td>
+</tr>
+<tr>
+<td>Layer 3（per-turn）</td>
+<td><code>turn_budget</code></td>
+<td>200,000 字符</td>
+<td>单轮所有工具结果总预算</td>
+</tr>
+<tr>
+<td>Preview</td>
+<td><code>preview_size</code></td>
+<td>1,500 字符</td>
+<td>持久化后的内联预览大小</td>
+</tr>
+</tbody>
+</table>
+<p>关键设计：
+- <strong>固定阈值</strong>（<code>PINNED_THRESHOLDS</code>，L12-14）：<code>read_file=inf</code>，防止"持久化→读取→再持久化"的无限循环
+- <strong>优先级链</strong>（L38-48）：<code>pinned &gt; tool_overrides &gt; registry per-tool &gt; default</code></p>
+<h3 id="52-tool_result_storagepy">5.2 tool_result_storage.py 的三层防御</h3>
+<p><strong>Layer 1</strong>（工具内部）：工具自行截断输出（如 <code>search_files</code>）</p>
+<p><strong>Layer 2</strong>（<code>maybe_persist_tool_result</code>，L95-150）：
+- 超过阈值的工具结果写入沙箱 <code>/tmp/hermes-results/{tool_use_id}.txt</code>
+- 上下文中替换为 <code>&lt;persisted-output&gt;</code> 标签 + 预览
+- 模型可通过 <code>read_file</code> 按需访问完整输出
+- 支持任何后端（Docker、SSH、Modal、Daytona）</p>
+<p><strong>Layer 3</strong>（<code>enforce_turn_budget</code>，L153-204）：
+- 汇总单轮所有工具结果的总字符数
+- 超出 <code>turn_budget</code> 时，按大小降序持久化最大的未持久化结果
+- 直到总量降至预算以内</p>
+<hr />
+<h2 id="6-agentsmart_model_routingpy">6. 智能模型路由（agent/smart_model_routing.py）</h2>
+<h3 id="61">6.1 路由策略</h3>
+<p><code>choose_cheap_model_route</code>（L62-107）实现了基于消息分析的降级策略：</p>
+<p><strong>简单消息判定条件</strong>（全部满足才降级）：
+- 长度 &lt;= 160 字符且 &lt;= 28 词
+- 换行不超过 1 次
+- 不含代码块标记（反引号）
+- 不含 URL
+- 不含复杂关键词（L11-46 共 34 个，包括 debug、implement、refactor、analyze 等）</p>
+<p><strong>配置方式</strong>：</p>
+<div class="codehilite"><pre><span></span><code><span class="nt">smart_model_routing</span><span class="p">:</span><span class="w"></span>
+<span class="w">  </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span><span class="w"></span>
+<span class="w">  </span><span class="nt">max_simple_chars</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">160</span><span class="w"></span>
+<span class="w">  </span><span class="nt">max_simple_words</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">28</span><span class="w"></span>
+<span class="w">  </span><span class="nt">cheap_model</span><span class="p">:</span><span class="w"></span>
+<span class="w">    </span><span class="nt">provider</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai</span><span class="w"></span>
+<span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">gpt-4o-mini</span><span class="w"></span>
+<span class="w">    </span><span class="nt">api_key_env</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">OPENAI_API_KEY</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="62">6.2 成本节省效果</h3>
+<p>以 Claude Sonnet 4 vs GPT-4o-mini 为例：
+- Sonnet 4：$3.00/M 输入，$15.00/M 输出
+- GPT-4o-mini：$0.15/M 输入，$0.60/M 输出
+- <strong>输入节省 95%，输出节省 96%</strong>（简单对话场景）</p>
+<hr />
+<h2 id="7-prompt-agentprompt_cachingpy">7. Prompt 缓存（agent/prompt_caching.py）</h2>
+<h3 id="71-system_and_3">7.1 system_and_3 策略</h3>
+<p><code>apply_anthropic_cache_control</code>（L41-72）实现了 Anthropic 最大 4 个 breakpoint 的缓存策略：</p>
+<ol>
+<li><strong>System prompt</strong>（稳定，全会话复用）
+2-4. <strong>最近 3 条非 system 消息</strong>（滚动窗口）</li>
+</ol>
+<h3 id="72">7.2 成本节省效果</h3>
+<p>以 Claude Sonnet 4 为例：
+- 标准输入：$3.00/M tokens
+- 缓存读取：$0.30/M tokens（<strong>节省 90%</strong>）
+- 缓存写入：$3.75/M tokens（首次写入略贵 25%）</p>
+<p>多轮对话中，system prompt 和前几条消息被缓存后，后续轮次的输入成本可降低约 75%（文件头注释 L3-4）。</p>
+<h3 id="73-ttl">7.3 缓存 TTL 控制</h3>
+<p>支持两种 TTL（L57-59）：
+- <code>5m</code>（默认）：5 分钟过期，适合连续对话
+- <code>1h</code>：1 小时过期，适合长间隔交互</p>
+<hr />
+<h2 id="8">8. 凭证池与限速恢复</h2>
+<h3 id="81-key">8.1 多 Key 轮换</h3>
+<p>Credential Pools 支持同一提供商注册多个 API Key，提供四种轮换策略：
+- <code>round_robin</code>：轮流使用
+- <code>least_used</code>：使用次数最少优先
+- <code>fill_first</code>：优先填满单 Key
+- <code>random</code>：随机选取</p>
+<h3 id="82">8.2 自动故障恢复</h3>
+<ul>
+<li><strong>429 Rate Limit</strong>：重试一次 → 轮换下一个 Key → 全部耗尽 → 回退到 fallback provider</li>
+<li><strong>402 Billing Error</strong>：立即轮换（24h 冷却期）</li>
+<li><strong>401 Auth Expired</strong>：尝试刷新 OAuth Token → 失败则轮换</li>
+</ul>
+<p>这有效避免了因限速导致的无效 API 调用浪费。</p>
+<hr />
+<h2 id="9-hermes_climodel_switchpy">9. 模型切换（hermes_cli/model_switch.py）</h2>
+<h3 id="91">9.1 动态切换能力</h3>
+<p>运行时通过 <code>/model</code> 命令或 <code>--provider</code> 标志切换模型，支持：</p>
+<ul>
+<li><strong>别名系统</strong>（L78-127）：<code>sonnet</code> → <code>anthropic/claude-sonnet</code>，<code>haiku</code> → <code>anthropic/claude-haiku</code></li>
+<li><strong>直接别名</strong>（L138-149）：精确映射到自定义端点（如本地 Ollama）</li>
+<li><strong>多提供商回退</strong>（L356-370）：在已认证的提供商间回退查找</li>
+</ul>
+<h3 id="92">9.2 成本优化场景</h3>
+<p>用户可按任务复杂度手动切换：
+- 复杂架构决策 → <code>opus</code>（$15/M 输入）
+- 日常编码 → <code>sonnet</code>（$3/M 输入）
+- 简单问答 → <code>haiku</code>（$0.80/M 输入）</p>
+<hr />
+<h2 id="10">10. 上下文压缩的成本间接控制</h2>
+<h3 id="101-trajectory-compressortrajectory_compressorpy">10.1 Trajectory Compressor（trajectory_compressor.py）</h3>
+<p>针对训练轨迹的后处理压缩（L54-79）：
+- 目标 Token 预算：15,250 tokens
+- 保护首尾 N 轮，仅压缩中间区域
+- 使用低成本模型（gemini-3-flash-preview）生成摘要</p>
+<h3 id="102">10.2 上下文窗口管理</h3>
+<p>通过控制上下文大小间接降低 Token 成本：
+- 工具结果截断/持久化减少了上下文中的无效 Token
+- 智能路由将简单查询导向小上下文模型
+- Prompt 缓存将重复前缀的成本降至 1/10</p>
+<hr />
+<h2 id="11">11. 成本控制体系全景</h2>
+<div class="codehilite"><pre><span></span><code>用户消息
+  │
+  ├─[智能路由]─→ 简单消息? → 降级至 cheap_model (节省 ~95%)
+  │                  ↓ 否
+  ├─[Prompt 缓存]─→ 注入 cache_control breakpoints (节省 ~75% 输入)
+  │
+  ├─[凭证池]─→ Key 轮换，避免限速中断
+  │
+  ├─[API 调用]─→ normalize_usage → estimate_usage_cost
+  │                  ↓
+  │              累积 session_estimated_cost_usd
+  │              持久化到 SQLite
+  │
+  ├─[工具结果]─→ Layer 1: 工具内截断
+  │              Layer 2: 超阈值持久化到沙箱
+  │              Layer 3: 单轮总预算强制执行
+  │
+  └─[洞察报告]─→ 历史成本分析，按模型/平台/时间分解
+</code></pre></div>
+
+<hr />
+<h2 id="12">12. 关键设计优势</h2>
+<ol>
+<li><strong>精确计费</strong>：使用 <code>Decimal</code> 运算避免浮点误差，支持五维度 Token 分类（input/output/cache_read/cache_write/request）</li>
+<li><strong>多源定价</strong>：四级回退确保覆盖主流和自定义模型</li>
+<li><strong>透明追溯</strong>：每条成本记录附带 <code>source</code>、<code>pricing_version</code>、<code>fetched_at</code> 元数据</li>
+<li><strong>被动+主动控制</strong>：被动跟踪（计费引擎）+ 主动优化（智能路由、缓存、预算）</li>
+<li><strong>全平台一致</strong>：CLI、Gateway、Telegram、Discord 等所有平台共享同一计费逻辑</li>
+<li><strong>容错设计</strong>：成本记录失败不阻塞主循环（<code>except: pass</code>，L7884-7885）</li>
+</ol>
+</body>
+</html>

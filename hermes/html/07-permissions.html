@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>07-permissions</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1 id="hermes-agent-permissions">Hermes-agent Permissions 深度分析</h1>
+<h2 id="1">1. 概述</h2>
+<p>Hermes-agent 的权限控制体系围绕 <strong>AI Agent 命令执行安全</strong> 设计，核心目标是防止 Agent 在无人监督下执行危险操作。与传统 Web 应用的用户认证/授权不同，Hermes 的权限模型是一个 <strong>命令级审批系统</strong>，包含以下五个层次：</p>
+<ol>
+<li><strong>危险命令检测与审批</strong>（<code>tools/approval.py</code>）</li>
+<li><strong>凭证文件保护</strong>（<code>tools/credential_files.py</code>）</li>
+<li><strong>Tirith 安全策略扫描</strong>（<code>tools/tirith_security.py</code>）</li>
+<li><strong>ACP 权限桥接</strong>（<code>acp_adapter/permissions.py</code>）</li>
+<li><strong>CLI/Gateway 审批回调</strong>（<code>hermes_cli/callbacks.py</code>）</li>
+</ol>
+<hr />
+<h2 id="2">2. 危险命令检测与审批系统</h2>
+<p><strong>核心文件：</strong> <code>/tools/approval.py</code>（878 行）</p>
+<p>这是 Hermes 权限体系的核心模块，实现了完整的命令审批生命周期。</p>
+<h3 id="21">2.1 危险命令模式库</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1"># 文件: tools/approval.py, 行 68-106</span>
+<span class="n">DANGEROUS_PATTERNS</span> <span class="o">=</span> <span class="p">[</span>
+    <span class="p">(</span><span class="sa">r</span><span class="s1">&#39;\brm\s+(-[^\s]*\s+)*/&#39;</span><span class="p">,</span> <span class="s2">&quot;delete in root path&quot;</span><span class="p">),</span>
+    <span class="p">(</span><span class="sa">r</span><span class="s1">&#39;\brm\s+-[^\s]*r&#39;</span><span class="p">,</span> <span class="s2">&quot;recursive delete&quot;</span><span class="p">),</span>
+    <span class="p">(</span><span class="sa">r</span><span class="s1">&#39;\bchmod\s+(-[^\s]*\s+)*(777|666|o\+[rwx]*w|a\+[rwx]*w)\b&#39;</span><span class="p">,</span> <span class="s2">&quot;world/other-writable permissions&quot;</span><span class="p">),</span>
+    <span class="p">(</span><span class="sa">r</span><span class="s1">&#39;\bmkfs\b&#39;</span><span class="p">,</span> <span class="s2">&quot;format filesystem&quot;</span><span class="p">),</span>
+    <span class="p">(</span><span class="sa">r</span><span class="s1">&#39;\bdd\s+.*if=&#39;</span><span class="p">,</span> <span class="s2">&quot;disk copy&quot;</span><span class="p">),</span>
+    <span class="p">(</span><span class="sa">r</span><span class="s1">&#39;\bDROP\s+(TABLE|DATABASE)\b&#39;</span><span class="p">,</span> <span class="s2">&quot;SQL DROP&quot;</span><span class="p">),</span>
+    <span class="p">(</span><span class="sa">r</span><span class="s1">&#39;\bDELETE\s+FROM\b(?!.*\bWHERE\b)&#39;</span><span class="p">,</span> <span class="s2">&quot;SQL DELETE without WHERE&quot;</span><span class="p">),</span>
+    <span class="o">...</span>
+<span class="p">]</span>
+</code></pre></div>
+
+<p>系统定义了 <strong>30+ 个正则模式</strong>，覆盖以下威胁类别：</p>
+<table>
+<thead>
+<tr>
+<th>类别</th>
+<th>示例模式</th>
+<th>描述</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>文件系统破坏</td>
+<td><code>rm -rf /</code>, <code>find -delete</code>, <code>mkfs</code></td>
+<td>防止递归删除、磁盘格式化</td>
+</tr>
+<tr>
+<td>系统配置篡改</td>
+<td><code>&gt; /etc/</code>, <code>sed -i /etc/</code>, <code>chmod 777</code></td>
+<td>防止覆盖系统文件、开放权限</td>
+</tr>
+<tr>
+<td>SQL 注入风险</td>
+<td><code>DROP TABLE</code>, <code>DELETE FROM</code>(无 WHERE)</td>
+<td>防止数据库破坏</td>
+</tr>
+<tr>
+<td>远程代码执行</td>
+<td><code>curl|sh</code>, <code>python -e</code></td>
+<td>防止下载执行远程脚本</td>
+</tr>
+<tr>
+<td>进程控制</td>
+<td><code>kill -9 -1</code>, <code>pkill -9</code></td>
+<td>防止杀死所有进程</td>
+</tr>
+<tr>
+<td>Fork 炸弹</td>
+<td><code>:(){ :|:&amp; };:</code></td>
+<td>防止资源耗尽攻击</td>
+</tr>
+<tr>
+<td>自杀保护</td>
+<td><code>pkill hermes/gateway</code></td>
+<td>防止 Agent 终止自身进程</td>
+</tr>
+<tr>
+<td>敏感路径写入</td>
+<td><code>~/.ssh/</code>, <code>~/.hermes/.env</code></td>
+<td>防止修改 SSH 密钥、环境变量</td>
+</tr>
+</tbody>
+</table>
+<h3 id="22">2.2 命令规范化（反绕过）</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1"># 文件: tools/approval.py, 行 136-151</span>
+<span class="k">def</span> <span class="nf">_normalize_command_for_detection</span><span class="p">(</span><span class="n">command</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+    <span class="kn">from</span> <span class="nn">tools.ansi_strip</span> <span class="kn">import</span> <span class="n">strip_ansi</span>
+    <span class="n">command</span> <span class="o">=</span> <span class="n">strip_ansi</span><span class="p">(</span><span class="n">command</span><span class="p">)</span>           <span class="c1"># 移除 ANSI 转义序列</span>
+    <span class="n">command</span> <span class="o">=</span> <span class="n">command</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="s1">&#39;</span><span class="se">\x00</span><span class="s1">&#39;</span><span class="p">,</span> <span class="s1">&#39;&#39;</span><span class="p">)</span>   <span class="c1"># 移除空字节</span>
+    <span class="n">command</span> <span class="o">=</span> <span class="n">unicodedata</span><span class="o">.</span><span class="n">normalize</span><span class="p">(</span><span class="s1">&#39;NFKC&#39;</span><span class="p">,</span> <span class="n">command</span><span class="p">)</span>  <span class="c1"># Unicode 规范化</span>
+    <span class="k">return</span> <span class="n">command</span>
+</code></pre></div>
+
+<p>通过三层规范化防止绕过：
+- <strong>ANSI 转义剥离</strong>：防止通过终端控制码隐藏命令
+- <strong>空字节移除</strong>：防止 null byte 注入
+- <strong>Unicode NFKC 规范化</strong>：防止全角字符替代（如 <code>ｒｍ</code> 代替 <code>rm</code>）</p>
+<h3 id="23">2.3 三级审批范围</h3>
+<p>审批决策有三个持久化范围（行 284-308）：</p>
+<table>
+<thead>
+<tr>
+<th>范围</th>
+<th>生命周期</th>
+<th>存储</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>once</code></td>
+<td>单次命令</td>
+<td>无持久化</td>
+</tr>
+<tr>
+<td><code>session</code></td>
+<td>当前会话</td>
+<td>内存 <code>_session_approved</code> dict</td>
+</tr>
+<tr>
+<td><code>always</code></td>
+<td>永久</td>
+<td><code>config.yaml</code> 的 <code>command_allowlist</code></td>
+</tr>
+</tbody>
+</table>
+<p>关键的状态管理通过 <code>threading.Lock()</code> 保证线程安全（行 172-176）：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">_lock</span> <span class="o">=</span> <span class="n">threading</span><span class="o">.</span><span class="n">Lock</span><span class="p">()</span>
+<span class="n">_pending</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">dict</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
+<span class="n">_session_approved</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">set</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
+<span class="n">_permanent_approved</span><span class="p">:</span> <span class="nb">set</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+</code></pre></div>
+
+<h3 id="24">2.4 审批模式</h3>
+<p>系统支持三种审批模式（行 473-476）：</p>
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>manual</code>（默认）</td>
+<td>所有危险命令必须人工审批</td>
+</tr>
+<tr>
+<td><code>smart</code></td>
+<td>先由辅助 LLM 评估风险，低风险自动通过，不确定则降级为人工</td>
+</tr>
+<tr>
+<td><code>off</code></td>
+<td>关闭所有审批（等同于 YOLO 模式）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="25-smart-approvalllm">2.5 Smart Approval（LLM 辅助审批）</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1"># 文件: tools/approval.py, 行 487-536</span>
+<span class="k">def</span> <span class="nf">_smart_approve</span><span class="p">(</span><span class="n">command</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">description</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+    <span class="n">client</span><span class="p">,</span> <span class="n">model</span> <span class="o">=</span> <span class="n">get_text_auxiliary_client</span><span class="p">(</span><span class="n">task</span><span class="o">=</span><span class="s2">&quot;approval&quot;</span><span class="p">)</span>
+    <span class="n">prompt</span> <span class="o">=</span> <span class="sa">f</span><span class="s2">&quot;&quot;&quot;You are a security reviewer...</span>
+<span class="s2">    Rules:</span>
+<span class="s2">    - APPROVE if the command is clearly safe</span>
+<span class="s2">    - DENY if the command could genuinely damage the system</span>
+<span class="s2">    - ESCALATE if you&#39;re uncertain&quot;&quot;&quot;</span>
+    <span class="c1"># 返回: &quot;approve&quot; | &quot;deny&quot; | &quot;escalate&quot;</span>
+</code></pre></div>
+
+<p>灵感来自 OpenAI Codex 的 Smart Approvals guardian subagent（注释引用 openai/codex#13860）。三级决策：
+- <strong>APPROVE</strong>：自动通过，授予 session 级别权限
+- <strong>DENY</strong>：直接阻止，不再提示用户
+- <strong>ESCALATE</strong>：不确定时降级为手动审批</p>
+<h3 id="26-gateway">2.6 Gateway 阻塞审批队列</h3>
+<p>对于网关（非 CLI）场景，系统实现了基于线程事件的阻塞审批队列（行 186-261）：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">class</span> <span class="nc">_ApprovalEntry</span><span class="p">:</span>
+    <span class="vm">__slots__</span> <span class="o">=</span> <span class="p">(</span><span class="s2">&quot;event&quot;</span><span class="p">,</span> <span class="s2">&quot;data&quot;</span><span class="p">,</span> <span class="s2">&quot;result&quot;</span><span class="p">)</span>
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">data</span><span class="p">:</span> <span class="nb">dict</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">event</span> <span class="o">=</span> <span class="n">threading</span><span class="o">.</span><span class="n">Event</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">result</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>  <span class="c1"># &quot;once&quot;|&quot;session&quot;|&quot;always&quot;|&quot;deny&quot;</span>
+</code></pre></div>
+
+<p>每个待审批命令创建一个 <code>_ApprovalEntry</code>，agent 线程阻塞在 <code>entry.event.wait(timeout=300)</code> 上。用户通过 <code>/approve</code> 或 <code>/deny</code> 命令解除阻塞。支持 <code>/approve all</code> 批量通过。</p>
+<h3 id="27">2.7 容器环境豁免</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1"># 文件: tools/approval.py, 行 554-555</span>
+<span class="k">if</span> <span class="n">env_type</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">&quot;docker&quot;</span><span class="p">,</span> <span class="s2">&quot;singularity&quot;</span><span class="p">,</span> <span class="s2">&quot;modal&quot;</span><span class="p">,</span> <span class="s2">&quot;daytona&quot;</span><span class="p">):</span>
+    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;approved&quot;</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span> <span class="s2">&quot;message&quot;</span><span class="p">:</span> <span class="kc">None</span><span class="p">}</span>
+</code></pre></div>
+
+<p>在容器化环境中，所有命令自动通过 -- 因为容器本身就是安全沙箱。</p>
+<h3 id="28">2.8 统一守卫入口</h3>
+<p><code>check_all_command_guards()</code>（行 645-873）是所有终端命令执行前的统一安全检查入口，它：</p>
+<ol>
+<li>先跳过容器环境和 YOLO 模式</li>
+<li>收集 Tirith 扫描结果和危险模式检测结果</li>
+<li>合并所有警告为单一审批请求（防止 force=True 绕过）</li>
+<li>按模式（smart/manual）决定审批方式</li>
+<li>区分 CLI（同步 input）和 Gateway（阻塞队列）两种审批路径</li>
+</ol>
+<hr />
+<h2 id="3">3. 凭证文件保护</h2>
+<p><strong>核心文件：</strong> <code>/tools/credential_files.py</code>（414 行）</p>
+<h3 id="31">3.1 路径遍历防护</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1"># 文件: tools/credential_files.py, 行 56-95</span>
+<span class="k">def</span> <span class="nf">register_credential_file</span><span class="p">(</span><span class="n">relative_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">container_base</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;/root/.hermes&quot;</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+    <span class="c1"># 拒绝绝对路径</span>
+    <span class="k">if</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">isabs</span><span class="p">(</span><span class="n">relative_path</span><span class="p">):</span>
+        <span class="k">return</span> <span class="kc">False</span>
+    <span class="c1"># 解析符号链接并检查是否在 HERMES_HOME 内</span>
+    <span class="n">resolved</span> <span class="o">=</span> <span class="n">host_path</span><span class="o">.</span><span class="n">resolve</span><span class="p">()</span>
+    <span class="n">resolved</span><span class="o">.</span><span class="n">relative_to</span><span class="p">(</span><span class="n">hermes_home_resolved</span><span class="p">)</span>  <span class="c1"># 越界则 ValueError</span>
+</code></pre></div>
+
+<p>三重防护：
+1. <strong>绝对路径拒绝</strong>：禁止 <code>/etc/passwd</code> 等绝对路径
+2. <strong>路径遍历检测</strong>：解析 <code>..</code> 和符号链接后，验证最终路径仍在 <code>HERMES_HOME</code> 内
+3. <strong>符号链接清理</strong>：Skills 目录挂载时，若检测到符号链接，自动创建无链接的安全副本（行 251-291）</p>
+<h3 id="32-contextvar">3.2 ContextVar 会话隔离</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1"># 文件: tools/credential_files.py, 行 33</span>
+<span class="n">_registered_files_var</span><span class="p">:</span> <span class="n">ContextVar</span><span class="p">[</span><span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]]</span> <span class="o">=</span> <span class="n">ContextVar</span><span class="p">(</span><span class="s2">&quot;_registered_files&quot;</span><span class="p">)</span>
+</code></pre></div>
+
+<p>使用 Python <code>contextvars.ContextVar</code> 确保 Gateway 并发流水线中不同会话间的凭证文件列表不会交叉污染。</p>
+<h3 id="33">3.3 双层注册来源</h3>
+<p>凭证文件来自两个渠道：
+1. <strong>Skill 声明</strong>：通过 <code>required_credential_files</code> 前端声明注册
+2. <strong>用户配置</strong>：<code>config.yaml</code> 的 <code>terminal.credential_files</code> 字段</p>
+<p>两个来源在 <code>get_credential_file_mounts()</code> 中合并，均经过相同的安全校验。</p>
+<hr />
+<h2 id="4-tirith">4. Tirith 安全策略扫描</h2>
+<p><strong>核心文件：</strong> <code>/tools/tirith_security.py</code>（671 行）</p>
+<h3 id="41">4.1 外部安全扫描引擎</h3>
+<p>Tirith 是一个独立的 Rust 二进制文件，通过子进程调用执行内容级安全扫描。扫描范围包括：
+- 同形字 URL（homograph attacks）
+- 管道到解释器（pipe-to-interpreter）
+- 终端注入（terminal injection）</p>
+<h3 id="42">4.2 判决机制</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1"># 文件: tools/tirith_security.py, 行 9-10</span>
+<span class="c1"># Exit code is the verdict source of truth:</span>
+<span class="c1">#   0 = allow, 1 = block, 2 = warn</span>
+</code></pre></div>
+
+<p>退出码是判决的唯一来源，JSON 输出仅用于丰富 findings/summary，不能覆盖判决。</p>
+<h3 id="43">4.3 安全安装链</h3>
+<p>自动安装流程（行 281-371）实现了完整的供应链验证：</p>
+<ol>
+<li><strong>SHA-256 校验和验证</strong>：必选，确保下载完整性</li>
+<li><strong>Cosign 签名验证</strong>：可选但推荐，验证 GitHub Actions 工作流来源</li>
+<li><strong>路径遍历防护</strong>：解压时拒绝包含 <code>..</code> 的文件名（行 351）</li>
+</ol>
+<h3 id="44-fail-openfail-close">4.4 Fail-Open/Fail-Close 策略</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1"># 文件: tools/tirith_security.py, 行 74-76</span>
+<span class="s2">&quot;tirith_fail_open&quot;</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span>  <span class="c1"># 默认值</span>
+</code></pre></div>
+
+<ul>
+<li><strong>fail_open</strong>（默认）：Tirith 不可用时允许命令执行</li>
+<li><strong>fail_closed</strong>：Tirith 不可用时阻止命令执行</li>
+</ul>
+<p>超时和启动失败也遵循此策略，不影响判决准确性。</p>
+<hr />
+<h2 id="5-acp">5. ACP 权限桥接</h2>
+<p><strong>核心文件：</strong> <code>/acp_adapter/permissions.py</code>（78 行）</p>
+<h3 id="51">5.1 协议适配</h3>
+<p>将 ACP（Agent Communication Protocol）的权限请求映射到 Hermes 的审批系统：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># 文件: acp_adapter/permissions.py, 行 19-23</span>
+<span class="n">_KIND_TO_HERMES</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s2">&quot;allow_once&quot;</span><span class="p">:</span> <span class="s2">&quot;once&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;allow_always&quot;</span><span class="p">:</span> <span class="s2">&quot;always&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;reject_once&quot;</span><span class="p">:</span> <span class="s2">&quot;deny&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;reject_always&quot;</span><span class="p">:</span> <span class="s2">&quot;deny&quot;</span><span class="p">,</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="52">5.2 异步桥接</h3>
+<p>通过 <code>asyncio.run_coroutine_threadsafe()</code> 将 ACP 的异步协程桥接到 Hermes 同步审批线程，支持 60 秒超时自动拒绝。</p>
+<hr />
+<h2 id="6-cli">6. CLI 审批回调</h2>
+<p><strong>核心文件：</strong> <code>/hermes_cli/callbacks.py</code>（243 行）</p>
+<h3 id="61-ui">6.1 审批 UI</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1"># 文件: hermes_cli/callbacks.py, 行 186-242</span>
+<span class="k">def</span> <span class="nf">approval_callback</span><span class="p">(</span><span class="n">cli</span><span class="p">,</span> <span class="n">command</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">description</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+    <span class="n">choices</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;once&quot;</span><span class="p">,</span> <span class="s2">&quot;session&quot;</span><span class="p">,</span> <span class="s2">&quot;always&quot;</span><span class="p">,</span> <span class="s2">&quot;deny&quot;</span><span class="p">]</span>
+    <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">command</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">70</span><span class="p">:</span>
+        <span class="n">choices</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s2">&quot;view&quot;</span><span class="p">)</span>  <span class="c1"># 长命令提供查看选项</span>
+</code></pre></div>
+
+<p>通过 prompt_toolkit TUI 展示审批选项，支持：
+- 并发审批串行化（<code>_approval_lock</code> threading.Lock）
+- 可配置超时（默认 60 秒）
+- 超长命令的"view"选项</p>
+<h3 id="62">6.2 秘密值安全存储</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1"># 文件: hermes_cli/callbacks.py, 行 66-183</span>
+<span class="k">def</span> <span class="nf">prompt_for_secret</span><span class="p">(</span><span class="n">cli</span><span class="p">,</span> <span class="n">var_name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">prompt</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">metadata</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">:</span>
+    <span class="n">stored</span> <span class="o">=</span> <span class="n">save_env_value_secure</span><span class="p">(</span><span class="n">var_name</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+    <span class="k">return</span> <span class="p">{</span>
+        <span class="s2">&quot;message&quot;</span><span class="p">:</span> <span class="s2">&quot;Secret stored securely. The secret value was not exposed to the model.&quot;</span><span class="p">,</span>
+    <span class="p">}</span>
+</code></pre></div>
+
+<p>密钥存储到 <code>~/.hermes/.env</code>，返回给模型的消息明确声明"秘密值未暴露给模型"。</p>
+<hr />
+<h2 id="7">7. 审批流程完整时序</h2>
+<div class="codehilite"><pre><span></span><code><span class="n">Terminal</span><span class="w"> </span><span class="n">Tool</span><span class="w"> </span><span class="err">执行命令</span><span class="w"></span>
+<span class="w">    </span><span class="o">|</span><span class="w"></span>
+<span class="w">    </span><span class="n">v</span><span class="w"></span>
+<span class="n">check_all_command_guards</span><span class="p">()</span><span class="w"></span>
+<span class="w">    </span><span class="o">|</span><span class="w"></span>
+<span class="w">    </span><span class="o">+---&gt;</span><span class="w"> </span><span class="err">容器环境</span><span class="o">?</span><span class="w"> </span><span class="o">--&gt;</span><span class="w"> </span><span class="err">直接通过</span><span class="w"></span>
+<span class="w">    </span><span class="o">|</span><span class="w"></span>
+<span class="w">    </span><span class="o">+---&gt;</span><span class="w"> </span><span class="n">YOLO</span><span class="w"> </span><span class="err">模式</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">approvals</span><span class="p">.</span><span class="n">mode</span><span class="o">=</span><span class="n">off</span><span class="o">?</span><span class="w"> </span><span class="o">--&gt;</span><span class="w"> </span><span class="err">直接通过</span><span class="w"></span>
+<span class="w">    </span><span class="o">|</span><span class="w"></span>
+<span class="w">    </span><span class="o">+---&gt;</span><span class="w"> </span><span class="n">Tirith</span><span class="w"> </span><span class="err">扫描</span><span class="w"> </span><span class="p">(</span><span class="n">block</span><span class="o">/</span><span class="n">warn</span><span class="o">/</span><span class="n">allow</span><span class="p">)</span><span class="w"></span>
+<span class="w">    </span><span class="o">+---&gt;</span><span class="w"> </span><span class="err">危险模式匹配</span><span class="w"> </span><span class="p">(</span><span class="n">DANGEROUS_PATTERNS</span><span class="p">)</span><span class="w"></span>
+<span class="w">    </span><span class="o">|</span><span class="w"></span>
+<span class="w">    </span><span class="o">+---&gt;</span><span class="w"> </span><span class="err">无告警</span><span class="o">?</span><span class="w"> </span><span class="o">--&gt;</span><span class="w"> </span><span class="err">直接通过</span><span class="w"></span>
+<span class="w">    </span><span class="o">|</span><span class="w"></span>
+<span class="w">    </span><span class="o">+---&gt;</span><span class="w"> </span><span class="err">已审批</span><span class="w"> </span><span class="p">(</span><span class="n">session</span><span class="o">/</span><span class="n">permanent</span><span class="p">)</span><span class="o">?</span><span class="w"> </span><span class="o">--&gt;</span><span class="w"> </span><span class="err">直接通过</span><span class="w"></span>
+<span class="w">    </span><span class="o">|</span><span class="w"></span>
+<span class="w">    </span><span class="o">+---&gt;</span><span class="w"> </span><span class="n">Smart</span><span class="w"> </span><span class="err">模式</span><span class="o">?</span><span class="w"></span>
+<span class="w">    </span><span class="o">|</span><span class="w">       </span><span class="o">+---&gt;</span><span class="w"> </span><span class="n">LLM</span><span class="w"> </span><span class="n">APPROVE</span><span class="w"> </span><span class="o">--&gt;</span><span class="w"> </span><span class="n">session</span><span class="w"> </span><span class="err">级通过</span><span class="w"></span>
+<span class="w">    </span><span class="o">|</span><span class="w">       </span><span class="o">+---&gt;</span><span class="w"> </span><span class="n">LLM</span><span class="w"> </span><span class="n">DENY</span><span class="w"> </span><span class="o">--&gt;</span><span class="w"> </span><span class="err">直接阻止</span><span class="w"></span>
+<span class="w">    </span><span class="o">|</span><span class="w">       </span><span class="o">+---&gt;</span><span class="w"> </span><span class="n">LLM</span><span class="w"> </span><span class="n">ESCALATE</span><span class="w"> </span><span class="o">--&gt;</span><span class="w"> </span><span class="err">降级到手动</span><span class="w"></span>
+<span class="w">    </span><span class="o">|</span><span class="w"></span>
+<span class="w">    </span><span class="o">+---&gt;</span><span class="w"> </span><span class="n">Gateway</span><span class="o">?</span><span class="w"></span>
+<span class="w">    </span><span class="o">|</span><span class="w">       </span><span class="o">+---&gt;</span><span class="w"> </span><span class="err">创建</span><span class="w"> </span><span class="n">_ApprovalEntry</span><span class="w"></span>
+<span class="w">    </span><span class="o">|</span><span class="w">       </span><span class="o">+---&gt;</span><span class="w"> </span><span class="n">notify_cb</span><span class="w"> </span><span class="err">通知用户</span><span class="w"></span>
+<span class="w">    </span><span class="o">|</span><span class="w">       </span><span class="o">+---&gt;</span><span class="w"> </span><span class="nf">event</span><span class="p">.</span><span class="kr">wait</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="mi">300</span><span class="p">)</span><span class="w"></span>
+<span class="w">    </span><span class="o">|</span><span class="w">       </span><span class="o">+---&gt;</span><span class="w"> </span><span class="o">/</span><span class="n">approve</span><span class="w"> </span><span class="err">或</span><span class="w"> </span><span class="o">/</span><span class="n">deny</span><span class="w"> </span><span class="err">解除阻塞</span><span class="w"></span>
+<span class="w">    </span><span class="o">|</span><span class="w"></span>
+<span class="w">    </span><span class="o">+---&gt;</span><span class="w"> </span><span class="n">CLI</span><span class="o">?</span><span class="w"></span>
+<span class="w">            </span><span class="o">+---&gt;</span><span class="w"> </span><span class="n">prompt_dangerous_approval</span><span class="p">()</span><span class="w"></span>
+<span class="w">            </span><span class="o">+---&gt;</span><span class="w"> </span><span class="n">TUI</span><span class="w"> </span><span class="err">选择</span><span class="o">:</span><span class="w"> </span><span class="n">once</span><span class="o">/</span><span class="n">session</span><span class="o">/</span><span class="n">always</span><span class="o">/</span><span class="n">deny</span><span class="w"></span>
+</code></pre></div>
+
+<hr />
+<h2 id="8">8. 安全设计亮点</h2>
+<ol>
+<li><strong>多层防御</strong>：正则模式 + Tirith 内容扫描 + 可选 LLM 评估，三层防护</li>
+<li><strong>反绕过能力</strong>：ANSI/Unicode/null-byte 规范化，防止编码绕过</li>
+<li><strong>会话隔离</strong>：ContextVar + threading.Lock，并发安全</li>
+<li><strong>渐进信任</strong>：once -&gt; session -&gt; always 三级信任升级</li>
+<li><strong>降级安全</strong>：Smart 模式不确定时自动降级为人工审批</li>
+<li><strong>供应链安全</strong>：Tirith 二进制安装经过 SHA-256 + 可选 Cosign 验证</li>
+<li><strong>合并审批</strong>：Tirith 和危险模式的告警合并为单一审批请求，防止 force=True 分别绕过</li>
+</ol>
+<hr />
+<h2 id="9">9. 关键配置项</h2>
+<table>
+<thead>
+<tr>
+<th>配置项</th>
+<th>默认值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>approvals.mode</code></td>
+<td><code>manual</code></td>
+<td>审批模式：manual/smart/off</td>
+</tr>
+<tr>
+<td><code>approvals.timeout</code></td>
+<td><code>60</code></td>
+<td>CLI 审批超时秒数</td>
+</tr>
+<tr>
+<td><code>approvals.gateway_timeout</code></td>
+<td><code>300</code></td>
+<td>Gateway 审批超时秒数</td>
+</tr>
+<tr>
+<td><code>command_allowlist</code></td>
+<td><code>[]</code></td>
+<td>永久允许的命令模式列表</td>
+</tr>
+<tr>
+<td><code>security.tirith_enabled</code></td>
+<td><code>true</code></td>
+<td>是否启用 Tirith 扫描</td>
+</tr>
+<tr>
+<td><code>security.tirith_timeout</code></td>
+<td><code>5</code></td>
+<td>Tirith 执行超时秒数</td>
+</tr>
+<tr>
+<td><code>security.tirith_fail_open</code></td>
+<td><code>true</code></td>
+<td>Tirith 不可用时的策略</td>
+</tr>
+<tr>
+<td><code>HERMES_YOLO_MODE</code></td>
+<td>未设置</td>
+<td>环境变量，绕过所有审批</td>
+</tr>
+</tbody>
+</table>
+</body>
+</html>

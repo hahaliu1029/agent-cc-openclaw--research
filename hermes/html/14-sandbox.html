@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>14-sandbox</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1 id="hermes-agent-sandbox">Hermes-Agent Sandbox 机制深度分析</h1>
+<h2 id="1">1. 整体架构概述</h2>
+<p>Hermes-Agent 的沙箱/执行环境系统采用 <strong>多后端插件化架构</strong>，通过统一的抽象基类 <code>BaseEnvironment</code> 定义标准接口，支持 7 种执行后端：</p>
+<table>
+<thead>
+<tr>
+<th>后端</th>
+<th>类名</th>
+<th>隔离级别</th>
+<th>适用场景</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Local</td>
+<td><code>LocalEnvironment</code></td>
+<td>无隔离（宿主机直接执行）</td>
+<td>开发调试、本地使用</td>
+</tr>
+<tr>
+<td>Docker</td>
+<td><code>DockerEnvironment</code></td>
+<td>容器级隔离（安全加固）</td>
+<td>通用沙箱、CI/CD</td>
+</tr>
+<tr>
+<td>Singularity/Apptainer</td>
+<td><code>SingularityEnvironment</code></td>
+<td>容器级隔离（HPC 场景）</td>
+<td>HPC 集群、学术环境</td>
+</tr>
+<tr>
+<td>SSH</td>
+<td><code>SSHEnvironment</code></td>
+<td>网络隔离（远程主机）</td>
+<td>远程开发、分布式部署</td>
+</tr>
+<tr>
+<td>Modal</td>
+<td><code>ModalEnvironment</code></td>
+<td>云沙箱（Serverless）</td>
+<td>云端执行、弹性计算</td>
+</tr>
+<tr>
+<td>Managed Modal</td>
+<td><code>ManagedModalEnvironment</code></td>
+<td>云沙箱（Gateway 管理）</td>
+<td>托管模式、SaaS 部署</td>
+</tr>
+<tr>
+<td>Daytona</td>
+<td><code>DaytonaEnvironment</code></td>
+<td>云沙箱</td>
+<td>CDE 场景</td>
+</tr>
+</tbody>
+</table>
+<p><strong>核心文件路径：</strong>
+- <code>tools/environments/base.py</code> -- 抽象基类与共享逻辑
+- <code>tools/environments/local.py</code> -- 本地执行
+- <code>tools/environments/docker.py</code> -- Docker 容器
+- <code>tools/environments/ssh.py</code> -- SSH 远程
+- <code>tools/environments/modal.py</code> -- Modal 云沙箱
+- <code>tools/environments/managed_modal.py</code> -- 托管 Modal
+- <code>tools/environments/daytona.py</code> -- Daytona CDE
+- <code>tools/environments/singularity.py</code> -- Singularity/Apptainer
+- <code>tools/terminal_tool.py</code> -- 终端工具编排层（环境创建工厂）
+- <code>tools/code_execution_tool.py</code> -- execute_code 沙箱（PTC）
+- <code>tools/process_registry.py</code> -- 后台进程管理
+- <code>tools/browser_camofox.py</code> -- CamoFox 浏览器沙箱</p>
+<h2 id="2-spawn-per-call">2. 统一执行模型：Spawn-per-call</h2>
+<p>所有后端共享 <strong>spawn-per-call</strong> 执行模型（<code>base.py</code> 第1-7行文档字符串）：</p>
+<ul>
+<li>每次 <code>execute()</code> 调用生成一个全新的 <code>bash -c</code> 进程</li>
+<li>通过 <strong>session snapshot</strong> 机制在调用之间保持环境变量、函数定义和别名</li>
+<li>CWD 通过 stdout 内联标记（远程后端）或临时文件（本地后端）持久化</li>
+</ul>
+<h3 id="21-session-snapshot">2.1 Session Snapshot 机制</h3>
+<p><code>BaseEnvironment.init_session()</code>（<code>base.py</code> 第271-306行）在初始化时捕获完整的 shell 环境：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">export</span><span class="w"> </span><span class="o">-</span><span class="n">p</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="o">/</span><span class="n">tmp</span><span class="o">/</span><span class="n">hermes</span><span class="o">-</span><span class="n">snap</span><span class="o">-</span><span class="p">{</span><span class="n">session_id</span><span class="p">}</span><span class="o">.</span><span class="n">sh</span><span class="w">    </span><span class="c1"># 环境变量</span><span class="w"></span>
+<span class="n">declare</span><span class="w"> </span><span class="o">-</span><span class="n">f</span><span class="w"> </span><span class="o">&gt;&gt;</span><span class="w"> </span><span class="o">...</span><span class="w">                                  </span><span class="c1"># 函数定义</span><span class="w"></span>
+<span class="n">alias</span><span class="w"> </span><span class="o">-</span><span class="n">p</span><span class="w"> </span><span class="o">&gt;&gt;</span><span class="w"> </span><span class="o">...</span><span class="w">                                    </span><span class="c1"># 别名</span><span class="w"></span>
+<span class="n">echo</span><span class="w"> </span><span class="s1">&#39;shopt -s expand_aliases&#39;</span><span class="w"> </span><span class="o">&gt;&gt;</span><span class="w"> </span><span class="o">...</span><span class="w">             </span><span class="c1"># shell 选项</span><span class="w"></span>
+</code></pre></div>
+
+<p>后续命令通过 <code>_wrap_command()</code>（<code>base.py</code> 第312-348行）自动 source 该快照文件：</p>
+<div class="codehilite"><pre><span></span><code><span class="nb">source</span> /tmp/hermes-snap-<span class="o">{</span>session_id<span class="o">}</span>.sh <span class="m">2</span>&gt;/dev/null <span class="o">||</span> <span class="nb">true</span>
+<span class="nb">cd</span> <span class="o">{</span>cwd<span class="o">}</span> <span class="o">||</span> <span class="nb">exit</span> <span class="m">126</span>
+<span class="nb">eval</span> <span class="s1">&#39;{command}&#39;</span>
+<span class="nv">__hermes_ec</span><span class="o">=</span><span class="nv">$?</span>
+<span class="nb">export</span> -p &gt; /tmp/hermes-snap-<span class="o">{</span>session_id<span class="o">}</span>.sh <span class="m">2</span>&gt;/dev/null <span class="o">||</span> <span class="nb">true</span>  <span class="c1"># 更新快照</span>
+<span class="nb">pwd</span> -P &gt; /tmp/hermes-cwd-<span class="o">{</span>session_id<span class="o">}</span>.txt <span class="m">2</span>&gt;/dev/null <span class="o">||</span> <span class="nb">true</span>
+<span class="nb">printf</span> <span class="s1">&#39;\n__HERMES_CWD_{session_id}__%s__HERMES_CWD_{session_id}__\n&#39;</span> <span class="s2">&quot;</span><span class="k">$(</span><span class="nb">pwd</span> -P<span class="k">)</span><span class="s2">&quot;</span>
+<span class="nb">exit</span> <span class="nv">$__hermes_ec</span>
+</code></pre></div>
+
+<h3 id="22-cwd">2.2 CWD 持久化</h3>
+<ul>
+<li><strong>本地后端</strong>：通过临时文件 <code>/tmp/hermes-cwd-{session_id}.txt</code> 读取（<code>local.py</code> 第254-264行）</li>
+<li><strong>远程后端</strong>：通过 stdout 中的 <code>__HERMES_CWD_{session_id}__</code> 标记解析（<code>base.py</code> 第432-464行）</li>
+</ul>
+<h2 id="3-docker">3. Docker 后端深度分析</h2>
+<h3 id="31">3.1 安全加固</h3>
+<p><code>DockerEnvironment</code>（<code>docker.py</code>）实施了多层安全措施：</p>
+<p><strong>能力控制</strong>（<code>docker.py</code> 第135-145行）：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">_SECURITY_ARGS</span> <span class="o">=</span> <span class="p">[</span>
+    <span class="s2">&quot;--cap-drop&quot;</span><span class="p">,</span> <span class="s2">&quot;ALL&quot;</span><span class="p">,</span>           <span class="c1"># 丢弃所有 Linux 能力</span>
+    <span class="s2">&quot;--cap-add&quot;</span><span class="p">,</span> <span class="s2">&quot;DAC_OVERRIDE&quot;</span><span class="p">,</span>   <span class="c1"># 允许 root 写入 bind-mount 目录</span>
+    <span class="s2">&quot;--cap-add&quot;</span><span class="p">,</span> <span class="s2">&quot;CHOWN&quot;</span><span class="p">,</span>          <span class="c1"># 包管理器需要设置文件所有权</span>
+    <span class="s2">&quot;--cap-add&quot;</span><span class="p">,</span> <span class="s2">&quot;FOWNER&quot;</span><span class="p">,</span>         <span class="c1"># 同上</span>
+    <span class="s2">&quot;--security-opt&quot;</span><span class="p">,</span> <span class="s2">&quot;no-new-privileges&quot;</span><span class="p">,</span>  <span class="c1"># 禁止权限提升</span>
+    <span class="s2">&quot;--pids-limit&quot;</span><span class="p">,</span> <span class="s2">&quot;256&quot;</span><span class="p">,</span>         <span class="c1"># PID 数量限制</span>
+    <span class="s2">&quot;--tmpfs&quot;</span><span class="p">,</span> <span class="s2">&quot;/tmp:rw,nosuid,size=512m&quot;</span><span class="p">,</span>      <span class="c1"># /tmp 限制 512MB</span>
+    <span class="s2">&quot;--tmpfs&quot;</span><span class="p">,</span> <span class="s2">&quot;/var/tmp:rw,noexec,nosuid,size=256m&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;--tmpfs&quot;</span><span class="p">,</span> <span class="s2">&quot;/run:rw,noexec,nosuid,size=64m&quot;</span><span class="p">,</span>
+<span class="p">]</span>
+</code></pre></div>
+
+<p><strong>资源限制</strong>（<code>docker.py</code> 第265-279行）：
+- CPU：<code>--cpus</code> 参数（可配置，默认 1 核）
+- 内存：<code>--memory</code> 参数（可配置，默认 5120MB）
+- 磁盘：<code>--storage-opt size=</code>（仅 overlay2 on XFS with pquota 支持）
+- 网络：可选 <code>--network=none</code> 禁用网络</p>
+<h3 id="32">3.2 文件系统持久化</h3>
+<p>支持两种模式（<code>docker.py</code> 第281-337行）：</p>
+<p><strong>持久化模式</strong> (<code>persistent_filesystem=True</code>)：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">sandbox</span> <span class="o">=</span> <span class="n">get_sandbox_dir</span><span class="p">()</span> <span class="o">/</span> <span class="s2">&quot;docker&quot;</span> <span class="o">/</span> <span class="n">task_id</span>  <span class="c1"># 默认 ~/.hermes/sandboxes/docker/{task_id}</span>
+<span class="c1"># bind mount:</span>
+<span class="o">-</span><span class="n">v</span> <span class="p">{</span><span class="n">sandbox</span><span class="p">}</span><span class="o">/</span><span class="n">home</span><span class="p">:</span><span class="o">/</span><span class="n">root</span>
+<span class="o">-</span><span class="n">v</span> <span class="p">{</span><span class="n">sandbox</span><span class="p">}</span><span class="o">/</span><span class="n">workspace</span><span class="p">:</span><span class="o">/</span><span class="n">workspace</span>
+</code></pre></div>
+
+<p><strong>临时模式</strong> (<code>persistent_filesystem=False</code>)：</p>
+<div class="codehilite"><pre><span></span><code><span class="o">--</span><span class="n">tmpfs</span> <span class="o">/</span><span class="n">workspace</span><span class="p">:</span><span class="n">rw</span><span class="p">,</span><span class="n">exec</span><span class="p">,</span><span class="n">size</span><span class="o">=</span><span class="mi">10</span><span class="n">g</span>    <span class="c1"># 10GB 临时工作区</span>
+<span class="o">--</span><span class="n">tmpfs</span> <span class="o">/</span><span class="n">home</span><span class="p">:</span><span class="n">rw</span><span class="p">,</span><span class="n">exec</span><span class="p">,</span><span class="n">size</span><span class="o">=</span><span class="mi">1</span><span class="n">g</span>
+<span class="o">--</span><span class="n">tmpfs</span> <span class="o">/</span><span class="n">root</span><span class="p">:</span><span class="n">rw</span><span class="p">,</span><span class="n">exec</span><span class="p">,</span><span class="n">size</span><span class="o">=</span><span class="mi">1</span><span class="n">g</span>
+</code></pre></div>
+
+<h3 id="33">3.3 凭证与技能挂载</h3>
+<p>Docker 后端通过只读 bind mount 注入凭证文件（<code>docker.py</code> 第346-393行）：
+- <code>get_credential_file_mounts()</code> -- OAuth token 等认证文件
+- <code>get_skills_directory_mount()</code> -- 技能脚本/模板目录
+- <code>get_cache_directory_mounts()</code> -- 文档/图片/音频缓存</p>
+<p>所有挂载均为 <code>:ro</code>（只读），容器可读取但不可修改宿主机凭证。</p>
+<h3 id="34">3.4 环境变量注入</h3>
+<p>Docker 支持两种环境变量注入机制：
+1. <code>docker_env</code> -- 容器创建时注入（通过 <code>-e</code> 参数，<code>docker.py</code> 第397-399行）
+2. <code>docker_forward_env</code> -- 从宿主机转发的环境变量名列表，在 <code>init_session</code> 时注入到快照中（<code>docker.py</code> 第438-468行）</p>
+<h3 id="35">3.5 容器生命周期</h3>
+<ul>
+<li><strong>创建</strong>：<code>docker run -d</code> 以 <code>sleep 2h</code> 作为主进程（<code>docker.py</code> 第410-428行）</li>
+<li><strong>执行</strong>：<code>docker exec</code> 在容器内启动 bash 进程</li>
+<li><strong>清理</strong>：后台异步执行 <code>docker stop</code> + <code>docker rm</code>（<code>docker.py</code> 第533-555行）</li>
+<li>非持久化模式同时删除 workspace/home 目录</li>
+</ul>
+<h2 id="4-singularityapptainer">4. Singularity/Apptainer 后端</h2>
+<h3 id="41">4.1 安全加固</h3>
+<p><code>SingularityEnvironment</code>（<code>singularity.py</code>）使用以下安全标志（第197-198行）：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">cmd</span><span class="o">.</span><span class="n">extend</span><span class="p">([</span><span class="s2">&quot;--containall&quot;</span><span class="p">,</span> <span class="s2">&quot;--no-home&quot;</span><span class="p">])</span>  <span class="c1"># 完全隔离 + 不挂载宿主机 home</span>
+</code></pre></div>
+
+<h3 id="42-sif">4.2 SIF 镜像缓存</h3>
+<p>支持将 Docker 镜像预编译为 SIF 格式，缓存在 <code>{scratch_dir}/.apptainer/</code> 目录下（<code>singularity.py</code> 第107-153行）。使用线程锁 <code>_sif_build_lock</code> 防止并发构建。</p>
+<h3 id="43-overlay">4.3 Overlay 持久化</h3>
+<p>持久化模式通过 writable overlay 目录实现（<code>singularity.py</code> 第186-191行）：</p>
+<div class="codehilite"><pre><span></span><code><span class="bp">self</span><span class="o">.</span><span class="n">_overlay_dir</span> <span class="o">=</span> <span class="n">overlay_base</span> <span class="o">/</span> <span class="sa">f</span><span class="s2">&quot;overlay-</span><span class="si">{</span><span class="n">task_id</span><span class="si">}</span><span class="s2">&quot;</span>
+<span class="n">cmd</span><span class="o">.</span><span class="n">extend</span><span class="p">([</span><span class="s2">&quot;--overlay&quot;</span><span class="p">,</span> <span class="nb">str</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_overlay_dir</span><span class="p">)])</span>
+</code></pre></div>
+
+<p>非持久化模式使用 <code>--writable-tmpfs</code>。</p>
+<h3 id="44-hpc">4.4 HPC 特殊支持</h3>
+<ul>
+<li>自动检测 <code>/scratch</code> 目录作为沙箱存储（HPC 集群常见的高速临时存储）</li>
+<li>通过 <code>TERMINAL_SCRATCH_DIR</code> 和 <code>APPTAINER_CACHEDIR</code> 环境变量可自定义路径</li>
+</ul>
+<h2 id="5-modal">5. Modal 云沙箱</h2>
+<h3 id="51-modalenvironment">5.1 直连模式（ModalEnvironment）</h3>
+<p><code>ModalEnvironment</code>（<code>modal.py</code>）使用 Modal SDK 原生沙箱：</p>
+<ul>
+<li><strong>异步架构</strong>：通过 <code>_AsyncWorker</code> 在独立事件循环中运行 Modal 异步调用（<code>modal.py</code> 第106-136行）</li>
+<li><strong>进程适配</strong>：通过 <code>_ThreadedProcessHandle</code> 将阻塞式 SDK 调用适配为 <code>ProcessHandle</code> 协议</li>
+<li><strong>stdin 模式</strong>：使用 <code>heredoc</code> 嵌入模式（而非 pipe）</li>
+<li><strong>冷启动超时</strong>：snapshot 超时设为 60 秒（较本地后端的 30 秒更长）</li>
+</ul>
+<h3 id="52">5.2 文件系统快照</h3>
+<p>Modal 后端使用 <code>snapshot_filesystem()</code> 实现持久化（<code>modal.py</code> 第340-371行）：
+- cleanup 时自动创建文件系统快照
+- 下次创建时从快照恢复（<code>_get_snapshot_restore_candidate</code>）
+- 快照 ID 存储在 <code>~/.hermes/modal_snapshots.json</code>
+- 支持旧版快照 key 到新版命名空间 key 的迁移</p>
+<h3 id="53">5.3 文件同步</h3>
+<p>Modal 后端实现了 rate-limited 文件同步（<code>modal.py</code> 第261-304行）：
+- 通过 mtime+size 组合键检测变更
+- 使用 base64 编码通过 <code>sandbox.exec()</code> 推送文件
+- 同步间隔由 <code>_SYNC_INTERVAL_SECONDS</code>（5 秒）控制</p>
+<h3 id="54-managedmodalenvironment">5.4 托管模式（ManagedModalEnvironment）</h3>
+<p><code>ManagedModalEnvironment</code>（<code>managed_modal.py</code>）通过 HTTP API 与 Gateway 通信：</p>
+<ul>
+<li><strong>沙箱创建</strong>：POST <code>/v1/sandboxes</code>（含幂等 key）</li>
+<li><strong>命令执行</strong>：POST <code>/v1/sandboxes/{id}/execs</code></li>
+<li><strong>状态轮询</strong>：GET <code>/v1/sandboxes/{id}/execs/{execId}</code></li>
+<li><strong>取消执行</strong>：POST <code>/v1/sandboxes/{id}/execs/{execId}/cancel</code></li>
+<li><strong>清理/快照</strong>：POST <code>/v1/sandboxes/{id}/terminate</code>（可选 <code>snapshotBeforeTerminate</code>）</li>
+<li>不支持宿主机凭证文件透传（<code>_guard_unsupported_credential_passthrough</code>，第214-228行）</li>
+</ul>
+<h2 id="6-daytona">6. Daytona 云沙箱</h2>
+<p><code>DaytonaEnvironment</code>（<code>daytona.py</code>）的特殊设计：</p>
+<ul>
+<li><strong>持久化恢复</strong>：通过沙箱名称和 label 双重查找恢复已有沙箱（<code>daytona.py</code> 第80-104行）</li>
+<li><strong>状态检测</strong>：<code>_ensure_sandbox_ready()</code> 在每次执行前检查沙箱状态，自动重启 STOPPED/ARCHIVED 沙箱</li>
+<li><strong>文件同步</strong>：通过 SDK 的 <code>fs.upload_file()</code> 直接上传（非 base64 编码）</li>
+<li><strong>资源限制</strong>：硬上限 disk 10GB（<code>daytona.py</code> 第68-70行）</li>
+<li><strong>清理策略</strong>：持久化模式仅 stop（保留文件系统），非持久化模式 delete</li>
+</ul>
+<h2 id="7-ssh">7. SSH 后端</h2>
+<p><code>SSHEnvironment</code>（<code>ssh.py</code>）的核心特点：</p>
+<ul>
+<li><strong>ControlMaster 连接复用</strong>：通过 SSH ControlSocket 复用连接（<code>ssh.py</code> 第51-66行），避免每次命令都进行 SSH 握手</li>
+<li><strong>ControlPersist=300</strong>：连接保持 5 分钟</li>
+<li><strong>rsync 文件同步</strong>：通过 rsync 将凭证文件和技能目录同步到远程主机（<code>ssh.py</code> 第95-138行）</li>
+<li><strong>远程 home 目录检测</strong>：通过 <code>echo $HOME</code> 自动检测远程用户 home</li>
+</ul>
+<h2 id="8">8. 本地后端与安全</h2>
+<p><code>LocalEnvironment</code>（<code>local.py</code>）虽无容器隔离，但实施了关键安全措施：</p>
+<h3 id="81">8.1 环境变量阻断</h3>
+<p><code>_build_provider_env_blocklist()</code>（<code>local.py</code> 第18-103行）构建了一个包含约 60+ 个敏感环境变量的冻结集合：
+- 所有 LLM 提供商 API key（OpenAI、Anthropic、Deepseek 等）
+- 消息平台 token（Telegram、Discord、Slack、WhatsApp 等）
+- 服务凭证（GitHub、Modal、Daytona、HomeAssistant 等）</p>
+<p><code>_sanitize_subprocess_env()</code>（<code>local.py</code> 第109-131行）在创建子进程时过滤这些变量，防止泄露到 LLM 可控的终端命令中。</p>
+<h3 id="82">8.2 进程组管理</h3>
+<p>本地后端使用 <code>os.setsid()</code> 创建新进程组（<code>local.py</code> 第229行），<code>_kill_process()</code> 通过 <code>os.killpg()</code> 杀死整个进程组（包括所有子进程），避免孤儿进程（<code>local.py</code> 第236-252行）。</p>
+<h2 id="9-terminal_toolpy">9. 终端工具编排层（terminal_tool.py）</h2>
+<h3 id="91">9.1 环境创建工厂</h3>
+<p><code>_create_environment()</code>（<code>terminal_tool.py</code> 第583-706行）是环境创建的工厂函数，根据 <code>TERMINAL_ENV</code> 环境变量选择后端并传入配置参数。</p>
+<h3 id="92">9.2 环境配置体系</h3>
+<p><code>_get_env_config()</code>（<code>terminal_tool.py</code> 第495-571行）从环境变量读取完整配置：</p>
+<table>
+<thead>
+<tr>
+<th>环境变量</th>
+<th>用途</th>
+<th>默认值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>TERMINAL_ENV</code></td>
+<td>后端类型</td>
+<td><code>local</code></td>
+</tr>
+<tr>
+<td><code>TERMINAL_DOCKER_IMAGE</code></td>
+<td>Docker 镜像</td>
+<td><code>nikolaik/python-nodejs:python3.11-nodejs20</code></td>
+</tr>
+<tr>
+<td><code>TERMINAL_TIMEOUT</code></td>
+<td>命令超时</td>
+<td>180s</td>
+</tr>
+<tr>
+<td><code>TERMINAL_CONTAINER_CPU</code></td>
+<td>CPU 限制</td>
+<td>1</td>
+</tr>
+<tr>
+<td><code>TERMINAL_CONTAINER_MEMORY</code></td>
+<td>内存限制</td>
+<td>5120MB</td>
+</tr>
+<tr>
+<td><code>TERMINAL_CONTAINER_DISK</code></td>
+<td>磁盘限制</td>
+<td>51200MB</td>
+</tr>
+<tr>
+<td><code>TERMINAL_CONTAINER_PERSISTENT</code></td>
+<td>文件系统持久化</td>
+<td>true</td>
+</tr>
+<tr>
+<td><code>TERMINAL_SANDBOX_DIR</code></td>
+<td>沙箱存储根目录</td>
+<td><code>~/.hermes/sandboxes/</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="93">9.3 危险命令审批</h3>
+<p><code>terminal_tool.py</code> 集成了危险命令检测与审批系统（第139-148行），通过 <code>check_all_command_guards()</code> 对高风险命令（如 <code>rm -rf /</code>、<code>mkfs</code>）进行拦截。</p>
+<h3 id="94">9.4 工作目录安全</h3>
+<p><code>_validate_workdir()</code>（<code>terminal_tool.py</code> 第154-176行）使用字符白名单验证工作目录路径，防止 shell 注入攻击。</p>
+<h3 id="95">9.5 环境生命周期管理</h3>
+<div class="codehilite"><pre><span></span><code><span class="n">_active_environments</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>    <span class="c1"># task_id -&gt; environment</span>
+<span class="n">_last_activity</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>         <span class="c1"># task_id -&gt; 最后活动时间</span>
+<span class="n">_creation_locks</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">threading</span><span class="o">.</span><span class="n">Lock</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>  <span class="c1"># 每个 task 的创建锁</span>
+</code></pre></div>
+
+<p>后台清理线程定期检查不活跃的环境并执行 cleanup（通过 <code>_cleanup_thread</code>）。</p>
+<h2 id="10-execute_code-code_execution_toolpy">10. execute_code 沙箱（code_execution_tool.py）</h2>
+<h3 id="101-programmatic-tool-callingptc">10.1 Programmatic Tool Calling（PTC）</h3>
+<p><code>code_execution_tool.py</code> 实现了一种独特的 "代码沙箱" 机制，允许 LLM 编写 Python 脚本通过 RPC 调用 Hermes 工具：</p>
+<p><strong>允许的工具</strong>（<code>code_execution_tool.py</code> 第55-63行）：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">SANDBOX_ALLOWED_TOOLS</span> <span class="o">=</span> <span class="nb">frozenset</span><span class="p">([</span>
+    <span class="s2">&quot;web_search&quot;</span><span class="p">,</span> <span class="s2">&quot;web_extract&quot;</span><span class="p">,</span> <span class="s2">&quot;read_file&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;write_file&quot;</span><span class="p">,</span> <span class="s2">&quot;search_files&quot;</span><span class="p">,</span> <span class="s2">&quot;patch&quot;</span><span class="p">,</span> <span class="s2">&quot;terminal&quot;</span><span class="p">,</span>
+<span class="p">])</span>
+</code></pre></div>
+
+<h3 id="102">10.2 双传输架构</h3>
+<ul>
+<li><strong>UDS 传输</strong>（Unix Domain Socket，本地后端）：父进程创建 socket，子进程通过 <code>hermes_tools.py</code> stub 发送 RPC 请求</li>
+<li><strong>文件传输</strong>（远程后端）：通过 <code>/tmp/hermes_rpc/</code> 目录下的 <code>req_*</code> / <code>res_*</code> 文件进行 RPC 通信</li>
+</ul>
+<h3 id="103">10.3 资源限制</h3>
+<div class="codehilite"><pre><span></span><code><span class="n">DEFAULT_TIMEOUT</span> <span class="o">=</span> <span class="mi">300</span>        <span class="c1"># 5 分钟</span>
+<span class="n">DEFAULT_MAX_TOOL_CALLS</span> <span class="o">=</span> <span class="mi">50</span>  <span class="c1"># 最多 50 次工具调用</span>
+<span class="n">MAX_STDOUT_BYTES</span> <span class="o">=</span> <span class="mi">50_000</span>    <span class="c1"># 50KB stdout 上限</span>
+<span class="n">MAX_STDERR_BYTES</span> <span class="o">=</span> <span class="mi">10_000</span>    <span class="c1"># 10KB stderr 上限</span>
+</code></pre></div>
+
+<h3 id="104">10.4 安全防护</h3>
+<ul>
+<li>只允许预定义的 7 种工具（<code>SANDBOX_ALLOWED_TOOLS</code>）</li>
+<li><code>terminal</code> 工具调用时自动剥离 <code>background</code>、<code>pty</code> 等危险参数（第303行）</li>
+<li>工具调用次数上限强制执行（第367-376行）</li>
+</ul>
+<h2 id="11-process_registrypy">11. 后台进程管理（process_registry.py）</h2>
+<p><code>ProcessRegistry</code>（<code>process_registry.py</code>）管理所有后台进程：</p>
+<h3 id="111">11.1 核心数据模型</h3>
+<p><code>ProcessSession</code>（第63-88行）跟踪每个后台进程的完整状态：
+- 输出缓冲区（滚动 200KB 窗口，<code>MAX_OUTPUT_CHARS = 200_000</code>）
+- 进程存活状态和退出码
+- PTY 支持（通过 <code>ptyprocess</code> 库）
+- gateway session 感知（防止 session reset 时误杀进程）</p>
+<h3 id="112-spawn">11.2 双模式 spawn</h3>
+<ul>
+<li><code>spawn_local()</code> -- 直接在宿主机 spawn 子进程（支持 PTY 模式）</li>
+<li><code>spawn_via_env()</code> -- 通过环境后端（Docker/Modal/SSH 等）在沙箱内执行</li>
+</ul>
+<h3 id="113">11.3 崩溃恢复</h3>
+<p>通过 JSON checkpoint 文件（<code>~/.hermes/processes.json</code>）保存进程元数据，gateway 重启后可恢复进程追踪（第54行）。</p>
+<h2 id="12-camofox">12. CamoFox 浏览器沙箱</h2>
+<p><code>browser_camofox.py</code> 实现了反检测浏览器后端：</p>
+<h3 id="121">12.1 架构</h3>
+<ul>
+<li>基于 Camoufox（Firefox 分支，C++ 层面的指纹欺骗）</li>
+<li>通过独立的 Node.js REST API 服务器交互</li>
+<li>支持 Docker 部署：<code>docker run -p 9377:9377 jo-inc/camofox-browser</code></li>
+</ul>
+<h3 id="122-vnc">12.2 VNC 支持</h3>
+<p><code>check_camofox_available()</code>（<code>browser_camofox.py</code> 第62-82行）从 <code>/health</code> 端点自动发现 VNC 端口，构建 VNC URL 供用户实时观看浏览器操作。</p>
+<h3 id="123">12.3 会话管理</h3>
+<ul>
+<li>每个 <code>task_id</code> 绑定一个 session（userId + tabId）</li>
+<li><strong>托管持久化模式</strong>：使用确定性 userId（基于 Hermes profile），浏览器 profile 跨重启保持</li>
+<li><strong>临时模式</strong>：随机 userId，session 结束即销毁</li>
+<li><code>camofox_soft_cleanup()</code> -- 持久化模式下仅释放本地追踪，不销毁服务端 session</li>
+</ul>
+<h3 id="124">12.4 安全措施</h3>
+<ul>
+<li>截图分析时通过 <code>redact_sensitive_text()</code> 脱敏 accessibility tree 和 vision LLM 输出</li>
+<li>session 级别的线程安全（<code>_sessions_lock</code>）</li>
+</ul>
+<h2 id="13-docker">13. Docker 镜像与入口脚本</h2>
+<h3 id="131">13.1 基础镜像</h3>
+<p><code>Dockerfile</code>（项目根目录）基于 <code>debian:13.4</code>，预装：
+- Python3 + pip
+- Node.js + npm
+- ripgrep、ffmpeg、gcc
+- Playwright Chromium</p>
+<h3 id="132">13.2 入口脚本</h3>
+<p><code>docker/entrypoint.sh</code> 负责：
+1. 创建 <code>HERMES_HOME=/opt/data</code> 下的目录结构
+2. 复制默认配置文件（.env、config.yaml、SOUL.md）
+3. 同步内置技能（manifest-based，保留用户修改）
+4. 执行 <code>hermes</code> 主程序</p>
+<h2 id="14">14. 总结：关键设计原则</h2>
+<ol>
+<li><strong>统一接口</strong>：所有后端实现相同的 <code>BaseEnvironment</code> 抽象，上层代码无需感知底层差异</li>
+<li><strong>spawn-per-call</strong>：每次命令独立进程，通过 snapshot 维持状态，避免长生命周期 shell 的复杂性</li>
+<li><strong>纵深安全</strong>：Docker 后端 cap-drop ALL + no-new-privileges + PID limit + tmpfs 限制；本地后端环境变量阻断</li>
+<li><strong>持久化可选</strong>：所有容器后端支持 persistent/ephemeral 双模式</li>
+<li><strong>凭证隔离</strong>：只读挂载凭证文件，环境变量黑名单防止泄露</li>
+<li><strong>渐进式降级</strong>：snapshot 失败退回 <code>bash -l</code>，Docker 不可用时有明确错误提示</li>
+</ol>
+</body>
+</html>

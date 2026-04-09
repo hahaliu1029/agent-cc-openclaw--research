@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>03-context-management</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1 id="hermes-agent-context">Hermes-agent Context 管理深度分析</h1>
+<h2 id="1">1. 架构总览</h2>
+<p>Hermes-agent 的上下文管理由四个核心模块协作完成：</p>
+<table>
+<thead>
+<tr>
+<th>模块</th>
+<th>文件</th>
+<th>职责</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ContextCompressor</td>
+<td><code>agent/context_compressor.py</code></td>
+<td>对话压缩（LLM 摘要 + 工具结果裁剪）</td>
+</tr>
+<tr>
+<td>Prompt Caching</td>
+<td><code>agent/prompt_caching.py</code></td>
+<td>Anthropic prompt caching 注入</td>
+</tr>
+<tr>
+<td>Model Metadata</td>
+<td><code>agent/model_metadata.py</code></td>
+<td>模型上下文窗口探测（10 级解析链）</td>
+</tr>
+<tr>
+<td>Models.dev</td>
+<td><code>agent/models_dev.py</code></td>
+<td>社区模型注册表集成（4000+ 模型元数据）</td>
+</tr>
+</tbody>
+</table>
+<p>核心数据流：</p>
+<div class="codehilite"><pre><span></span><code>模型上下文窗口探测 (model_metadata.py)
+        │
+        ▼
+ContextCompressor 初始化（阈值 = 窗口 × threshold_percent）
+        │
+        ▼
+每轮对话后 → should_compress() 检查
+        │
+        ├─ 未超限 → 直接发送（可选 prompt caching）
+        │
+        └─ 超限 → compress() → 裁剪 + LLM 摘要 → 继续对话
+</code></pre></div>
+
+<h2 id="2">2. 上下文窗口探测</h2>
+<h3 id="21-10">2.1 解析链（10 级优先级）</h3>
+<p><code>get_model_context_length()</code> 函数（<code>agent/model_metadata.py</code> L841-968）实现了一套 10 级解析链：</p>
+<table>
+<thead>
+<tr>
+<th>优先级</th>
+<th>来源</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>用户配置 <code>config_context_length</code></td>
+<td>用户显式设置，优先级最高</td>
+</tr>
+<tr>
+<td>1</td>
+<td>持久化磁盘缓存</td>
+<td><code>~/.hermes/context_length_cache.yaml</code>，model@base_url 为键</td>
+</tr>
+<tr>
+<td>2</td>
+<td>自定义端点 <code>/models</code> API</td>
+<td>仅针对未知自定义端点，避免已知 provider 误报</td>
+</tr>
+<tr>
+<td>3</td>
+<td>本地服务器查询</td>
+<td>Ollama <code>/api/show</code>、LM Studio <code>/api/v1/models</code>、vLLM <code>/v1/models/{model}</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td>Anthropic <code>/v1/models</code></td>
+<td>仅限 <code>sk-ant-api*</code> 密钥，OAuth token 返回 401</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Provider 感知查询</td>
+<td>通过 URL 推断 provider → models.dev 查询</td>
+</tr>
+<tr>
+<td>6</td>
+<td>OpenRouter 实时 API</td>
+<td>通用回退</td>
+</tr>
+<tr>
+<td>7</td>
+<td>硬编码默认值</td>
+<td><code>DEFAULT_CONTEXT_LENGTHS</code> 字典，按模型家族前缀匹配</td>
+</tr>
+<tr>
+<td>8</td>
+<td>本地服务器兜底</td>
+<td>作为最后手段再次尝试本地查询</td>
+</tr>
+<tr>
+<td>9</td>
+<td>全局默认</td>
+<td>128K tokens</td>
+</tr>
+</tbody>
+</table>
+<h3 id="22">2.2 关键设计细节</h3>
+<p><strong>Provider 前缀剥离</strong>（L24-62）：处理 <code>local:model-name</code> 等前缀，同时保留 Ollama 的 <code>model:tag</code> 格式（如 <code>qwen3.5:27b</code>），使用正则 <code>_OLLAMA_TAG_PATTERN</code> 区分。</p>
+<p><strong>上下文探测降级</strong>（L74-80）：定义了 5 级降级梯度 <code>CONTEXT_PROBE_TIERS = [128K, 64K, 32K, 16K, 8K]</code>，当 API 返回上下文超限错误时逐级降低。</p>
+<p><strong>错误解析</strong>（L577-602）：<code>parse_context_limit_from_error()</code> 从 API 错误消息中提取实际上下文限制，支持多种格式模式。</p>
+<h3 id="23-modelsdev">2.3 Models.dev 注册表</h3>
+<p><code>agent/models_dev.py</code> 集成了 models.dev 社区数据库，采用四级数据加载策略（L11-18）：</p>
+<ol>
+<li><strong>内存缓存</strong>（1 小时 TTL）</li>
+<li><strong>磁盘缓存</strong>（<code>~/.hermes/models_dev_cache.json</code>）</li>
+<li><strong>网络请求</strong>（<code>https://models.dev/api.json</code>）</li>
+<li><strong>后台刷新</strong>（60 分钟间隔）</li>
+</ol>
+<p>提供 <code>ModelInfo</code> 数据类（L48-125），包含上下文窗口、最大输出、成本、能力（reasoning/tools/vision/PDF/audio）、模态等完整元数据。支持 Hermes provider ID 到 models.dev ID 的映射（<code>PROVIDER_TO_MODELS_DEV</code>，L147-173），覆盖 25+ 个 provider。</p>
+<h2 id="3">3. 上下文压缩机制</h2>
+<h3 id="31">3.1 压缩触发</h3>
+<p>ContextCompressor 的触发条件有两种：</p>
+<ol>
+<li><strong>后置检查</strong>（<code>should_compress()</code>，L131-134）：基于 API 返回的 <code>prompt_tokens</code> 实际值</li>
+<li><strong>预检查</strong>（<code>should_compress_preflight()</code>，L136-139）：基于 <code>estimate_messages_tokens_rough()</code> 的粗略估算（4 字符/token），在 API 调用前判断</li>
+</ol>
+<p>在 <code>run_agent.py</code> 中的触发流程（L7122-7152）：
+- 每次 API 调用前执行 preflight 检查
+- 如果估算 token 数超过阈值，先执行压缩再发送请求
+- API 调用后根据实际 usage 更新压缩器状态</p>
+<h3 id="32-5">3.2 压缩算法（5 阶段）</h3>
+<p><code>compress()</code> 方法（L565-696）实现了 5 阶段压缩算法：</p>
+<p><strong>阶段 1：工具结果裁剪</strong>（L155-185，零成本预处理）
+- 保护最近 <code>protect_last_n * 3</code> 条消息
+- 仅裁剪超过 200 字符的旧 tool result
+- 替换为占位符 <code>[Old tool output cleared to save context space]</code>
+- 无 LLM 调用，纯字符串操作</p>
+<p><strong>阶段 2：确定压缩边界</strong>
+- <strong>头部保护</strong>：保护前 <code>protect_first_n</code>（默认 3）条消息（系统提示 + 首轮对话）
+- <strong>尾部保护</strong>：<code>_find_tail_cut_by_tokens()</code>（L510-559）基于 token 预算动态计算，而非固定消息数
+  - 预算 = <code>threshold_tokens * summary_target_ratio</code>（默认 10% 上下文）
+  - 向后遍历累计 token，直到达到预算
+  - 确保至少保护 <code>protect_last_n</code>（默认 20）条消息
+  - 自动对齐边界避免切断 tool_call/result 组</p>
+<p><strong>阶段 3：LLM 结构化摘要</strong>（L253-389）
+- 使用辅助 LLM（cheap/fast 模型）生成结构化摘要
+- 首次压缩使用从头摘要模板，后续压缩使用<strong>迭代更新</strong>模板
+- 摘要结构包含 7 个部分：Goal、Constraints &amp; Preferences、Progress（Done/In Progress/Blocked）、Key Decisions、Relevant Files、Next Steps、Critical Context
+- 摘要 token 预算基于阈值而非被压缩内容量（L93-101）：<code>target_tokens = threshold_tokens × summary_target_ratio</code>（threshold_tokens = context_length × threshold_percent），<code>max_summary_tokens = min(context_length × 0.05, 12000)</code>。预算与上下文窗口阈值成比例，而非与被压缩内容量成比例</p>
+<p><strong>阶段 4：消息组装</strong>（L635-679）
+- 智能选择摘要消息的 role（user/assistant），避免与相邻消息角色冲突
+- 首次压缩时在系统提示中追加压缩通知</p>
+<p><strong>阶段 5：工具对完整性修复</strong>（L412-470，<code>_sanitize_tool_pairs()</code>）
+- 删除孤立的 tool result（其对应 tool_call 已被压缩）
+- 为孤立的 tool_call 插入存根 result
+- 确保 API 不会收到不匹配的 ID</p>
+<h3 id="33">3.3 序列化策略</h3>
+<p><code>_serialize_for_summary()</code>（L202-251）在喂给摘要 LLM 前对消息进行序列化：
+- Tool result：保留最多 3000 字符（head 2000 + tail 800）
+- Assistant 消息：包含工具调用名称和参数（参数截断到 500 字符）
+- 所有角色消息：统一截断到 3000 字符</p>
+<h3 id="34">3.4 迭代摘要更新</h3>
+<p>关键创新点（L275-315）：当 <code>_previous_summary</code> 存在时，不再从头摘要，而是生成迭代更新。提示 LLM：
+- 保留已有信息中仍相关的部分
+- 添加新进展
+- 将"进行中"移至"已完成"
+- 仅删除明确过时的信息</p>
+<p>这避免了多次压缩后信息丢失的问题。</p>
+<h3 id="35">3.5 错误处理与冷却</h3>
+<p>摘要生成失败时（L374-389）：
+- 设置 600 秒冷却期（<code>_SUMMARY_FAILURE_COOLDOWN_SECONDS</code>）
+- 冷却期间跳过摘要，直接丢弃中间轮次
+- 区分 <code>RuntimeError</code>（无 provider 可用）和通用异常</p>
+<h2 id="4-token">4. Token 估算</h2>
+<h3 id="41">4.1 粗略估算</h3>
+<p><code>model_metadata.py</code> 提供两个粗略估算函数：</p>
+<ul>
+<li><code>estimate_tokens_rough()</code>（L971-975）：<code>len(text) // 4</code></li>
+<li><code>estimate_messages_tokens_rough()</code>（L978-981）：<code>sum(len(str(msg))) // 4</code></li>
+<li><code>estimate_request_tokens_rough()</code>（L984-999）：包含系统提示 + 消息 + 工具 schema 的完整估算</li>
+</ul>
+<h3 id="42">4.2 压缩器内部估算</h3>
+<p><code>_find_tail_cut_by_tokens()</code> 中使用 <code>_CHARS_PER_TOKEN = 4</code>（L49）进行逐消息估算，额外计算工具调用参数的 token 占用。</p>
+<h2 id="5-prompt-caching">5. Prompt Caching</h2>
+<h3 id="51-system_and_3">5.1 策略：system_and_3</h3>
+<p><code>agent/prompt_caching.py</code> 实现了 Anthropic 的 <code>system_and_3</code> 缓存策略（L41-72）：</p>
+<ul>
+<li>最多使用 4 个 <code>cache_control</code> 断点（Anthropic 限制）</li>
+<li>断点 1：系统提示（跨所有轮次稳定）</li>
+<li>断点 2-4：最后 3 条非系统消息（滚动窗口）</li>
+<li>支持 <code>5m</code>（默认）和 <code>1h</code> TTL</li>
+<li>对消息进行深拷贝，避免修改原始数据</li>
+</ul>
+<h3 id="52-cache_control">5.2 cache_control 注入</h3>
+<p><code>_apply_cache_marker()</code> 函数（L15-38）处理多种消息格式：
+- <code>tool</code> 角色：在 native Anthropic 模式下直接在消息级别添加
+- <code>None</code>/空内容：在消息级别添加
+- 字符串内容：转换为 <code>[{"type": "text", "text": ..., "cache_control": ...}]</code> 列表格式
+- 列表内容：在最后一个元素上添加</p>
+<h3 id="53">5.3 激活条件</h3>
+<p>在 <code>run_agent.py</code> 中（L663），prompt caching 仅在以下条件下激活：
+- OpenRouter + Claude 模型
+- 或原生 Anthropic API</p>
+<h3 id="54">5.4 成本节省</h3>
+<p>文档声称可减少约 75% 的输入 token 成本（L3），通过缓存对话前缀避免重复处理。</p>
+<h2 id="6">6. 上下文溢出处理</h2>
+<h3 id="61-413">6.1 413 错误处理</h3>
+<p><code>run_agent.py</code> 中（L8078-8218）实现了对 413 Payload Too Large 的专门处理：
+- 检测 HTTP 413 状态码和相关错误消息
+- 触发即时压缩尝试
+- 支持多次压缩重试（有最大尝试次数限制）
+- 如果所有压缩尝试失败，返回错误信息</p>
+<h3 id="62">6.2 上下文探测降级</h3>
+<p>当 API 返回上下文超限错误时，<code>ContextCompressor</code> 的 <code>_context_probed</code> 标志会被设置（L113），触发上下文长度降级到下一个探测梯度。</p>
+<h3 id="63">6.3 会话重置</h3>
+<p><code>run_agent.py</code> L1259-1293 中，会话重置时清除压缩器的所有状态：
+- token 计数器归零
+- 压缩次数归零
+- 上下文探测标志重置
+- 历史摘要清除</p>
+<h2 id="7">7. 配置体系</h2>
+<p>通过 <code>config.yaml</code> 的 <code>compression</code> 段配置：</p>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>默认值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>enabled</code></td>
+<td><code>true</code></td>
+<td>是否启用自动压缩</td>
+</tr>
+<tr>
+<td><code>threshold</code></td>
+<td><code>0.50</code></td>
+<td>压缩触发阈值（上下文窗口的百分比）</td>
+</tr>
+<tr>
+<td><code>summary_model</code></td>
+<td><code>null</code></td>
+<td>摘要用的辅助模型</td>
+</tr>
+<tr>
+<td><code>target_ratio</code></td>
+<td><code>0.20</code></td>
+<td>摘要目标比例</td>
+</tr>
+<tr>
+<td><code>protect_last_n</code></td>
+<td><code>20</code></td>
+<td>最少保护的尾部消息数</td>
+</tr>
+</tbody>
+</table>
+<h2 id="8">8. 核心优势与局限</h2>
+<h3 id="_1">优势</h3>
+<ol>
+<li><strong>10 级上下文窗口解析链</strong>：从用户配置到 models.dev 再到全局默认，极高的模型覆盖率</li>
+<li><strong>迭代摘要更新</strong>：多次压缩不会丢失早期信息，摘要质量随对话推进而提升</li>
+<li><strong>零成本预处理</strong>：工具结果裁剪无需 LLM 调用，降低压缩延迟</li>
+<li><strong>工具对完整性保证</strong>：自动修复 API 要求的 tool_call/result 配对</li>
+<li><strong>Prompt Caching</strong>：有效降低多轮对话的 API 成本</li>
+</ol>
+<h3 id="_2">局限</h3>
+<ol>
+<li><strong>Token 估算粗糙</strong>：仅使用 <code>4 字符/token</code> 的固定比例，对 CJK 内容不准确</li>
+<li><strong>单级压缩策略</strong>：没有分级触发（soft/hard），所有超限场景使用相同算法</li>
+<li><strong>无 Prompt Caching 收益反馈</strong>：无法根据缓存命中率调整策略</li>
+<li><strong>摘要模型依赖</strong>：如果辅助 LLM 不可用，只能直接丢弃中间轮次</li>
+</ol>
+</body>
+</html>

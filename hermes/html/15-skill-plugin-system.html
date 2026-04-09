@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>15-skill-plugin-system</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1 id="hermes-agent-skillplugin">Hermes-Agent Skill/Plugin 生态深度分析</h1>
+<h2 id="1">1. 架构总览</h2>
+<p>Hermes-Agent 的扩展能力由两套独立但互补的系统组成：</p>
+<table>
+<thead>
+<tr>
+<th>系统</th>
+<th>定位</th>
+<th>存储位置</th>
+<th>核心文件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Skill 系统</strong></td>
+<td>Agent 的"程序性记忆"——面向 LLM 的可重用任务指南</td>
+<td><code>~/.hermes/skills/</code></td>
+<td><code>tools/skills_tool.py</code>, <code>tools/skills_hub.py</code></td>
+</tr>
+<tr>
+<td><strong>Plugin 系统</strong></td>
+<td>代码级扩展——注册新工具、Hook 和 CLI 命令</td>
+<td><code>~/.hermes/plugins/</code></td>
+<td><code>hermes_cli/plugins.py</code>, <code>hermes_cli/plugins_cmd.py</code></td>
+</tr>
+</tbody>
+</table>
+<p>两者的核心区别：Skill 是<strong>纯 Markdown 文本</strong>，由 LLM 在 prompt 中消费；Plugin 是<strong>可执行 Python 代码</strong>，在 Agent 运行时中执行。</p>
+<hr />
+<h2 id="2-skill">2. Skill 系统详解</h2>
+<h3 id="21-skillmd">2.1 SKILL.md 格式规范</h3>
+<p>Skill 的核心是一个 <code>SKILL.md</code> 文件，采用 YAML frontmatter + Markdown body 的结构。</p>
+<p><strong>格式定义</strong> (<code>tools/skills_tool.py</code> L28-47):</p>
+<div class="codehilite"><pre><span></span><code><span class="nn">---</span><span class="w"></span>
+<span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">skill-name</span><span class="w">              </span><span class="c1"># 必填，最大 64 字符</span><span class="w"></span>
+<span class="nt">description</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Brief description</span><span class="w"> </span><span class="c1"># 必填，最大 1024 字符</span><span class="w"></span>
+<span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1.0.0</span><span class="w">                </span><span class="c1"># 可选</span><span class="w"></span>
+<span class="nt">license</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">MIT</span><span class="w">                  </span><span class="c1"># 可选（agentskills.io 标准）</span><span class="w"></span>
+<span class="nt">platforms</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">macos</span><span class="p p-Indicator">]</span><span class="w">            </span><span class="c1"># 可选——限制特定 OS 平台</span><span class="w"></span>
+<span class="nt">prerequisites</span><span class="p">:</span><span class="w">                </span><span class="c1"># 可选——运行时依赖</span><span class="w"></span>
+<span class="w">  </span><span class="nt">env_vars</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">API_KEY</span><span class="p p-Indicator">]</span><span class="w"></span>
+<span class="w">  </span><span class="nt">commands</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">curl</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">jq</span><span class="p p-Indicator">]</span><span class="w"></span>
+<span class="nt">compatibility</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Requires X</span><span class="w">     </span><span class="c1"># 可选（agentskills.io 标准）</span><span class="w"></span>
+<span class="nt">metadata</span><span class="p">:</span><span class="w">                     </span><span class="c1"># 可选，任意键值</span><span class="w"></span>
+<span class="w">  </span><span class="nt">hermes</span><span class="p">:</span><span class="w"></span>
+<span class="w">    </span><span class="nt">tags</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">fine-tuning</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">llm</span><span class="p p-Indicator">]</span><span class="w"></span>
+<span class="w">    </span><span class="nt">related_skills</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">peft</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">lora</span><span class="p p-Indicator">]</span><span class="w"></span>
+<span class="w">    </span><span class="nt">config</span><span class="p">:</span><span class="w">                   </span><span class="c1"># Skill 声明的配置变量</span><span class="w"></span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">key</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">wiki.path</span><span class="w"></span>
+<span class="w">        </span><span class="nt">description</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Path to wiki</span><span class="w"></span>
+<span class="w">        </span><span class="nt">default</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;~/wiki&quot;</span><span class="w"></span>
+<span class="w">    </span><span class="nt">fallback_for_toolsets</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[]</span><span class="w"> </span><span class="c1"># 条件激活</span><span class="w"></span>
+<span class="w">    </span><span class="nt">requires_toolsets</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[]</span><span class="w"></span>
+<span class="w">    </span><span class="nt">fallback_for_tools</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[]</span><span class="w"></span>
+<span class="w">    </span><span class="nt">requires_tools</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[]</span><span class="w"></span>
+<span class="nn">---</span><span class="w"></span>
+
+<span class="c1"># Skill Title</span><span class="w"></span>
+
+<span class="l l-Scalar l-Scalar-Plain">Full instructions and content here...</span><span class="w"></span>
+</code></pre></div>
+
+<p><strong>关键设计要点</strong>：</p>
+<ol>
+<li><strong>渐进式披露架构</strong> (<code>tools/skills_tool.py</code> L9-13):</li>
+<li>Tier 0: <code>skills_categories()</code> — 仅返回分类名和描述</li>
+<li>Tier 1: <code>skills_list()</code> — 仅返回 name + description（最小 token）</li>
+<li>Tier 2: <code>skill_view()</code> — 加载完整内容</li>
+<li>
+<p>Tier 3: <code>skill_view(file_path=...)</code> — 按需加载关联文件</p>
+</li>
+<li>
+<p><strong>平台过滤</strong> (<code>agent/skill_utils.py</code> L92-115): 通过 <code>platforms</code> 字段限制 Skill 在特定 OS 上可用，使用 <code>sys.platform</code> 前缀匹配。</p>
+</li>
+<li>
+<p><strong>条件激活</strong> (<code>agent/skill_utils.py</code> L240-254): 通过 <code>metadata.hermes</code> 下的 <code>fallback_for_toolsets</code>、<code>requires_toolsets</code> 等字段实现工具集条件绑定。</p>
+</li>
+<li>
+<p><strong>Skill 配置变量</strong> (<code>agent/skill_utils.py</code> L260-316): Skill 可声明需要的配置项，存储在 <code>config.yaml</code> 的 <code>skills.config.*</code> 路径下，运行时自动解析注入。</p>
+</li>
+</ol>
+<h3 id="22-skill">2.2 Skill 目录结构</h3>
+<p><strong>标准 Skill 目录</strong> (<code>tools/skill_manager_tool.py</code> L22-32):</p>
+<div class="codehilite"><pre><span></span><code>~/.hermes/skills/
+├── my-skill/
+│   ├── SKILL.md           # 主指令（必需）
+│   ├── references/        # 支持文档
+│   ├── templates/         # 输出模板
+│   ├── scripts/           # 脚本
+│   └── assets/            # 附加文件（agentskills.io 标准）
+└── category-name/         # 分类子目录
+    └── another-skill/
+        └── SKILL.md
+</code></pre></div>
+
+<p><strong>支持文件的受控路径</strong> (<code>tools/skill_manager_tool.py</code> L93): 仅允许 <code>references</code>、<code>templates</code>、<code>scripts</code>、<code>assets</code> 四个子目录。</p>
+<h3 id="23-skill">2.3 Skill 发现与加载</h3>
+<h4 id="231-skills">2.3.1 Skills 目录扫描</h4>
+<p><strong>技能发现</strong> (<code>tools/skills_tool.py</code> L520-594 <code>_find_all_skills()</code>):
+- 扫描 <code>~/.hermes/skills/</code> 和 <code>skills.external_dirs</code> 配置的外部目录
+- 跳过 <code>.git</code>、<code>.github</code>、<code>.hub</code> 目录
+- 过滤平台不兼容和已禁用的 Skill
+- 本地目录优先于外部目录（同名去重）
+- 仅读取 SKILL.md 前 4000 字符（性能优化）</p>
+<h4 id="232-skills">2.3.2 外部 Skills 目录</h4>
+<p><strong>配置方式</strong> (<code>agent/skill_utils.py</code> L173-223):</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ~/.hermes/config.yaml</span><span class="w"></span>
+<span class="nt">skills</span><span class="p">:</span><span class="w"></span>
+<span class="w">  </span><span class="nt">external_dirs</span><span class="p">:</span><span class="w"></span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">~/my-custom-skills</span><span class="w"></span>
+<span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${TEAM_SKILLS_DIR}</span><span class="w"></span>
+</code></pre></div>
+
+<p>支持 <code>~</code> 和环境变量展开，自动去重，跳过不存在的目录。</p>
+<h4 id="233">2.3.3 斜杠命令</h4>
+<p><strong>Skill 注册为斜杠命令</strong> (<code>agent/skill_commands.py</code> L200-262 <code>scan_skill_commands()</code>):
+- 扫描所有 Skill，将 name 转为 <code>/hyphen-case</code> 命令
+- 自动处理 <code>_</code> 和 <code>-</code> 的互换（兼容 Telegram bot 命令规则）
+- 支持 CLI 和 Gateway 两种调用表面</p>
+<p><strong>命令调用流程</strong> (<code>agent/skill_commands.py</code> L291-326 <code>build_skill_invocation_message()</code>):
+1. 从命令 key 查找 Skill 信息
+2. 加载 Skill payload（解析 frontmatter、检查依赖）
+3. 构建包含激活提示、内容、配置、支持文件列表的完整消息
+4. 作为 <strong>user message</strong> 注入到对话中（非 system prompt，以保护 prompt cache 稳定性）</p>
+<h3 id="24-skill-agent">2.4 Skill 管理工具（Agent 自主操作）</h3>
+<p><strong><code>skill_manage</code> 工具</strong> (<code>tools/skill_manager_tool.py</code> L569-627):</p>
+<p>Agent 可自主执行 6 种操作：</p>
+<table>
+<thead>
+<tr>
+<th>Action</th>
+<th>说明</th>
+<th>关键验证</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>create</code></td>
+<td>创建新 Skill</td>
+<td>名称合法性、frontmatter 完整性、全局查重、安全扫描</td>
+</tr>
+<tr>
+<td><code>edit</code></td>
+<td>完全重写 SKILL.md</td>
+<td>frontmatter 验证、安全扫描、失败回滚</td>
+</tr>
+<tr>
+<td><code>patch</code></td>
+<td>定向查找替换</td>
+<td>模糊匹配引擎、唯一性检查、frontmatter 完整性</td>
+</tr>
+<tr>
+<td><code>delete</code></td>
+<td>删除 Skill</td>
+<td>清理空分类目录</td>
+</tr>
+<tr>
+<td><code>write_file</code></td>
+<td>添加/覆盖支持文件</td>
+<td>路径验证（仅允许 4 个子目录）、安全扫描</td>
+</tr>
+<tr>
+<td><code>remove_file</code></td>
+<td>移除支持文件</td>
+<td>路径验证、列出可用文件</td>
+</tr>
+</tbody>
+</table>
+<p><strong>核心安全机制</strong>：
+- 每次写操作后触发安全扫描 (<code>_security_scan_skill()</code>)
+- 安全扫描失败时自动回滚到原始内容
+- 原子写入 (<code>_atomic_write_text()</code>，L243-272) 防止中途崩溃导致文件损坏</p>
+<p><strong>Schema 设计亮点</strong> (<code>tools/skill_manager_tool.py</code> L634-721):
+- description 中嵌入了详细的"何时创建/更新"决策指南
+- 鼓励 Agent 在完成困难任务后主动提议保存为 Skill
+- 引导 Agent 使用 <code>patch</code> 而非 <code>edit</code>（更安全）</p>
+<h3 id="25-skill">2.5 Skill 同步机制</h3>
+<p><strong>Manifest-based Seeding</strong> (<code>tools/skills_sync.py</code>):</p>
+<p>将仓库内置 <code>skills/</code> 目录的技能同步到 <code>~/.hermes/skills/</code>。</p>
+<p><strong>核心逻辑</strong> (L155-280 <code>sync_skills()</code>):</p>
+<table>
+<thead>
+<tr>
+<th>场景</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>新 Skill（不在 manifest 中）</td>
+<td>复制到用户目录，记录 origin hash</td>
+</tr>
+<tr>
+<td>已有且用户未修改</td>
+<td>如果内置版本有更新，安全更新</td>
+</tr>
+<tr>
+<td>已有且用户已修改</td>
+<td><strong>跳过</strong>，不覆盖用户修改</td>
+</tr>
+<tr>
+<td>用户已删除（manifest 中有但磁盘上无）</td>
+<td>尊重用户选择，不重新添加</td>
+</tr>
+<tr>
+<td>内置中已移除</td>
+<td>从 manifest 清理</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Manifest 格式</strong> (v2): <code>skill_name:origin_hash</code>（基于 MD5 的变更检测），支持从 v1 自动迁移。</p>
+<p><strong>安全性</strong>：
+- 更新前备份 (<code>.bak</code>)，失败时恢复
+- 原子写入 manifest 文件（temp file + <code>os.replace()</code>）</p>
+<h3 id="26-skills-hub">2.6 Skills Hub（在线仓库系统）</h3>
+<p><strong>架构</strong> (<code>tools/skills_hub.py</code>):</p>
+<div class="codehilite"><pre><span></span><code>SkillSource (ABC)
+├── OptionalSkillSource    — 仓库内 optional-skills/ 目录
+├── GitHubSource           — GitHub 仓库 (Contents/Trees API)
+├── WellKnownSkillSource   — /.well-known/skills/ 端点
+├── ClawHubSource          — ClawHub 社区索引
+├── ClaudeMarketplaceSource — Claude Marketplace API
+└── LobeHubSource          — LobeHub 索引
+</code></pre></div>
+
+<h4 id="261-github">2.6.1 GitHub 源适配器</h4>
+<p><strong>默认 Taps</strong> (<code>tools/skills_hub.py</code> L287-292):</p>
+<div class="codehilite"><pre><span></span><code><span class="n">DEFAULT_TAPS</span> <span class="o">=</span> <span class="p">[</span>
+    <span class="p">{</span><span class="s2">&quot;repo&quot;</span><span class="p">:</span> <span class="s2">&quot;openai/skills&quot;</span><span class="p">,</span> <span class="s2">&quot;path&quot;</span><span class="p">:</span> <span class="s2">&quot;skills/&quot;</span><span class="p">},</span>
+    <span class="p">{</span><span class="s2">&quot;repo&quot;</span><span class="p">:</span> <span class="s2">&quot;anthropics/skills&quot;</span><span class="p">,</span> <span class="s2">&quot;path&quot;</span><span class="p">:</span> <span class="s2">&quot;skills/&quot;</span><span class="p">},</span>
+    <span class="p">{</span><span class="s2">&quot;repo&quot;</span><span class="p">:</span> <span class="s2">&quot;VoltAgent/awesome-agent-skills&quot;</span><span class="p">,</span> <span class="s2">&quot;path&quot;</span><span class="p">:</span> <span class="s2">&quot;skills/&quot;</span><span class="p">},</span>
+    <span class="p">{</span><span class="s2">&quot;repo&quot;</span><span class="p">:</span> <span class="s2">&quot;garrytan/gstack&quot;</span><span class="p">,</span> <span class="s2">&quot;path&quot;</span><span class="p">:</span> <span class="s2">&quot;&quot;</span><span class="p">},</span>
+<span class="p">]</span>
+</code></pre></div>
+
+<p><strong>认证层级</strong> (<code>tools/skills_hub.py</code> L129-201 <code>GitHubAuth</code>):
+1. <code>GITHUB_TOKEN</code> / <code>GH_TOKEN</code> 环境变量
+2. <code>gh auth token</code> CLI
+3. GitHub App JWT + Installation Token
+4. 匿名（60 req/hr）</p>
+<p><strong>下载优化</strong>:
+- 优先使用 Git Trees API（单次请求获取整个目录树，L460-507）
+- 回退到递归 Contents API（L509-541）
+- 本地索引缓存 (<code>INDEX_CACHE_DIR</code>，TTL 1 小时)</p>
+<h4 id="262-wellknownskillsource">2.6.2 WellKnownSkillSource</h4>
+<p><strong>标准端点</strong> (<code>tools/skills_hub.py</code> L663-666):
+- 遵循 <code>/.well-known/skills/index.json</code> 标准
+- 支持从任意域名发现 Skill</p>
+<h4 id="263">2.6.3 信任等级</h4>
+<p><strong>三级信任模型</strong> (<code>tools/skills_hub.py</code> L64-75 <code>SkillMeta</code>):
+- <code>builtin</code>: 内置 Skill，不扫描
+- <code>trusted</code>: <code>openai/skills</code> 和 <code>anthropics/skills</code>
+- <code>community</code>: 其他所有来源</p>
+<h4 id="264">2.6.4 安装流程</h4>
+<p><strong>Hub 安装流程</strong> (<code>hermes_cli/skills_hub.py</code>):
+1. 搜索/浏览注册表
+2. <code>inspect</code> 预览 Skill 元数据
+3. <code>fetch</code> 下载 Skill Bundle
+4. 安全扫描 (Skills Guard)
+5. 写入 <code>~/.hermes/skills/</code>
+6. 记录到 Lock 文件（来源追溯）</p>
+<p><strong>状态管理</strong>:
+- <code>HUB_DIR = ~/.hermes/skills/.hub/</code>
+- <code>lock.json</code> — 已安装 Hub Skill 的来源追溯
+- <code>quarantine/</code> — 隔离目录
+- <code>audit.log</code> — 审计日志
+- <code>taps.json</code> — 自定义 Taps
+- <code>index-cache/</code> — 索引缓存</p>
+<h3 id="27-skills-guard">2.7 Skills Guard（安全守卫）</h3>
+<p><strong>核心机制</strong> (<code>tools/skills_guard.py</code>):</p>
+<h4 id="271">2.7.1 威胁模式库</h4>
+<p><strong>12 大类，120+ 正则规则</strong> (L82-484):</p>
+<table>
+<thead>
+<tr>
+<th>类别</th>
+<th>示例</th>
+<th>严重级别</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>exfiltration</code></td>
+<td><code>curl</code> 泄露密钥、DNS 外泄、Markdown 图片外泄</td>
+<td>critical/high</td>
+</tr>
+<tr>
+<td><code>injection</code></td>
+<td>忽略指令、角色劫持、DAN 越狱、隐藏 HTML</td>
+<td>critical/high</td>
+</tr>
+<tr>
+<td><code>destructive</code></td>
+<td><code>rm -rf /</code>、格式化文件系统、系统覆写</td>
+<td>critical</td>
+</tr>
+<tr>
+<td><code>persistence</code></td>
+<td>crontab、shell rc 修改、SSH 后门、systemd 服务、Agent 配置篡改</td>
+<td>medium/critical</td>
+</tr>
+<tr>
+<td><code>network</code></td>
+<td>反向 Shell、隧道服务、硬编码 IP</td>
+<td>critical/high</td>
+</tr>
+<tr>
+<td><code>obfuscation</code></td>
+<td>base64 解码管道、eval/exec、chr 构建</td>
+<td>high/medium</td>
+</tr>
+<tr>
+<td><code>execution</code></td>
+<td>subprocess、os.system、os.popen、child_process</td>
+<td>medium/high</td>
+</tr>
+<tr>
+<td><code>traversal</code></td>
+<td>路径穿越、/etc/passwd、/proc 访问</td>
+<td>medium/critical</td>
+</tr>
+<tr>
+<td><code>mining</code></td>
+<td>加密货币挖矿、矿池指标</td>
+<td>critical/medium</td>
+</tr>
+<tr>
+<td><code>supply_chain</code></td>
+<td>curl 管道到 shell、未固定版本安装</td>
+<td>critical/medium</td>
+</tr>
+<tr>
+<td><code>privilege_escalation</code></td>
+<td>sudo、setuid/setgid、NOPASSWD</td>
+<td>high/critical</td>
+</tr>
+<tr>
+<td><code>credential_exposure</code></td>
+<td>硬编码密钥、私钥泄露、GitHub/OpenAI/AWS Key</td>
+<td>critical</td>
+</tr>
+</tbody>
+</table>
+<p>额外检测：
+- 硬编码凭证（GitHub/OpenAI/Anthropic/AWS Key 模式）
+- 特权提升（sudo、setuid）
+- Agent 配置持久化（修改 AGENTS.md、.cursorrules 等）
+- 不可见 Unicode 字符（零宽空格、RTL 覆盖等，L504-523）
+- 可执行二进制文件
+- 结构性异常（文件数量 &gt;50、总大小 &gt;1MB、单文件 &gt;256KB）</p>
+<h4 id="272">2.7.2 信任感知安装策略</h4>
+<p><strong>策略矩阵</strong> (<code>tools/skills_guard.py</code> L41-47):</p>
+<div class="codehilite"><pre><span></span><code><span class="n">INSTALL_POLICY</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="c1">#                  safe      caution    dangerous</span>
+    <span class="s2">&quot;builtin&quot;</span><span class="p">:</span>       <span class="p">(</span><span class="s2">&quot;allow&quot;</span><span class="p">,</span>  <span class="s2">&quot;allow&quot;</span><span class="p">,</span>   <span class="s2">&quot;allow&quot;</span><span class="p">),</span>
+    <span class="s2">&quot;trusted&quot;</span><span class="p">:</span>       <span class="p">(</span><span class="s2">&quot;allow&quot;</span><span class="p">,</span>  <span class="s2">&quot;allow&quot;</span><span class="p">,</span>   <span class="s2">&quot;block&quot;</span><span class="p">),</span>
+    <span class="s2">&quot;community&quot;</span><span class="p">:</span>     <span class="p">(</span><span class="s2">&quot;allow&quot;</span><span class="p">,</span>  <span class="s2">&quot;block&quot;</span><span class="p">,</span>   <span class="s2">&quot;block&quot;</span><span class="p">),</span>
+    <span class="s2">&quot;agent-created&quot;</span><span class="p">:</span> <span class="p">(</span><span class="s2">&quot;allow&quot;</span><span class="p">,</span>  <span class="s2">&quot;allow&quot;</span><span class="p">,</span>   <span class="s2">&quot;ask&quot;</span><span class="p">),</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<ul>
+<li><code>builtin</code>: 完全信任</li>
+<li><code>trusted</code>: 仅阻止 dangerous</li>
+<li><code>community</code>: 任何异常即阻止</li>
+<li><code>agent-created</code>: dangerous 时请求用户确认</li>
+</ul>
+<h4 id="273">2.7.3 扫描报告</h4>
+<p>生成结构化报告包含：
+- 判定结果（safe/caution/dangerous）
+- 发现列表（pattern_id、severity、category、file、line、match）
+- 扫描时间戳和内容哈希</p>
+<h3 id="28-skill">2.8 Skill 启用/禁用配置</h3>
+<p><strong>配置系统</strong> (<code>hermes_cli/skills_config.py</code>):</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># ~/.hermes/config.yaml</span><span class="w"></span>
+<span class="nt">skills</span><span class="p">:</span><span class="w"></span>
+<span class="w">  </span><span class="nt">disabled</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">skill-a</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">skill-b</span><span class="p p-Indicator">]</span><span class="w">          </span><span class="c1"># 全局禁用列表</span><span class="w"></span>
+<span class="w">  </span><span class="nt">platform_disabled</span><span class="p">:</span><span class="w">                    </span><span class="c1"># 平台特定覆盖</span><span class="w"></span>
+<span class="w">    </span><span class="nt">telegram</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">skill-c</span><span class="p p-Indicator">]</span><span class="w"></span>
+<span class="w">    </span><span class="nt">cli</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[]</span><span class="w"></span>
+</code></pre></div>
+
+<p><strong>支持的平台</strong> (L19-33): CLI、Telegram、Discord、Slack、WhatsApp、Signal、Email、HomeAssistant、Mattermost、Matrix、DingTalk、Feishu、WeCom、Webhook</p>
+<p><strong>交互界面</strong>: 通过 <code>hermes skills</code> 命令进入 curses TUI 界面，支持：
+- 按平台选择
+- 逐个 Skill 切换
+- 按分类批量切换</p>
+<hr />
+<h2 id="3-plugin">3. Plugin 系统详解</h2>
+<h3 id="31-plugin">3.1 Plugin 发现源</h3>
+<p><strong>三种来源</strong> (<code>hermes_cli/plugins.py</code> L1-26):</p>
+<table>
+<thead>
+<tr>
+<th>来源</th>
+<th>路径</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>用户插件</td>
+<td><code>~/.hermes/plugins/&lt;name&gt;/</code></td>
+<td>默认扫描</td>
+</tr>
+<tr>
+<td>项目插件</td>
+<td><code>./.hermes/plugins/&lt;name&gt;/</code></td>
+<td>需要 <code>HERMES_ENABLE_PROJECT_PLUGINS</code> 环境变量开启</td>
+</tr>
+<tr>
+<td>Pip 插件</td>
+<td><code>hermes_agent.plugins</code> entry-point</td>
+<td>setuptools 标准</td>
+</tr>
+</tbody>
+</table>
+<h3 id="32-plugin-manifest">3.2 Plugin Manifest</h3>
+<p><strong>plugin.yaml 格式</strong> (<code>hermes_cli/plugins.py</code> L93-106):</p>
+<div class="codehilite"><pre><span></span><code><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-plugin</span><span class="w"></span>
+<span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;1.0.0&quot;</span><span class="w"></span>
+<span class="nt">description</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Plugin</span><span class="nv"> </span><span class="s">description&quot;</span><span class="w"></span>
+<span class="nt">author</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Author</span><span class="nv"> </span><span class="s">Name&quot;</span><span class="w"></span>
+<span class="nt">requires_env</span><span class="p">:</span><span class="w"></span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">MY_API_KEY</span><span class="w"></span>
+<span class="w">    </span><span class="nt">description</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;API</span><span class="nv"> </span><span class="s">key</span><span class="nv"> </span><span class="s">for</span><span class="nv"> </span><span class="s">service&quot;</span><span class="w"></span>
+<span class="w">    </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;https://service.com/keys&quot;</span><span class="w"></span>
+<span class="w">    </span><span class="nt">secret</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span><span class="w"></span>
+<span class="nt">provides_tools</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">tool_name</span><span class="p p-Indicator">]</span><span class="w"></span>
+<span class="nt">provides_hooks</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">pre_tool_call</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">post_tool_call</span><span class="p p-Indicator">]</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="33-plugin">3.3 Plugin 生命周期</h3>
+<p><strong>加载流程</strong> (<code>hermes_cli/plugins.py</code> L255-290 <code>discover_and_load()</code>):
+1. 扫描三种来源的 manifest
+2. 过滤用户通过 <code>config.yaml</code> 禁用的插件
+3. 对每个 manifest 调用 <code>_load_plugin()</code>
+4. 导入 Python 模块（目录式或 entry-point 式）
+5. 调用模块的 <code>register(ctx)</code> 函数</p>
+<p><strong>注册上下文</strong> (<code>PluginContext</code>, L124-233):</p>
+<div class="codehilite"><pre><span></span><code><span class="k">class</span> <span class="nc">PluginContext</span><span class="p">:</span>
+    <span class="k">def</span> <span class="nf">register_tool</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">toolset</span><span class="p">,</span> <span class="n">schema</span><span class="p">,</span> <span class="n">handler</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+    <span class="k">def</span> <span class="nf">register_hook</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">hook_name</span><span class="p">,</span> <span class="n">callback</span><span class="p">)</span>
+    <span class="k">def</span> <span class="nf">register_cli_command</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">help</span><span class="p">,</span> <span class="n">setup_fn</span><span class="p">,</span> <span class="n">handler_fn</span><span class="p">)</span>
+    <span class="k">def</span> <span class="nf">inject_message</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">content</span><span class="p">,</span> <span class="n">role</span><span class="o">=</span><span class="s2">&quot;user&quot;</span><span class="p">)</span>
+</code></pre></div>
+
+<h3 id="34-hook">3.4 生命周期 Hook</h3>
+<p><strong>有效 Hook</strong> (<code>hermes_cli/plugins.py</code> L55-66):</p>
+<table>
+<thead>
+<tr>
+<th>Hook</th>
+<th>触发时机</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pre_tool_call</code></td>
+<td>工具调用前</td>
+</tr>
+<tr>
+<td><code>post_tool_call</code></td>
+<td>工具调用后</td>
+</tr>
+<tr>
+<td><code>pre_llm_call</code></td>
+<td>LLM 调用前</td>
+</tr>
+<tr>
+<td><code>post_llm_call</code></td>
+<td>LLM 调用后</td>
+</tr>
+<tr>
+<td><code>pre_api_request</code></td>
+<td>API 请求前</td>
+</tr>
+<tr>
+<td><code>post_api_request</code></td>
+<td>API 请求后</td>
+</tr>
+<tr>
+<td><code>on_session_start</code></td>
+<td>会话开始</td>
+</tr>
+<tr>
+<td><code>on_session_end</code></td>
+<td>会话结束</td>
+</tr>
+<tr>
+<td><code>on_session_finalize</code></td>
+<td>会话最终化</td>
+</tr>
+<tr>
+<td><code>on_session_reset</code></td>
+<td>会话重置</td>
+</tr>
+</tbody>
+</table>
+<p><strong><code>pre_llm_call</code> 特殊行为</strong> (<code>hermes_cli/plugins.py</code> L477-486):
+- 回调可返回 <code>{"context": "..."}</code> 注入上下文到 user message
+- 始终注入到 user message（不是 system prompt），保护 prompt cache 前缀
+- 注入内容是临时的，不会持久化到 session DB</p>
+<h3 id="35-plugin">3.5 Plugin 安装管理</h3>
+<p><strong>CLI 命令</strong> (<code>hermes_cli/plugins_cmd.py</code>):</p>
+<div class="codehilite"><pre><span></span><code>hermes plugins install owner/repo   <span class="c1"># Git clone 安装</span>
+hermes plugins install https://github.com/owner/repo.git
+hermes plugins update &lt;name&gt;        <span class="c1"># git pull --ff-only</span>
+hermes plugins remove &lt;name&gt;        <span class="c1"># 删除</span>
+hermes plugins <span class="nb">enable</span> &lt;name&gt;
+hermes plugins disable &lt;name&gt;
+hermes plugins list                 <span class="c1"># Rich 表格列表</span>
+hermes plugins                      <span class="c1"># curses 交互式切换</span>
+</code></pre></div>
+
+<p><strong>安装流程</strong> (<code>hermes_cli/plugins_cmd.py</code> L284-397):
+1. 解析 Git URL（支持 <code>owner/repo</code> 简写）
+2. <code>git clone --depth 1</code> 到临时目录
+3. 读取 manifest，验证 <code>manifest_version</code> 兼容性
+4. 检查命名冲突
+5. 移动到 <code>~/.hermes/plugins/</code>
+6. 复制 <code>.example</code> 配置文件
+7. 提示必要环境变量
+8. 显示 <code>after-install.md</code></p>
+<p><strong>安全措施</strong>:
+- 插件名路径遍历检查 (<code>_sanitize_plugin_name()</code>, L36-70)
+- <code>http://</code> 和 <code>file://</code> URL 发出安全警告
+- manifest_version 向前兼容检查</p>
+<h3 id="36-plugin">3.6 内置 Plugin 示例</h3>
+<p><strong><code>plugins/memory/</code></strong>: 当前仓库中唯一的内置插件目录，提供记忆相关的 Hook 集成。</p>
+<hr />
+<h2 id="4-skill-plugin">4. Skill 与 Plugin 的协作关系</h2>
+<div class="codehilite"><pre><span></span><code><span class="err">┌────────────────────────────────────┐</span><span class="w"></span>
+<span class="err">│</span><span class="w">          </span><span class="n">Agent</span><span class="w"> </span><span class="n">Core</span><span class="w"> </span><span class="n">Loop</span><span class="w">           </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">                                    </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">┌──────────┐</span><span class="w">    </span><span class="err">┌──────────────┐</span><span class="w"> </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">│</span><span class="w">  </span><span class="n">Plugin</span><span class="w">   </span><span class="err">│</span><span class="w">    </span><span class="err">│</span><span class="w">   </span><span class="n">Skill</span><span class="w">      </span><span class="err">│</span><span class="w"> </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">│</span><span class="w">  </span><span class="n">Hooks</span><span class="w">    </span><span class="err">│</span><span class="w">    </span><span class="err">│</span><span class="w">   </span><span class="n">System</span><span class="w">     </span><span class="err">│</span><span class="w"> </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">│</span><span class="w">          </span><span class="err">│</span><span class="w">    </span><span class="err">│</span><span class="w">              </span><span class="err">│</span><span class="w"> </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="n">pre_llm</span><span class="w">  </span><span class="err">│───</span><span class="o">&gt;</span><span class="err">│</span><span class="w"> </span><span class="n">prompt_builder</span><span class="err">│</span><span class="w"> </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="n">post_tool</span><span class="w"> </span><span class="err">│</span><span class="w">    </span><span class="err">│</span><span class="w">  </span><span class="n">injects</span><span class="w">     </span><span class="err">│</span><span class="w"> </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="o">...</span><span class="w">       </span><span class="err">│</span><span class="w">    </span><span class="err">│</span><span class="w">  </span><span class="n">SKILL</span><span class="o">.</span><span class="n">md</span><span class="w">    </span><span class="err">│</span><span class="w"> </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">└──────────┘</span><span class="w">    </span><span class="err">└──────────────┘</span><span class="w"> </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">        </span><span class="err">│</span><span class="w">                 </span><span class="err">│</span><span class="w">        </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">        </span><span class="n">v</span><span class="w">                 </span><span class="n">v</span><span class="w">        </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">┌──────────┐</span><span class="w">    </span><span class="err">┌──────────────┐</span><span class="w"> </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">│</span><span class="w">  </span><span class="n">Tool</span><span class="w">     </span><span class="err">│</span><span class="w">    </span><span class="err">│</span><span class="w">   </span><span class="n">Slash</span><span class="w">      </span><span class="err">│</span><span class="w"> </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">│</span><span class="w">  </span><span class="n">Registry</span><span class="w"> </span><span class="err">│</span><span class="o">&lt;</span><span class="err">───│</span><span class="w">   </span><span class="n">Commands</span><span class="w">   </span><span class="err">│</span><span class="w"> </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">│</span><span class="w"> </span><span class="p">(</span><span class="n">shared</span><span class="p">)</span><span class="w">  </span><span class="err">│</span><span class="w">    </span><span class="err">│</span><span class="w">  </span><span class="o">/</span><span class="n">skill</span><span class="o">-</span><span class="n">name</span><span class="w"> </span><span class="err">│</span><span class="w"> </span><span class="err">│</span><span class="w"></span>
+<span class="err">│</span><span class="w">  </span><span class="err">└──────────┘</span><span class="w">    </span><span class="err">└──────────────┘</span><span class="w"> </span><span class="err">│</span><span class="w"></span>
+<span class="err">└────────────────────────────────────┘</span><span class="w"></span>
+</code></pre></div>
+
+<ul>
+<li>Plugin 通过 <code>register_tool()</code> 向共享的 Tool Registry 注册工具</li>
+<li>Skill 通过斜杠命令和 prompt_builder 注入到 LLM 上下文</li>
+<li>Plugin 的 <code>pre_llm_call</code> Hook 可在 Skill 内容注入前/后追加上下文</li>
+<li>Agent 可通过 <code>skill_manage</code> 工具自主创建 Skill（Plugin 无法自主创建）</li>
+</ul>
+<hr />
+<h2 id="5">5. 关键设计亮点</h2>
+<h3 id="51-token">5.1 Token 效率优化</h3>
+<ul>
+<li>渐进式披露：从分类到列表到详情，逐级加载</li>
+<li>Frontmatter 前 4000 字符快速解析</li>
+<li>Skill 内容字符上限 100,000（约 36k tokens）</li>
+</ul>
+<h3 id="52">5.2 安全纵深防御</h3>
+<ul>
+<li>Skills Guard: 100+ 正则规则覆盖 7 大威胁类别</li>
+<li>信任等级矩阵: 不同来源不同安全策略</li>
+<li>Agent 创建的 Skill 也会经过安全扫描</li>
+<li>原子写入 + 失败回滚</li>
+<li>不可见 Unicode 字符检测</li>
+</ul>
+<h3 id="53">5.3 用户自主权</h3>
+<ul>
+<li>Manifest 同步尊重用户修改和删除</li>
+<li>全局/按平台的启用/禁用控制</li>
+<li>外部 Skills 目录支持团队共享</li>
+<li>Plugin 项目级隔离（需显式开启）</li>
+</ul>
+<h3 id="54">5.4 生态开放性</h3>
+<ul>
+<li>兼容 agentskills.io 标准</li>
+<li>支持 GitHub、Well-Known、ClawHub、Claude Marketplace、LobeHub 多源</li>
+<li>Plugin 支持 Git 仓库和 pip entry-point 两种分发方式</li>
+<li>SKILL.md 标准格式可跨 Agent 框架使用</li>
+</ul>
+</body>
+</html>

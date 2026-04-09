@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>04-memory-system</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1 id="hermes-agent-memory">Hermes-agent Memory 系统深度分析</h1>
+<h2 id="1">1. 架构总览</h2>
+<p>Hermes-agent 的记忆系统采用 <strong>Provider 插件架构</strong>，由三层组成：</p>
+<div class="codehilite"><pre><span></span><code>MemoryManager (编排层)
+├── BuiltinMemoryProvider (内置，始终活跃)
+│   └── MemoryStore (MEMORY.md + USER.md)
+└── ExternalProvider (最多1个，插件形式)
+    ├── Holographic (SQLite + HRR 向量)
+    ├── Honcho (云端 AI 原生记忆)
+    ├── Mem0 (服务端事实提取)
+    ├── Hindsight (知识图谱 + 多策略检索)
+    ├── ByteRover / RetainDB / OpenViking / SuperMemory
+    └── ...
+</code></pre></div>
+
+<p>核心设计原则：<strong>内置记忆始终运行，外部 Provider 最多一个，互不阻塞</strong>。</p>
+<h2 id="2">2. 核心组件详解</h2>
+<h3 id="21-memorymanager">2.1 MemoryManager — 编排层</h3>
+<p><strong>文件</strong>: <code>agent/memory_manager.py</code></p>
+<p>MemoryManager 是整个记忆系统的单一集成点，在 <code>run_agent.py</code> 中实例化。其职责：</p>
+<ol>
+<li><strong>Provider 注册</strong> (L86-130): 维护 provider 列表，确保只有一个外部 provider</li>
+<li><strong>系统提示构建</strong> (L151-168): 收集所有 provider 的 <code>system_prompt_block()</code></li>
+<li><strong>预取/检索</strong> (L172-200): 每轮开始前调用 <code>prefetch_all()</code> 获取上下文</li>
+<li><strong>同步写入</strong> (L204-213): 每轮结束后调用 <code>sync_all()</code> 持久化对话</li>
+<li><strong>工具路由</strong> (L243-261): 将工具调用分发到对应的 provider</li>
+<li><strong>生命周期钩子</strong> (L265-368): <code>on_turn_start</code>, <code>on_session_end</code>, <code>on_pre_compress</code>, <code>on_memory_write</code>, <code>on_delegation</code></li>
+</ol>
+<p>关键设计:
+- <strong>上下文隔离</strong> (L46-68): <code>sanitize_context()</code> 剥离注入标签，<code>build_memory_context_block()</code> 用 <code>&lt;memory-context&gt;</code> 标签包裹检索结果，防止模型将记忆上下文误认为用户输入
+- <strong>容错设计</strong>: 所有 provider 调用都有 try/except，一个 provider 失败不影响其他
+- <strong>逆序关闭</strong> (L339-348): <code>shutdown_all()</code> 逆序关闭确保干净退出</p>
+<h3 id="22-memoryprovider-abc">2.2 MemoryProvider ABC — 接口层</h3>
+<p><strong>文件</strong>: <code>agent/memory_provider.py</code></p>
+<p>抽象基类定义了统一的 provider 接口（L42-232）：</p>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>类型</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>必须实现</td>
+<td>Provider 标识</td>
+</tr>
+<tr>
+<td><code>is_available()</code></td>
+<td>必须实现</td>
+<td>可用性检查（不做网络调用）</td>
+</tr>
+<tr>
+<td><code>initialize(session_id)</code></td>
+<td>必须实现</td>
+<td>会话初始化</td>
+</tr>
+<tr>
+<td><code>system_prompt_block()</code></td>
+<td>可选</td>
+<td>系统提示注入文本</td>
+</tr>
+<tr>
+<td><code>prefetch(query)</code></td>
+<td>可选</td>
+<td>每轮前的记忆检索</td>
+</tr>
+<tr>
+<td><code>queue_prefetch(query)</code></td>
+<td>可选</td>
+<td>后台预取下一轮</td>
+</tr>
+<tr>
+<td><code>sync_turn(user, assistant)</code></td>
+<td>可选</td>
+<td>对话轮次持久化</td>
+</tr>
+<tr>
+<td><code>get_tool_schemas()</code></td>
+<td>必须实现</td>
+<td>暴露工具 schema</td>
+</tr>
+<tr>
+<td><code>handle_tool_call()</code></td>
+<td>可选</td>
+<td>处理工具调用</td>
+</tr>
+<tr>
+<td><code>on_turn_start()</code></td>
+<td>可选钩子</td>
+<td>轮次开始</td>
+</tr>
+<tr>
+<td><code>on_session_end()</code></td>
+<td>可选钩子</td>
+<td>会话结束时的事实提取</td>
+</tr>
+<tr>
+<td><code>on_pre_compress()</code></td>
+<td>可选钩子</td>
+<td>上下文压缩前提取洞察</td>
+</tr>
+<tr>
+<td><code>on_memory_write()</code></td>
+<td>可选钩子</td>
+<td>镜像内置记忆写入</td>
+</tr>
+<tr>
+<td><code>on_delegation()</code></td>
+<td>可选钩子</td>
+<td>子 agent 完成时通知</td>
+</tr>
+<tr>
+<td><code>get_config_schema()</code></td>
+<td>配置</td>
+<td>设置向导所需配置字段</td>
+</tr>
+<tr>
+<td><code>save_config()</code></td>
+<td>配置</td>
+<td>写入非秘密配置</td>
+</tr>
+</tbody>
+</table>
+<p><strong>关键 kwargs 参数</strong> (L62-81):
+- <code>hermes_home</code>: 当前 Profile 的目录
+- <code>platform</code>: cli/telegram/discord/cron
+- <code>agent_context</code>: primary/subagent/cron/flush（cron 上下文应跳过写入）
+- <code>agent_identity</code> / <code>agent_workspace</code>: Profile 级别隔离
+- <code>user_id</code>: 多用户场景下的隔离</p>
+<h3 id="23-builtinmemoryprovider">2.3 BuiltinMemoryProvider — 内置记忆</h3>
+<p><strong>文件</strong>: <code>agent/builtin_memory_provider.py</code></p>
+<p>薄适配层，将 MemoryStore 封装为 MemoryProvider 接口：
+- <strong>可通过配置禁用</strong>：<code>skip_memory=True</code> 时整个 memory 初始化被跳过（<code>run_agent.py:1000</code>）；即使不跳过，也需 <code>memory_enabled</code> 或 <code>user_profile_enabled</code> 至少一个为 True 才会创建 MemoryStore（<code>run_agent.py:1007</code>）。两者都关闭时 <code>system_prompt_block()</code> 返回空字符串（<code>builtin_memory_provider.py:63</code>）
+- 不做查询式检索（<code>prefetch()</code> 返回空字符串）
+- 不自动同步对话（<code>sync_turn()</code> 是空操作）
+- 记忆工具由 <code>run_agent.py</code> 拦截处理，不经过 tool registry
+- 系统提示注入的是<strong>加载时冻结快照</strong>，保持 prompt cache 稳定</p>
+<h3 id="24-memorystore">2.4 MemoryStore — 文件存储引擎</h3>
+<p><strong>文件</strong>: <code>tools/memory_tool.py</code></p>
+<p>核心存储实现（L100-437），管理两个文件：
+- <strong>MEMORY.md</strong>: Agent 的个人笔记（环境事实、项目惯例、工具技巧）
+- <strong>USER.md</strong>: 关于用户的信息（偏好、沟通风格、工作习惯）</p>
+<h4 id="_1">存储机制</h4>
+<table>
+<thead>
+<tr>
+<th>特性</th>
+<th>实现</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>存储格式</td>
+<td>纯文本 Markdown，条目以 <code>\n§\n</code> 分隔</td>
+</tr>
+<tr>
+<td>容量限制</td>
+<td>MEMORY: 2200 字符，USER: 1375 字符（非 token）</td>
+</tr>
+<tr>
+<td>持久化</td>
+<td>原子写入：<code>tempfile.mkstemp</code> + <code>os.replace</code> (L408-436)</td>
+</tr>
+<tr>
+<td>并发安全</td>
+<td>文件级排他锁 <code>fcntl.flock</code> + 读写前重新加载 (L138-153, L162-169)</td>
+</tr>
+<tr>
+<td>去重</td>
+<td>精确内容去重，加载时 <code>dict.fromkeys()</code> (L128-129)</td>
+</tr>
+<tr>
+<td>安全扫描</td>
+<td>注入/渗透模式检测 (L60-97)：prompt injection, role hijack, exfil via curl/wget</td>
+</tr>
+</tbody>
+</table>
+<h4 id="_2">操作模式</h4>
+<ul>
+<li><strong>add</strong>: 追加条目，检查容量限制</li>
+<li><strong>replace</strong>: 子字符串匹配定位 + 整条替换</li>
+<li><strong>remove</strong>: 子字符串匹配定位 + 删除</li>
+</ul>
+<h4 id="l106-117-l335-346">冻结快照模式 (L106-117, L335-346)</h4>
+<p>系统提示注入的是 <code>load_from_disk()</code> 时捕获的冻结快照，会话中的写入立即持久化到磁盘但<strong>不改变系统提示</strong>。下一次会话启动时快照刷新。这一设计保持了整个会话的 prefix cache 稳定性。</p>
+<h4 id="l60-97">安全机制 (L60-97)</h4>
+<p><code>_scan_memory_content()</code> 在写入前扫描内容：
+- 不可见 Unicode 字符检测（零宽空格等）
+- 威胁模式匹配：prompt injection、role hijack、secrets exfiltration（curl/wget + env vars）、SSH 后门</p>
+<h4 id="schema-l489-538">工具 Schema (L489-538)</h4>
+<p><code>MEMORY_SCHEMA</code> 包含详细的行为指导：
+- <strong>主动保存</strong>: 不等用户要求，发现纠正/偏好/环境事实时主动记忆
+- <strong>优先级</strong>: 用户偏好和纠正 &gt; 环境事实 &gt; 程序性知识
+- <strong>不应保存</strong>: 任务进度、会话结果、临时 TODO
+- <strong>目标区分</strong>: <code>user</code> (用户身份) vs <code>memory</code> (个人笔记)</p>
+<h2 id="3">3. 插件系统</h2>
+<h3 id="31">3.1 插件发现与加载</h3>
+<p><strong>文件</strong>: <code>plugins/memory/__init__.py</code></p>
+<ul>
+<li>扫描 <code>plugins/memory/&lt;name&gt;/</code> 目录</li>
+<li>读取 <code>plugin.yaml</code> 获取元数据</li>
+<li>两种注册方式：<code>register(ctx)</code> 函数 (L176-183) 或自动发现 MemoryProvider 子类 (L186-196)</li>
+<li>只有 <code>config.yaml</code> 中 <code>memory.provider</code> 指定的 provider 被激活</li>
+</ul>
+<h3 id="32-holographic-memory">3.2 Holographic Memory — 结构化事实记忆</h3>
+<p><strong>文件</strong>: <code>plugins/memory/holographic/</code></p>
+<p>最复杂的本地 provider，基于 Holographic Reduced Representations (HRR) 向量符号架构：</p>
+<h4 id="storepy">存储层 (<code>store.py</code>)</h4>
+<ul>
+<li>SQLite 数据库，WAL 模式</li>
+<li>表结构: <code>facts</code>, <code>entities</code>, <code>fact_entities</code> (多对多), <code>memory_banks</code>, <code>facts_fts</code> (FTS5 全文索引)</li>
+<li>实体自动提取: 大写词组、引号内容、AKA 模式 (L394-427)</li>
+<li>实体解析: 名称/别名模糊匹配 (L429-457)</li>
+<li>HRR 向量计算与存储 (L470-492)</li>
+<li>Memory bank 构建: 同类别事实的 bundle 超位向量 (L494-530)</li>
+<li>信任评分: helpful +0.05, unhelpful -0.10, 范围 [0, 1] (L349-388)</li>
+</ul>
+<h4 id="retrievalpy">检索层 (<code>retrieval.py</code>)</h4>
+<p>FactRetriever 实现多策略检索：</p>
+<ol>
+<li><strong>search</strong>: FTS5 候选 -&gt; Jaccard 重排 -&gt; HRR 相似度 -&gt; 信任加权 -&gt; 可选时间衰减</li>
+<li><strong>probe</strong>: 实体代数查询，unbind(fact, entity+role) 提取结构化关联</li>
+<li><strong>related</strong>: 实体结构邻接发现</li>
+<li><strong>reason</strong>: 多实体组合查询（向量空间 JOIN），找到与所有实体同时相关的事实</li>
+<li><strong>contradict</strong>: 矛盾检测——实体重叠高但内容相似度低的事实对</li>
+</ol>
+<h4 id="hrr-holographicpy">HRR 向量符号系统 (<code>holographic.py</code>)</h4>
+<p>基于 Plate (1995) 的相位编码 HRR：</p>
+<table>
+<thead>
+<tr>
+<th>操作</th>
+<th>函数</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>原子编码</td>
+<td><code>encode_atom(word, dim)</code></td>
+<td>SHA-256 确定性相位向量</td>
+</tr>
+<tr>
+<td>绑定</td>
+<td><code>bind(a, b)</code></td>
+<td>圆卷积 = 相位加法，关联两个概念</td>
+</tr>
+<tr>
+<td>解绑</td>
+<td><code>unbind(memory, key)</code></td>
+<td>圆相关 = 相位减法，从记忆中提取</td>
+</tr>
+<tr>
+<td>捆绑</td>
+<td><code>bundle(*vectors)</code></td>
+<td>复指数圆均值超位，合并多个概念</td>
+</tr>
+<tr>
+<td>相似度</td>
+<td><code>similarity(a, b)</code></td>
+<td>相位余弦相似度</td>
+</tr>
+<tr>
+<td>文本编码</td>
+<td><code>encode_text(text, dim)</code></td>
+<td>词袋: 所有 token 原子的 bundle</td>
+</tr>
+<tr>
+<td>事实编码</td>
+<td><code>encode_fact(content, entities, dim)</code></td>
+<td>结构化: 内容+role_content 绑定 + 每个实体+role_entity 绑定的 bundle</td>
+</tr>
+</tbody>
+</table>
+<p>维度默认 1024，容量上限 ~O(sqrt(dim)) 项 ≈ 32 个事实/bank 前 SNR &gt; 2.0。</p>
+<h4 id="_3">工具</h4>
+<ul>
+<li><code>fact_store</code>: add/search/probe/related/reason/contradict/update/remove/list</li>
+<li><code>fact_feedback</code>: helpful/unhelpful (训练信任评分)</li>
+</ul>
+<h3 id="33-honcho-ai">3.3 Honcho — AI 原生跨会话记忆</h3>
+<p><strong>文件</strong>: <code>plugins/memory/honcho/__init__.py</code></p>
+<p>云端服务，特点：
+- 辩证法 Q&amp;A (dialectic reasoning)
+- Peer cards (用户/AI 对等角色卡片)
+- 语义搜索
+- 持久结论 (conclusions)</p>
+<h4 id="recall_mode">三种 recall_mode</h4>
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>prefetch</th>
+<th>工具</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>context</td>
+<td>自动注入</td>
+<td>无</td>
+<td>纯上下文注入，无工具</td>
+</tr>
+<tr>
+<td>tools</td>
+<td>无</td>
+<td>4个</td>
+<td>纯工具，需显式调用</td>
+</tr>
+<tr>
+<td>hybrid</td>
+<td>自动注入</td>
+<td>4个</td>
+<td>两者结合</td>
+</tr>
+</tbody>
+</table>
+<h4 id="_4">工具</h4>
+<ul>
+<li><code>honcho_profile</code>: 快速获取用户 peer card</li>
+<li><code>honcho_search</code>: 语义搜索</li>
+<li><code>honcho_context</code>: 辩证法 LLM 合成回答</li>
+<li><code>honcho_conclude</code>: 写入持久结论</li>
+</ul>
+<h4 id="_5">高级特性</h4>
+<ul>
+<li><strong>延迟会话初始化</strong> (L250-258): tools-only 模式推迟到首次工具调用</li>
+<li><strong>成本感知</strong> (L137-145): <code>injectionFrequency</code>, <code>contextCadence</code>, <code>dialecticCadence</code> 控制 API 调用频率</li>
+<li><strong>首轮上下文烘焙</strong> (L362-393): 首次调用获取并缓存完整上下文</li>
+<li><strong>消息分块</strong> (L521-563): 超长消息在段落/句子/词边界处分割，添加 <code>[continued]</code> 前缀</li>
+<li><strong>cron 保护</strong> (L152-154, L204-209): cron/flush 上下文完全跳过</li>
+<li><strong>Memory 文件迁移</strong> (L293-299): 新会话自动迁移 MEMORY.md/USER.md 内容</li>
+</ul>
+<h3 id="34-mem0">3.4 Mem0 — 服务端事实提取</h3>
+<p><strong>文件</strong>: <code>plugins/memory/mem0/__init__.py</code></p>
+<p>Mem0 Platform API 集成：</p>
+<ul>
+<li><strong>服务端 LLM 提取</strong>: <code>sync_turn()</code> 发送对话到 Mem0 服务端，由其 LLM 自动提取事实</li>
+<li><strong>语义搜索 + 重排</strong>: 支持 reranking 提高精度</li>
+<li><strong>自动去重</strong>: Mem0 服务端处理</li>
+<li><strong>熔断器</strong> (L126-201): 连续 5 次失败后暂停 120 秒</li>
+<li><strong>工具</strong>: <code>mem0_profile</code> (全量获取), <code>mem0_search</code> (语义搜索), <code>mem0_conclude</code> (存储事实)</li>
+</ul>
+<h3 id="35-hindsight">3.5 Hindsight — 知识图谱长期记忆</h3>
+<p><strong>文件</strong>: <code>plugins/memory/hindsight/__init__.py</code></p>
+<p>支持云端和本地两种模式：</p>
+<ul>
+<li><strong>知识图谱</strong>: 自动实体提取和关系构建</li>
+<li><strong>多策略检索</strong>: 语义搜索 + 关键词匹配 + 实体图遍历 + 重排</li>
+<li><strong>本地嵌入模式</strong>: 支持 OpenAI/Anthropic/Gemini/Groq/Ollama 等多种 LLM provider</li>
+<li><strong>预取方法</strong>: recall (搜索结果) 或 reflect (推理合成)</li>
+<li><strong>Budget 级别</strong>: low/mid/high 控制检索深度</li>
+<li><strong>memory_mode</strong>: hybrid/context/tools 三种模式</li>
+<li><strong>专用事件循环</strong> (L54-81): 共享后台事件循环避免 aiohttp session 泄漏</li>
+<li><strong>工具</strong>: <code>hindsight_retain</code>, <code>hindsight_recall</code>, <code>hindsight_reflect</code></li>
+</ul>
+<h2 id="4">4. 记忆设置系统</h2>
+<p><strong>文件</strong>: <code>hermes_cli/memory_setup.py</code></p>
+<p>交互式 TUI 设置向导：</p>
+<ol>
+<li><code>hermes memory setup</code>: curses 交互式 provider 选择</li>
+<li>自动安装 pip 依赖 (L130-196)</li>
+<li>基于 provider <code>get_config_schema()</code> 生成配置表单</li>
+<li>秘密写入 <code>.env</code>，非秘密写入 <code>config.yaml</code></li>
+<li>支持 <code>post_setup</code> 钩子（如 Honcho 的完整设置向导）</li>
+<li><code>hermes memory status</code>: 显示当前状态</li>
+</ol>
+<h2 id="5">5. 记忆生命周期</h2>
+<div class="codehilite"><pre><span></span><code><span class="n">Session</span><span class="w"> </span><span class="n">Start</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">MemoryManager</span><span class="o">.</span><span class="n">initialize_all</span><span class="p">(</span><span class="n">session_id</span><span class="p">)</span><span class="w"></span>
+<span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">BuiltinProvider</span><span class="p">:</span><span class="w"> </span><span class="n">load_from_disk</span><span class="p">()</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">冻结快照</span><span class="w"></span>
+<span class="err">│</span><span class="w">   </span><span class="err">└──</span><span class="w"> </span><span class="n">ExternalProvider</span><span class="p">:</span><span class="w"> </span><span class="err">连接</span><span class="o">/</span><span class="err">创建资源</span><span class="o">/</span><span class="err">预热</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">build_system_prompt</span><span class="p">()</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">静态信息注入</span><span class="w"></span>
+<span class="err">│</span><span class="w"></span>
+<span class="n">Each</span><span class="w"> </span><span class="n">Turn</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">on_turn_start</span><span class="p">(</span><span class="n">turn</span><span class="p">,</span><span class="w"> </span><span class="n">message</span><span class="p">)</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">prefetch_all</span><span class="p">(</span><span class="n">user_message</span><span class="p">)</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">检索上下文</span><span class="w"></span>
+<span class="err">│</span><span class="w">   </span><span class="err">└──</span><span class="w"> </span><span class="n">build_memory_context_block</span><span class="p">()</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="o">&lt;</span><span class="n">memory</span><span class="o">-</span><span class="n">context</span><span class="o">&gt;</span><span class="w"> </span><span class="err">包裹</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="p">[</span><span class="n">LLM</span><span class="w"> </span><span class="err">推理</span><span class="p">]</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">handle_tool_call</span><span class="p">()</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">路由工具调用</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">sync_all</span><span class="p">(</span><span class="n">user</span><span class="p">,</span><span class="w"> </span><span class="n">assistant</span><span class="p">)</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">持久化对话</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">queue_prefetch_all</span><span class="p">(</span><span class="n">user_msg</span><span class="p">)</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">后台预取下一轮</span><span class="w"></span>
+<span class="err">│</span><span class="w"></span>
+<span class="n">Context</span><span class="w"> </span><span class="n">Compression</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">on_pre_compress</span><span class="p">(</span><span class="n">messages</span><span class="p">)</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">提取压缩前洞察</span><span class="w"></span>
+<span class="err">│</span><span class="w"></span>
+<span class="n">Session</span><span class="w"> </span><span class="n">End</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">on_session_end</span><span class="p">(</span><span class="n">messages</span><span class="p">)</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">事实提取</span><span class="o">/</span><span class="err">摘要</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">shutdown_all</span><span class="p">()</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">逆序关闭</span><span class="w"></span>
+</code></pre></div>
+
+<h2 id="6">6. 关键设计决策</h2>
+<h3 id="61-provider">6.1 单外部 Provider 限制</h3>
+<p><code>MemoryManager</code> 强制只允许一个外部 provider (L94-108)。原因：
+- 防止工具 schema 膨胀
+- 避免记忆后端冲突
+- 简化用户配置</p>
+<h3 id="62">6.2 冻结快照 + 即时持久化</h3>
+<p>内置记忆的双态设计：
+- 系统提示使用加载时快照（保持 prefix cache）
+- 工具调用立即持久化到磁盘（保证持久性）
+- 工具响应反映实时状态（用户看到最新数据）</p>
+<h3 id="63">6.3 异步非阻塞同步</h3>
+<p>所有外部 provider 的 <code>sync_turn()</code> 都在后台线程执行：
+- Honcho: <code>threading.Thread</code> (L578-594)
+- Mem0: <code>threading.Thread</code> (L272-295)
+- Hindsight: <code>threading.Thread</code> (L420-436)</p>
+<h3 id="64">6.4 安全纵深防御</h3>
+<ul>
+<li>内容扫描：注入/渗透模式检测 (memory_tool.py L60-97)</li>
+<li>上下文隔离：<code>&lt;memory-context&gt;</code> 标签 + 系统注释 (memory_manager.py L54-69)</li>
+<li>权限隔离：cron 上下文跳过记忆写入</li>
+<li>文件锁：防止多会话并发写入冲突</li>
+</ul>
+<h2 id="7">7. 存储对比</h2>
+<table>
+<thead>
+<tr>
+<th>特性</th>
+<th>Builtin</th>
+<th>Holographic</th>
+<th>Honcho</th>
+<th>Mem0</th>
+<th>Hindsight</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>存储</td>
+<td>本地文件</td>
+<td>SQLite</td>
+<td>云端</td>
+<td>云端</td>
+<td>云/本地</td>
+</tr>
+<tr>
+<td>容量</td>
+<td>~3600字符</td>
+<td>无限(SQLite)</td>
+<td>无限</td>
+<td>无限</td>
+<td>无限</td>
+</tr>
+<tr>
+<td>检索</td>
+<td>全文注入</td>
+<td>FTS5+HRR+Jaccard</td>
+<td>语义+辩证法</td>
+<td>语义+重排</td>
+<td>语义+KG+重排</td>
+</tr>
+<tr>
+<td>实体</td>
+<td>无</td>
+<td>正则提取+解析</td>
+<td>Peer cards</td>
+<td>服务端</td>
+<td>知识图谱</td>
+</tr>
+<tr>
+<td>自动提取</td>
+<td>需工具调用</td>
+<td>可选会话结束提取</td>
+<td>辩证法学习</td>
+<td>服务端LLM</td>
+<td>自动</td>
+</tr>
+<tr>
+<td>信任机制</td>
+<td>无</td>
+<td>trust_score [0,1]</td>
+<td>无</td>
+<td>无</td>
+<td>无</td>
+</tr>
+<tr>
+<td>时间衰减</td>
+<td>无</td>
+<td>可选半衰期</td>
+<td>无</td>
+<td>无</td>
+<td>无</td>
+</tr>
+<tr>
+<td>跨会话</td>
+<td>文件持久化</td>
+<td>SQLite持久化</td>
+<td>云端持久化</td>
+<td>云端持久化</td>
+<td>持久化</td>
+</tr>
+<tr>
+<td>多用户</td>
+<td>单用户</td>
+<td>单用户</td>
+<td>user_id隔离</td>
+<td>user_id隔离</td>
+<td>bank隔离</td>
+</tr>
+</tbody>
+</table>
+</body>
+</html>

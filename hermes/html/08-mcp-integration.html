@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>08-mcp-integration</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1 id="hermes-agent-mcp">Hermes-Agent MCP 集成深度分析</h1>
+<h2 id="1">1. 架构总览</h2>
+<p>Hermes-Agent 的 MCP 集成是一个成熟的全栈实现，同时覆盖 <strong>客户端</strong>（连接外部 MCP 服务器）和 <strong>服务端</strong>（将自身暴露为 MCP 服务器）两种模式。核心代码分布在以下文件中：</p>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>行数</th>
+<th>职责</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tools/mcp_tool.py</code></td>
+<td>~2050 行</td>
+<td>MCP 客户端核心：连接管理、工具发现、注册、调用、采样</td>
+</tr>
+<tr>
+<td><code>tools/mcp_oauth.py</code></td>
+<td>~482 行</td>
+<td>OAuth 2.1 PKCE 认证支持</td>
+</tr>
+<tr>
+<td><code>hermes_cli/mcp_config.py</code></td>
+<td>~646 行</td>
+<td>CLI 交互式配置管理（add/remove/list/test/configure）</td>
+</tr>
+<tr>
+<td><code>mcp_serve.py</code></td>
+<td>~868 行</td>
+<td>MCP 服务端：将 Hermes 消息能力暴露为 MCP 工具</td>
+</tr>
+<tr>
+<td><code>optional-skills/mcp/</code></td>
+<td>技能包</td>
+<td>FastMCP 服务端构建模板和工作流</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="2-toolsmcp_toolpy">2. 客户端实现（tools/mcp_tool.py）</h2>
+<h3 id="21">2.1 传输协议支持</h3>
+<p>Hermes 支持两种 MCP 传输协议：</p>
+<p><strong>Stdio 传输</strong>（第 823-872 行）：
+- 通过 <code>StdioServerParameters</code> + <code>stdio_client</code> 启动子进程
+- 子进程 PID 跟踪机制（<code>_snapshot_child_pids</code>，第 1084-1107 行），确保强制关闭清理
+- 安全的环境变量过滤（<code>_build_safe_env</code>，第 192-208 行），仅传递 PATH/HOME/LANG 等安全变量
+- 智能命令解析（<code>_resolve_stdio_command</code>，第 234-267 行），自动查找 npx/npm/node 路径</p>
+<p><strong>HTTP/StreamableHTTP 传输</strong>（第 874-948 行）：
+- 同时兼容新旧 SDK API（<code>streamable_http_client</code> vs <code>streamablehttp_client</code>）
+- 支持自定义 headers 和 OAuth 认证
+- 使用 <code>httpx.AsyncClient</code> 管理 HTTP 生命周期（mcp &gt;= 1.24.0）
+- 配置化的连接超时（<code>connect_timeout</code>，默认 60s）</p>
+<p>值得注意的是 Hermes <strong>不支持 SSE 传输</strong>，仅支持 stdio 和 StreamableHTTP。</p>
+<h3 id="22">2.2 连接生命周期管理</h3>
+<p>采用独立 Task 架构（<code>MCPServerTask</code> 类，第 720-1062 行）：</p>
+<div class="codehilite"><pre><span></span><code>主线程 → <span class="nv">_ensure_mcp_loop</span><span class="ss">()</span> → 后台守护线程<span class="ss">(</span><span class="nv">mcp</span><span class="o">-</span><span class="nv">event</span><span class="o">-</span><span class="k">loop</span><span class="ss">)</span>
+                                    ├── <span class="nv">Server1</span>.<span class="nv">Task</span> <span class="ss">(</span>长生命周期<span class="ss">)</span>
+                                    ├── <span class="nv">Server2</span>.<span class="nv">Task</span>
+                                    └── ...
+</code></pre></div>
+
+<p>关键设计：
+- <strong>专属后台事件循环</strong>（第 1125-1138 行）：独立的 <code>asyncio.new_event_loop()</code> 运行在守护线程中，避免与主事件循环冲突
+- <strong>跨线程安全</strong>（第 1074-1076 行）：<code>threading.Lock</code> 保护所有共享状态，兼容 Python 3.13+ free-threading
+- <strong>自动重连</strong>（第 986-1036 行）：指数退避（1s → 2s → 4s → ... → 60s），最多 5 次重试
+- <strong>干净关闭</strong>（第 1045-1061 行）：10s 超时后强制 cancel Task</p>
+<h3 id="23">2.3 工具发现与注册</h3>
+<p>工具发现流程（<code>_discover_and_register_server</code>，第 1841-1863 行）：</p>
+<ol>
+<li>连接服务器并调用 <code>session.list_tools()</code></li>
+<li>将 MCP 工具 schema 转换为 Hermes registry 格式（<code>_convert_mcp_schema</code>，第 1505-1523 行）</li>
+<li>名称格式：<code>mcp_{server_name}_{tool_name}</code>，特殊字符替换为下划线</li>
+<li>注册到全局 <code>registry</code>，同时注入 <code>hermes-*</code> umbrella toolset</li>
+</ol>
+<p><strong>动态工具发现</strong>（第 757-821 行）：
+- 监听 <code>notifications/tools/list_changed</code> 通知
+- 通过 <code>message_handler</code> 回调接收服务器通知
+- 自动刷新工具列表，支持运行时工具变更
+- 使用 <code>asyncio.Lock</code> 防止并发刷新冲突</p>
+<p><strong>工具过滤</strong>（第 1648-1757 行）：
+- <code>tools.include</code>：白名单模式
+- <code>tools.exclude</code>：黑名单模式
+- include 优先于 exclude
+- 支持 <code>tools.resources</code> 和 <code>tools.prompts</code> 单独开关</p>
+<h3 id="24-mcp">2.4 MCP 资源与提示支持</h3>
+<p>除工具（Tools）外，Hermes 还支持 MCP 协议的另外两个核心能力：</p>
+<p><strong>Resources</strong>（第 1280-1363 行）：
+- <code>mcp_{server}_list_resources</code>：列出可用资源
+- <code>mcp_{server}_read_resource</code>：按 URI 读取资源内容</p>
+<p><strong>Prompts</strong>（第 1366-1465 行）：
+- <code>mcp_{server}_list_prompts</code>：列出可用提示
+- <code>mcp_{server}_get_prompt</code>：按名称获取提示，支持参数传递</p>
+<p>这些能力作为工具自动注册到 registry 中，基于服务器实际能力动态启用。</p>
+<h3 id="25-sampling-llm">2.5 Sampling 支持（服务器发起的 LLM 请求）</h3>
+<p>这是 Hermes MCP 实现中最独特的功能。<code>SamplingHandler</code> 类（第 349-713 行）实现了 MCP 协议的 <code>sampling/createMessage</code> 能力：</p>
+<p><strong>工作原理</strong>：
+- MCP 服务器可以请求 Hermes 的 LLM 进行推理
+- 支持文本响应和 tool_calls 两种模式
+- 消息格式自动转换（MCP → OpenAI 格式，第 419-486 行）</p>
+<p><strong>安全控制</strong>：
+- 滑动窗口限流（<code>max_rpm</code>，默认 10 次/分钟，第 387-395 行）
+- Token 上限（<code>max_tokens_cap</code>，默认 4096，第 368 行）
+- 模型白名单（<code>allowed_models</code>，第 616-625 行）
+- Tool loop 限制（<code>max_tool_rounds</code>，默认 5 轮，第 504-515 行）
+- 审计日志级别可配置（第 375-378 行）</p>
+<p><strong>配置示例</strong>：</p>
+<div class="codehilite"><pre><span></span><code><span class="nt">mcp_servers</span><span class="p">:</span><span class="w"></span>
+<span class="w">  </span><span class="nt">analysis</span><span class="p">:</span><span class="w"></span>
+<span class="w">    </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;npx&quot;</span><span class="w"></span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;-y&quot;</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">&quot;analysis-server&quot;</span><span class="p p-Indicator">]</span><span class="w"></span>
+<span class="w">    </span><span class="nt">sampling</span><span class="p">:</span><span class="w"></span>
+<span class="w">      </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span><span class="w"></span>
+<span class="w">      </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;gemini-3-flash&quot;</span><span class="w"></span>
+<span class="w">      </span><span class="nt">max_tokens_cap</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4096</span><span class="w"></span>
+<span class="w">      </span><span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">30</span><span class="w"></span>
+<span class="w">      </span><span class="nt">max_rpm</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span><span class="w"></span>
+<span class="w">      </span><span class="nt">max_tool_rounds</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="26">2.6 安全机制</h3>
+<p>Hermes 在 MCP 安全方面投入显著：</p>
+<ol>
+<li><strong>环境变量隔离</strong>（第 168-208 行）：stdio 子进程仅继承安全变量</li>
+<li><strong>凭证清洗</strong>（第 172-185/210-217 行）：错误消息中自动替换 token/key/password 为 <code>[REDACTED]</code></li>
+<li><strong>OSV 恶意包检查</strong>（第 838-842 行）：连接前检查 NPM 包是否在 OSV 恶意软件数据库中</li>
+<li><strong>工具碰撞保护</strong>（第 1768-1775 行）：MCP 工具名与内置工具冲突时优先保留内置</li>
+</ol>
+<hr />
+<h2 id="3-oauth-21-toolsmcp_oauthpy">3. OAuth 2.1 认证（tools/mcp_oauth.py）</h2>
+<h3 id="31-oauth-21-pkce">3.1 完整的 OAuth 2.1 PKCE 流程</h3>
+<p>基于 MCP SDK 的 <code>OAuthClientProvider</code>（第 472-481 行）实现：</p>
+<ul>
+<li><strong>授权码流程 + PKCE</strong>：标准的 browser-based OAuth</li>
+<li><strong>动态客户端注册</strong>：未提供 <code>client_id</code> 时自动注册</li>
+<li><strong>预注册客户端支持</strong>（第 447-465 行）：可配置已有 <code>client_id</code> / <code>client_secret</code></li>
+<li><strong>Token 刷新</strong>：<code>OAuthClientProvider</code> 自动处理</li>
+</ul>
+<h3 id="32-token">3.2 Token 持久化</h3>
+<p><code>HermesTokenStorage</code> 类（第 175-235 行）：
+- 存储路径：<code>HERMES_HOME/mcp-tokens/&lt;server_name&gt;.json</code>
+- 文件权限：<code>0o600</code>（仅所有者可读写）
+- 原子写入：使用临时文件 + rename 避免损坏
+- 支持跨进程复用缓存 Token</p>
+<h3 id="33">3.3 回调服务器</h3>
+<p>本地 HTTP 服务器接收 OAuth 回调（第 242-362 行）：
+- 自动发现空闲端口或使用配置端口
+- 支持浏览器自动打开和手动 URL 输入
+- 非交互环境检测（SSH、无显示器等）
+- 300 秒超时保护</p>
+<h3 id="34">3.4 配置</h3>
+<div class="codehilite"><pre><span></span><code><span class="nt">mcp_servers</span><span class="p">:</span><span class="w"></span>
+<span class="w">  </span><span class="nt">my_server</span><span class="p">:</span><span class="w"></span>
+<span class="w">    </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;https://mcp.example.com/mcp&quot;</span><span class="w"></span>
+<span class="w">    </span><span class="nt">auth</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">oauth</span><span class="w"></span>
+<span class="w">    </span><span class="nt">oauth</span><span class="p">:</span><span class="w"></span>
+<span class="w">      </span><span class="nt">client_id</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;pre-registered-id&quot;</span><span class="w">    </span><span class="c1"># 可选</span><span class="w"></span>
+<span class="w">      </span><span class="nt">client_secret</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;secret&quot;</span><span class="w">            </span><span class="c1"># 可选</span><span class="w"></span>
+<span class="w">      </span><span class="nt">scope</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;read</span><span class="nv"> </span><span class="s">write&quot;</span><span class="w">               </span><span class="c1"># 可选</span><span class="w"></span>
+<span class="w">      </span><span class="nt">redirect_port</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span><span class="w">                  </span><span class="c1"># 0 = 自动</span><span class="w"></span>
+<span class="w">      </span><span class="nt">client_name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;My</span><span class="nv"> </span><span class="s">Custom</span><span class="nv"> </span><span class="s">Client&quot;</span><span class="w">   </span><span class="c1"># 默认 &quot;Hermes Agent&quot;</span><span class="w"></span>
+</code></pre></div>
+
+<hr />
+<h2 id="4-cli-hermes_climcp_configpy">4. CLI 配置管理（hermes_cli/mcp_config.py）</h2>
+<h3 id="41">4.1 子命令体系</h3>
+<p>完整的 CLI 工作流（第 611-645 行）：</p>
+<table>
+<thead>
+<tr>
+<th>命令</th>
+<th>功能</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>hermes mcp add &lt;name&gt; --url &lt;endpoint&gt;</code></td>
+<td>添加 HTTP 服务器</td>
+</tr>
+<tr>
+<td><code>hermes mcp add &lt;name&gt; --command &lt;cmd&gt;</code></td>
+<td>添加 stdio 服务器</td>
+</tr>
+<tr>
+<td><code>hermes mcp remove &lt;name&gt;</code></td>
+<td>删除服务器</td>
+</tr>
+<tr>
+<td><code>hermes mcp list</code></td>
+<td>列出所有配置</td>
+</tr>
+<tr>
+<td><code>hermes mcp test &lt;name&gt;</code></td>
+<td>测试连接</td>
+</tr>
+<tr>
+<td><code>hermes mcp configure &lt;name&gt;</code></td>
+<td>交互式工具选择</td>
+</tr>
+<tr>
+<td><code>hermes mcp serve</code></td>
+<td>启动 MCP 服务端</td>
+</tr>
+</tbody>
+</table>
+<h3 id="42-add-173-337">4.2 交互式 Add 流程（第 173-337 行）</h3>
+<div class="codehilite"><pre><span></span><code><span class="mf">1.</span><span class="w"> </span><span class="n">验证传输方式</span><span class="w"> </span><span class="p">(</span><span class="n">URL</span><span class="w"> </span><span class="ow">or</span><span class="w"> </span><span class="n">command</span><span class="p">)</span><span class="w"></span>
+<span class="mf">2.</span><span class="w"> </span><span class="n">认证配置</span><span class="w"> </span><span class="p">(</span><span class="n">OAuth</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">API</span><span class="w"> </span><span class="n">Key</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">None</span><span class="p">)</span><span class="w"></span>
+<span class="mf">3.</span><span class="w"> </span><span class="n">连接并发现工具</span><span class="w"></span>
+<span class="mf">4.</span><span class="w"> </span><span class="n">工具选择</span><span class="w"> </span><span class="p">(</span><span class="n">All</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">Select</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">Cancel</span><span class="p">)</span><span class="w"></span>
+<span class="mf">5.</span><span class="w"> </span><span class="n">保存到</span><span class="w"> </span><span class="n">config</span><span class="mf">.</span><span class="n">yaml</span><span class="w"></span>
+</code></pre></div>
+
+<p>关键特性：
+- API Key 自动存储到 <code>.env</code> 文件，使用 <code>${ENV_VAR}</code> 引用
+- OAuth 流程自动触发浏览器认证
+- 连接失败时支持保存为 disabled 状态
+- 使用 curses TUI 进行多选工具筛选</p>
+<h3 id="43-441-500">4.3 测试与诊断（第 441-500 行）</h3>
+<p><code>hermes mcp test</code> 命令提供详细的连接诊断：
+- 显示传输类型和 URL
+- 显示认证类型（OAuth / Bearer / None），密钥部分脱敏
+- 测量连接延迟（ms）
+- 列出发现的工具</p>
+<hr />
+<h2 id="5-mcp-mcp_servepy">5. MCP 服务端（mcp_serve.py）</h2>
+<h3 id="51">5.1 服务端架构</h3>
+<p>Hermes 可以作为 MCP 服务器运行（第 431-868 行），基于 <code>FastMCP</code> 框架：</p>
+<p><strong>传输方式</strong>：stdio（通过 <code>run_stdio_async</code>，第 860 行）
+<strong>客户端配置示例</strong>：</p>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&quot;mcpServers&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">    </span><span class="nt">&quot;hermes&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;command&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;hermes&quot;</span><span class="p">,</span><span class="w"></span>
+<span class="w">      </span><span class="nt">&quot;args&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;mcp&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;serve&quot;</span><span class="p">]</span><span class="w"></span>
+<span class="w">    </span><span class="p">}</span><span class="w"></span>
+<span class="w">  </span><span class="p">}</span><span class="w"></span>
+<span class="p">}</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="52-10">5.2 暴露的工具（10 个）</h3>
+<p>对标 OpenClaw 的 9-tool MCP channel bridge，加上 Hermes 专属：</p>
+<table>
+<thead>
+<tr>
+<th>工具</th>
+<th>功能</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>conversations_list</code></td>
+<td>列出跨平台会话</td>
+</tr>
+<tr>
+<td><code>conversation_get</code></td>
+<td>获取单个会话详情</td>
+</tr>
+<tr>
+<td><code>messages_read</code></td>
+<td>读取消息历史</td>
+</tr>
+<tr>
+<td><code>attachments_fetch</code></td>
+<td>获取消息附件</td>
+</tr>
+<tr>
+<td><code>events_poll</code></td>
+<td>轮询新事件</td>
+</tr>
+<tr>
+<td><code>events_wait</code></td>
+<td>长轮询等待事件</td>
+</tr>
+<tr>
+<td><code>messages_send</code></td>
+<td>发送消息到平台</td>
+</tr>
+<tr>
+<td><code>channels_list</code></td>
+<td>列出可用频道（Hermes 专属）</td>
+</tr>
+<tr>
+<td><code>permissions_list_open</code></td>
+<td>列出待审批请求</td>
+</tr>
+<tr>
+<td><code>permissions_respond</code></td>
+<td>响应审批请求</td>
+</tr>
+</tbody>
+</table>
+<h3 id="53-eventbridge-185-425">5.3 EventBridge（第 185-425 行）</h3>
+<p>后台轮询器，替代 WebSocket 事件推送：
+- 轮询 SessionDB 获取新消息（200ms 间隔）
+- mtime 检查优化：跳过无变化的文件（微秒级开销）
+- 内存事件队列（限制 1000 条）
+- 支持 cursor-based 分页和长轮询
+- 审批请求的内存追踪</p>
+<hr />
+<h2 id="6-mcp-optional-skillsmcp">6. 技能包 MCP 支持（optional-skills/mcp/）</h2>
+<h3 id="61-fastmcp">6.1 FastMCP 技能</h3>
+<p><code>optional-skills/mcp/fastmcp/</code> 提供完整的 MCP 服务端构建工作流：</p>
+<ul>
+<li><strong>模板</strong>：<code>api_wrapper.py</code>、<code>database_server.py</code>、<code>file_processor.py</code></li>
+<li><strong>脚手架脚本</strong>：<code>scaffold_fastmcp.py</code> 自动化项目初始化</li>
+<li><strong>工作流指南</strong>：从模板选择到测试、安装、部署的完整流程</li>
+</ul>
+<hr />
+<h2 id="7">7. 配置管理</h2>
+<h3 id="71">7.1 配置文件位置</h3>
+<div class="codehilite"><pre><span></span><code>~/.hermes/config.yaml                    # 主配置
+~/.hermes/.env                           # API Key 等敏感信息
+~/.hermes/mcp-tokens/&lt;server&gt;.json       # OAuth Token
+~/.hermes/mcp-tokens/&lt;server&gt;.client.json # OAuth 客户端信息
+</code></pre></div>
+
+<h3 id="72">7.2 配置结构</h3>
+<div class="codehilite"><pre><span></span><code><span class="nt">mcp_servers</span><span class="p">:</span><span class="w"></span>
+<span class="w">  </span><span class="nt">&lt;server_name&gt;</span><span class="p">:</span><span class="w"></span>
+<span class="w">    </span><span class="c1"># 传输 (二选一)</span><span class="w"></span>
+<span class="w">    </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;npx&quot;</span><span class="w">           </span><span class="c1"># stdio</span><span class="w"></span>
+<span class="w">    </span><span class="nt">args</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;-y&quot;</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">&quot;server&quot;</span><span class="p p-Indicator">]</span><span class="w"></span>
+<span class="w">    </span><span class="nt">env</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">{}</span><span class="w"></span>
+<span class="w">    </span><span class="nt">url</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;https://...&quot;</span><span class="w">       </span><span class="c1"># HTTP</span><span class="w"></span>
+
+<span class="w">    </span><span class="c1"># 通用</span><span class="w"></span>
+<span class="w">    </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span><span class="w"></span>
+<span class="w">    </span><span class="nt">timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">120</span><span class="w">             </span><span class="c1"># 工具调用超时</span><span class="w"></span>
+<span class="w">    </span><span class="nt">connect_timeout</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">60</span><span class="w">      </span><span class="c1"># 连接超时</span><span class="w"></span>
+
+<span class="w">    </span><span class="c1"># 认证</span><span class="w"></span>
+<span class="w">    </span><span class="nt">auth</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;oauth&quot;</span><span class="w">            </span><span class="c1"># 或省略</span><span class="w"></span>
+<span class="w">    </span><span class="nt">headers</span><span class="p">:</span><span class="w"></span>
+<span class="w">      </span><span class="nt">Authorization</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Bearer</span><span class="nv"> </span><span class="s">${ENV_VAR}&quot;</span><span class="w"></span>
+<span class="w">    </span><span class="nt">oauth</span><span class="p">:</span><span class="w"></span>
+<span class="w">      </span><span class="nt">client_id</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;...&quot;</span><span class="w"></span>
+<span class="w">      </span><span class="nt">scope</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;...&quot;</span><span class="w"></span>
+
+<span class="w">    </span><span class="c1"># 工具过滤</span><span class="w"></span>
+<span class="w">    </span><span class="nt">tools</span><span class="p">:</span><span class="w"></span>
+<span class="w">      </span><span class="nt">include</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">tool1</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">tool2</span><span class="p p-Indicator">]</span><span class="w"></span>
+<span class="w">      </span><span class="nt">exclude</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">tool3</span><span class="p p-Indicator">]</span><span class="w"></span>
+<span class="w">      </span><span class="nt">resources</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span><span class="w"></span>
+<span class="w">      </span><span class="nt">prompts</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span><span class="w"></span>
+
+<span class="w">    </span><span class="c1"># 采样</span><span class="w"></span>
+<span class="w">    </span><span class="nt">sampling</span><span class="p">:</span><span class="w"></span>
+<span class="w">      </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span><span class="w"></span>
+<span class="w">      </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;...&quot;</span><span class="w"></span>
+<span class="w">      </span><span class="nt">max_tokens_cap</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4096</span><span class="w"></span>
+<span class="w">      </span><span class="nt">max_rpm</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span><span class="w"></span>
+<span class="w">      </span><span class="nt">max_tool_rounds</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">5</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="73">7.3 环境变量插值</h3>
+<p><code>_interpolate_env_vars</code>（第 1155-1166 行）支持 <code>${VAR}</code> 语法，递归解析字符串、字典和列表中的环境变量引用。</p>
+<hr />
+<h2 id="8">8. 并发与性能</h2>
+<h3 id="81">8.1 并行连接</h3>
+<p><code>register_mcp_servers</code>（第 1910-1929 行）使用 <code>asyncio.gather</code> 并行连接所有服务器，总超时 120 秒。</p>
+<h3 id="82">8.2 线程模型</h3>
+<div class="codehilite"><pre><span></span><code>调用线程 ──run_coroutine_threadsafe──→ MCP 事件循环线程
+                                          ├── Server1 (async with 长生命)
+                                          ├── Server2
+                                          └── ...
+</code></pre></div>
+
+<p>Tool 调用通过 <code>_run_on_mcp_loop</code> 跨线程调度，超时由 <code>tool_timeout</code> 配置控制。</p>
+<hr />
+<h2 id="9">9. 错误处理</h2>
+<h3 id="91">9.1 连接错误格式化</h3>
+<p><code>_format_connect_error</code>（第 270-327 行）：
+- 递归展开 <code>BaseExceptionGroup</code> / <code>ExceptionGroup</code>
+- 识别 <code>FileNotFoundError</code> 并提供安装建议
+- 去重错误消息，最多保留 3 条
+- 自动清洗凭证信息</p>
+<h3 id="92">9.2 优雅降级</h3>
+<ul>
+<li>MCP SDK 可选安装（<code>_MCP_AVAILABLE</code> 标志）</li>
+<li>OAuth 模块可选（<code>_OAUTH_AVAILABLE</code> 标志）</li>
+<li>Sampling 类型可选（<code>_MCP_SAMPLING_TYPES</code> 标志）</li>
+<li>通知类型可选（<code>_MCP_NOTIFICATION_TYPES</code> 标志）</li>
+<li>单个服务器失败不影响其他服务器</li>
+</ul>
+<hr />
+<h2 id="10">10. 总结</h2>
+<p>Hermes-Agent 的 MCP 集成是目前可见的最完整的 MCP 客户端/服务端实现之一。特别突出的能力包括：</p>
+<ol>
+<li><strong>Sampling 支持</strong>：唯一见到完整实现 MCP sampling/createMessage 的开源项目</li>
+<li><strong>OAuth 2.1 PKCE</strong>：完整的浏览器授权流程，含 Token 持久化</li>
+<li><strong>动态工具发现</strong>：响应 <code>tools/list_changed</code> 通知的运行时工具刷新</li>
+<li><strong>MCP 全资源类型</strong>：Tools + Resources + Prompts 三种能力全覆盖</li>
+<li><strong>安全纵深防御</strong>：环境变量隔离 + 凭证清洗 + OSV 恶意包检查 + 工具碰撞保护</li>
+<li><strong>双向能力</strong>：既能连接外部 MCP 服务器，也能作为 MCP 服务器暴露消息能力</li>
+<li><strong>完整 CLI 工作流</strong>：从添加、测试到工具选择的交互式管理</li>
+</ol>
+</body>
+</html>

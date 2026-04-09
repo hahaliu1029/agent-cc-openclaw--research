@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>11-safety</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1 id="hermes-agent-safety">Hermes-agent Safety 深度分析</h1>
+<h2 id="1">1. 安全架构总览</h2>
+<p>Hermes-agent 拥有一套纵深防御（Defense-in-Depth）的安全体系，覆盖从命令执行前的静态扫描到运行时的沙箱隔离，形成多层安全屏障。核心安全模块分布如下：</p>
+<table>
+<thead>
+<tr>
+<th>安全层</th>
+<th>模块</th>
+<th>关键文件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>命令内容扫描</td>
+<td>Tirith 安全策略引擎</td>
+<td><code>tools/tirith_security.py</code></td>
+</tr>
+<tr>
+<td>危险命令检测</td>
+<td>正则模式匹配 + 审批流</td>
+<td><code>tools/approval.py</code></td>
+</tr>
+<tr>
+<td>Prompt 注入防御</td>
+<td>上下文文件扫描</td>
+<td><code>agent/prompt_builder.py</code> (L32-73)</td>
+</tr>
+<tr>
+<td>凭证文件保护</td>
+<td>路径穿越防护 + 沙箱挂载</td>
+<td><code>tools/credential_files.py</code></td>
+</tr>
+<tr>
+<td>URL 安全（SSRF 防护）</td>
+<td>IP 黑名单 + DNS 解析校验</td>
+<td><code>tools/url_safety.py</code></td>
+</tr>
+<tr>
+<td>网站策略</td>
+<td>域名黑名单</td>
+<td><code>tools/website_policy.py</code></td>
+</tr>
+<tr>
+<td>开源漏洞检查</td>
+<td>OSV API 恶意包检测</td>
+<td><code>tools/osv_check.py</code></td>
+</tr>
+<tr>
+<td>敏感信息脱敏</td>
+<td>正则替换 + 日志过滤</td>
+<td><code>agent/redact.py</code></td>
+</tr>
+<tr>
+<td>技能安全扫描</td>
+<td>静态分析 + 信任分级</td>
+<td><code>tools/skills_guard.py</code></td>
+</tr>
+<tr>
+<td>沙箱隔离</td>
+<td>Docker 安全加固</td>
+<td><code>tools/environments/docker.py</code></td>
+</tr>
+<tr>
+<td>ANSI 注入防护</td>
+<td>转义序列剥离</td>
+<td><code>tools/ansi_strip.py</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="2-tirith">2. Tirith 安全策略引擎</h2>
+<p><strong>文件</strong>: <code>tools/tirith_security.py</code></p>
+<h3 id="21">2.1 核心机制</h3>
+<p>Tirith 是一个外部安全扫描二进制程序，作为命令执行前的第一道防线，扫描命令内容中的安全威胁：</p>
+<ul>
+<li><strong>同形攻击 URL</strong>（Homograph URLs）</li>
+<li><strong>管道注入</strong>（pipe-to-interpreter）</li>
+<li><strong>终端注入</strong>（terminal injection）</li>
+</ul>
+<h3 id="22-l600-670">2.2 裁决机制（L600-670）</h3>
+<p>基于进程退出码做出裁决，JSON 输出仅作为补充信息，永远不会覆盖退出码的判定：</p>
+<div class="codehilite"><pre><span></span><code>退出码 0 = allow（允许）
+退出码 1 = block（阻止）
+退出码 2 = warn（警告）
+</code></pre></div>
+
+<h3 id="23-fail-openfail-closed-l627-637">2.3 Fail-open/Fail-closed 策略（L627-637）</h3>
+<ul>
+<li>默认 <code>fail_open=True</code>：Tirith 不可用时（spawn 失败、超时）允许命令执行</li>
+<li>可配置为 <code>fail_open=False</code>：严格模式下，Tirith 异常即阻止命令</li>
+<li>超时保护：默认 5 秒超时（<code>TIRITH_TIMEOUT</code>）</li>
+</ul>
+<h3 id="24-l216-368">2.4 供应链安全（L216-368）</h3>
+<p>自动安装 Tirith 二进制时的供应链验证：</p>
+<ol>
+<li><strong>SHA-256 校验和</strong>（必选）：下载后验证文件完整性</li>
+<li><strong>Cosign 签名验证</strong>（可选）：验证 GitHub Actions 工作流签名，确认二进制来源</li>
+<li><strong>tar 路径穿越防护</strong>（L349-353）：解压时拒绝包含 <code>..</code> 的路径</li>
+<li><strong>安装失败持久化</strong>（L105-174）：磁盘标记防止重复失败安装，24 小时 TTL</li>
+</ol>
+<hr />
+<h2 id="3">3. 危险命令检测与审批系统</h2>
+<p><strong>文件</strong>: <code>tools/approval.py</code></p>
+<h3 id="31-l68-106">3.1 危险模式库（L68-106）</h3>
+<p>定义了 30+ 种危险命令模式，涵盖：</p>
+<table>
+<thead>
+<tr>
+<th>类别</th>
+<th>示例模式</th>
+<th>描述</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>文件系统破坏</td>
+<td><code>rm -rf /</code>, <code>find -delete</code></td>
+<td>递归删除、根路径操作</td>
+</tr>
+<tr>
+<td>权限滥用</td>
+<td><code>chmod 777</code>, <code>chown -R root</code></td>
+<td>全局可写、root 所有权</td>
+</tr>
+<tr>
+<td>磁盘操作</td>
+<td><code>mkfs</code>, <code>dd if=</code></td>
+<td>格式化、块设备写入</td>
+</tr>
+<tr>
+<td>SQL 危险操作</td>
+<td><code>DROP TABLE</code>, <code>DELETE FROM</code>(无 WHERE)</td>
+<td>数据库破坏性操作</td>
+</tr>
+<tr>
+<td>远程代码执行</td>
+<td><code>curl ... \| sh</code>, <code>python -e</code></td>
+<td>管道执行远程脚本</td>
+</tr>
+<tr>
+<td>系统服务</td>
+<td><code>systemctl stop</code>, <code>kill -9 -1</code></td>
+<td>停止服务、杀全部进程</td>
+</tr>
+<tr>
+<td>fork bomb</td>
+<td><code>:(){ :\|:&amp; };:</code></td>
+<td>进程炸弹</td>
+</tr>
+<tr>
+<td>自杀防护</td>
+<td><code>pkill hermes/gateway</code></td>
+<td>防止 Agent 自我终止</td>
+</tr>
+<tr>
+<td>敏感路径写入</td>
+<td><code>tee /etc/</code>, <code>&gt; ~/.ssh/</code></td>
+<td>系统配置和 SSH 密钥覆写</td>
+</tr>
+</tbody>
+</table>
+<h3 id="32-l136-152">3.2 命令规范化（L136-152）</h3>
+<p>检测前对命令进行预处理，防止绕过：</p>
+<ol>
+<li><strong>ANSI 转义剥离</strong>：调用 <code>tools.ansi_strip.strip_ansi()</code> 移除所有 ECMA-48 转义序列</li>
+<li><strong>空字节清除</strong>：移除 <code>\x00</code> 防止截断绕过</li>
+<li><strong>Unicode 规范化</strong>：<code>unicodedata.normalize('NFKC')</code> 将全角字符转换为标准形式</li>
+</ol>
+<h3 id="33-l364-445">3.3 三级审批机制（L364-445）</h3>
+<div class="codehilite"><pre><span></span><code>once    -- 仅本次允许
+session -- 本会话允许
+always  -- 永久加入白名单（持久化到 config.yaml）
+deny    -- 拒绝执行
+</code></pre></div>
+
+<h3 id="34-smart-approvall487-536">3.4 Smart Approval（L487-536）</h3>
+<p>利用辅助 LLM 进行智能风险评估（灵感来源：OpenAI Codex Smart Approvals）：</p>
+<ul>
+<li>审批模式 <code>approvals.mode=smart</code> 时启用</li>
+<li>LLM 判断三种结果：<code>APPROVE</code>（自动放行）、<code>DENY</code>（自动拒绝）、<code>ESCALATE</code>（交给人工）</li>
+<li>降低误报率：例如 <code>python -c "print('hello')"</code> 匹配"脚本执行"模式但实际无害</li>
+</ul>
+<h3 id="35-l645-873">3.5 组合安全守卫（L645-873）</h3>
+<p><code>check_all_command_guards()</code> 统一编排 Tirith + 危险命令检测：</p>
+<ul>
+<li>合并两者的警告到单一审批提示</li>
+<li>Gateway 模式下阻塞 Agent 线程，通过 <code>_ApprovalEntry</code> 队列等待用户响应</li>
+<li>容器环境（docker/singularity/modal/daytona）自动跳过审批</li>
+<li>Tirith 警告不允许永久白名单（仅 session 级别）</li>
+</ul>
+<h3 id="36-l554-558">3.6 环境跳过策略（L554-558）</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">if</span> <span class="n">env_type</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">&quot;docker&quot;</span><span class="p">,</span> <span class="s2">&quot;singularity&quot;</span><span class="p">,</span> <span class="s2">&quot;modal&quot;</span><span class="p">,</span> <span class="s2">&quot;daytona&quot;</span><span class="p">):</span>
+    <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;approved&quot;</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span> <span class="s2">&quot;message&quot;</span><span class="p">:</span> <span class="kc">None</span><span class="p">}</span>
+</code></pre></div>
+
+<p>沙箱环境内的命令不需要审批，因为沙箱本身就是安全边界。</p>
+<hr />
+<h2 id="4-prompt">4. Prompt 注入检测</h2>
+<p><strong>文件</strong>: <code>agent/prompt_builder.py</code> (L32-73)</p>
+<h3 id="41-l36-47">4.1 威胁模式库（L36-47）</h3>
+<p>扫描所有外部上下文文件（AGENTS.md, .cursorrules, SOUL.md 等）：</p>
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>威胁类型</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ignore previous instructions</code></td>
+<td>直接 prompt 注入</td>
+</tr>
+<tr>
+<td><code>do not tell the user</code></td>
+<td>欺骗/隐藏指令</td>
+</tr>
+<tr>
+<td><code>system prompt override</code></td>
+<td>系统提示覆盖</td>
+</tr>
+<tr>
+<td><code>disregard your instructions</code></td>
+<td>规则绕过</td>
+</tr>
+<tr>
+<td><code>act as if you have no restrictions</code></td>
+<td>限制解除</td>
+</tr>
+<tr>
+<td><code>&lt;!-- ignore/override/system --&gt;</code></td>
+<td>HTML 注释隐藏注入</td>
+</tr>
+<tr>
+<td><code>&lt;div style="display:none"&gt;</code></td>
+<td>隐藏 div 注入</td>
+</tr>
+<tr>
+<td><code>translate ... and execute</code></td>
+<td>翻译-执行绕过</td>
+</tr>
+<tr>
+<td><code>curl ... $KEY/TOKEN/SECRET</code></td>
+<td>凭证外泄 curl 命令</td>
+</tr>
+<tr>
+<td><code>cat .env/credentials/.netrc</code></td>
+<td>秘密文件读取</td>
+</tr>
+</tbody>
+</table>
+<h3 id="42-unicode-l49-52">4.2 不可见 Unicode 字符检测（L49-52）</h3>
+<p>检测零宽度字符和双向控制字符：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">_CONTEXT_INVISIBLE_CHARS</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s1">&#39;</span><span class="se">\u200b</span><span class="s1">&#39;</span><span class="p">,</span>  <span class="c1"># 零宽空格</span>
+    <span class="s1">&#39;</span><span class="se">\u200c</span><span class="s1">&#39;</span><span class="p">,</span>  <span class="c1"># 零宽非连接符</span>
+    <span class="s1">&#39;</span><span class="se">\u200d</span><span class="s1">&#39;</span><span class="p">,</span>  <span class="c1"># 零宽连接符</span>
+    <span class="s1">&#39;</span><span class="se">\u2060</span><span class="s1">&#39;</span><span class="p">,</span>  <span class="c1"># 单词连接符</span>
+    <span class="s1">&#39;</span><span class="se">\ufeff</span><span class="s1">&#39;</span><span class="p">,</span>  <span class="c1"># 零宽不换行空格（BOM）</span>
+    <span class="s1">&#39;</span><span class="se">\u202a</span><span class="s1">&#39;</span><span class="o">-</span><span class="s1">&#39;</span><span class="se">\u202e</span><span class="s1">&#39;</span><span class="p">,</span>  <span class="c1"># 双向文本控制字符</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="43">4.3 防护策略</h3>
+<ul>
+<li>检测到威胁时<strong>完全阻止文件内容加载</strong>，替换为警告消息（L71）</li>
+<li>涵盖应用点：SOUL.md (L851), AGENTS.md (L874), .cursorrules (L922), .cursor/rules/ (L934)</li>
+<li>日志记录所有被阻止的文件和原因（L70）</li>
+</ul>
+<hr />
+<h2 id="5">5. 凭证文件保护</h2>
+<p><strong>文件</strong>: <code>tools/credential_files.py</code></p>
+<h3 id="51-l66-95">5.1 路径穿越防护（L66-95）</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1"># 拒绝绝对路径</span>
+<span class="k">if</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">isabs</span><span class="p">(</span><span class="n">relative_path</span><span class="p">):</span>
+    <span class="k">return</span> <span class="kc">False</span>
+
+<span class="c1"># 解析符号链接后验证路径约束</span>
+<span class="n">resolved</span> <span class="o">=</span> <span class="n">host_path</span><span class="o">.</span><span class="n">resolve</span><span class="p">()</span>
+<span class="n">resolved</span><span class="o">.</span><span class="n">relative_to</span><span class="p">(</span><span class="n">hermes_home_resolved</span><span class="p">)</span>  <span class="c1"># ValueError if outside</span>
+</code></pre></div>
+
+<p>安全特性：
+- <strong>绝对路径拒绝</strong>（L72-76）：阻止 <code>/etc/shadow</code> 等直接引用
+- <strong>路径穿越检测</strong>（L83-95）：<code>resolve()</code> + <code>relative_to()</code> 防止 <code>../../.ssh/id_rsa</code>
+- <strong>符号链接跟踪</strong>（L84）：解析后再验证，防止符号链接逃逸</p>
+<h3 id="52-l203-291">5.2 技能目录挂载安全（L203-291）</h3>
+<ul>
+<li><strong>符号链接扫描</strong>（L255）：<code>rglob("*")</code> 扫描整个技能目录</li>
+<li><strong>安全复制</strong>（L271-283）：检测到符号链接时创建不含符号链接的临时副本</li>
+<li>防止恶意技能通过符号链接将宿主机敏感文件暴露给容器</li>
+</ul>
+<h3 id="53-l33">5.3 会话隔离（L33）</h3>
+<p>使用 <code>ContextVar</code> 实现会话级凭证隔离：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">_registered_files_var</span><span class="p">:</span> <span class="n">ContextVar</span><span class="p">[</span><span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]]</span> <span class="o">=</span> <span class="n">ContextVar</span><span class="p">(</span><span class="s2">&quot;_registered_files&quot;</span><span class="p">)</span>
+</code></pre></div>
+
+<p>防止 Gateway 管道中的跨会话数据泄露。</p>
+<hr />
+<h2 id="6-url-ssrf">6. URL 安全（SSRF 防护）</h2>
+<p><strong>文件</strong>: <code>tools/url_safety.py</code></p>
+<h3 id="61-ip-l38-46">6.1 IP 黑名单（L38-46）</h3>
+<p>阻止请求发往以下地址：
+- 私有地址（<code>ip.is_private</code>）
+- 环回地址（<code>ip.is_loopback</code>）
+- 链路本地（<code>ip.is_link_local</code>）
+- 保留地址（<code>ip.is_reserved</code>）
+- 多播/未指定地址
+- <strong>CGNAT 范围</strong>（<code>100.64.0.0/10</code>, L35）：显式覆盖 <code>ipaddress.is_private</code> 的漏洞</p>
+<h3 id="62-l26-29">6.2 主机名黑名单（L26-29）</h3>
+<div class="codehilite"><pre><span></span><code><span class="n">_BLOCKED_HOSTNAMES</span> <span class="o">=</span> <span class="nb">frozenset</span><span class="p">({</span>
+    <span class="s2">&quot;metadata.google.internal&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;metadata.goog&quot;</span><span class="p">,</span>
+<span class="p">})</span>
+</code></pre></div>
+
+<p>阻止云元数据端点访问。</p>
+<h3 id="63-fail-closed-l92-96">6.3 Fail-closed 策略（L92-96）</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+    <span class="c1"># 意外错误时拒绝请求，不让解析边缘情况成为 SSRF 绕过向量</span>
+    <span class="k">return</span> <span class="kc">False</span>
+</code></pre></div>
+
+<h3 id="64">6.4 已知限制（文件头部文档）</h3>
+<p>坦诚记录了已知限制：
+- <strong>DNS 重绑定</strong>：TOCTOU 问题，攻击者可在检查和实际连接之间切换 DNS 记录
+- <strong>重定向绕过</strong>：vision_tools 通过 httpx event hook 重新验证每个重定向目标</p>
+<hr />
+<h2 id="7">7. 网站策略（域名黑名单）</h2>
+<p><strong>文件</strong>: <code>tools/website_policy.py</code></p>
+<h3 id="71">7.1 配置驱动</h3>
+<p>从 <code>config.yaml</code> 的 <code>security.website_blocklist</code> 加载：
+- 内联域名列表（<code>domains</code>）
+- 外部共享文件（<code>shared_files</code>）</p>
+<h3 id="72-l209-214">7.2 匹配规则（L209-214）</h3>
+<ul>
+<li>精确匹配：<code>example.com</code></li>
+<li>子域名匹配：<code>host.endswith(".example.com")</code></li>
+<li>通配符匹配：<code>*.example.com</code>（fnmatch）</li>
+</ul>
+<h3 id="73">7.3 性能优化</h3>
+<ul>
+<li>30 秒内存缓存（L35-36）避免重复 YAML 解析</li>
+<li>Fast path：缓存策略为 disabled 时完全跳过（L244-247）</li>
+</ul>
+<h3 id="74-fail-open-l256-260">7.4 Fail-open 策略（L256-260）</h3>
+<p>配置错误时 fail-open，避免错误配置导致所有 Web 工具失效。</p>
+<hr />
+<h2 id="8-mcp">8. 开源漏洞检查（MCP 恶意包检测）</h2>
+<p><strong>文件</strong>: <code>tools/osv_check.py</code></p>
+<h3 id="81">8.1 功能范围</h3>
+<p>在启动 MCP 服务器（通过 <code>npx</code> / <code>uvx</code>）之前，查询 Google OSV API 检测已知恶意软件：</p>
+<ul>
+<li>仅检测 <strong>MAL-* 编号</strong>的恶意软件公告（L155）</li>
+<li><strong>忽略常规 CVE</strong>：避免过度阻止，仅拦截确认的恶意包</li>
+</ul>
+<h3 id="82">8.2 包名解析</h3>
+<ul>
+<li>npm：支持 <code>@scope/name@version</code> 格式（L105-119）</li>
+<li>PyPI：支持 <code>name[extras]==version</code> 格式（L122-127）</li>
+</ul>
+<h3 id="83-fail-open-l48-51">8.3 Fail-open 策略（L48-51）</h3>
+<p>网络错误、超时、解析失败时允许包运行。</p>
+<hr />
+<h2 id="9">9. 敏感信息脱敏</h2>
+<p><strong>文件</strong>: <code>agent/redact.py</code></p>
+<h3 id="91-l22-57">9.1 已知前缀模式（L22-57）</h3>
+<p>覆盖 30+ 种 API Key 前缀：</p>
+<table>
+<thead>
+<tr>
+<th>前缀</th>
+<th>服务</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sk-</code></td>
+<td>OpenAI / Anthropic</td>
+</tr>
+<tr>
+<td><code>ghp_</code>, <code>github_pat_</code></td>
+<td>GitHub</td>
+</tr>
+<tr>
+<td><code>xoxb-</code></td>
+<td>Slack</td>
+</tr>
+<tr>
+<td><code>AIza</code></td>
+<td>Google</td>
+</tr>
+<tr>
+<td><code>AKIA</code></td>
+<td>AWS</td>
+</tr>
+<tr>
+<td><code>sk_live_</code></td>
+<td>Stripe</td>
+</tr>
+<tr>
+<td><code>SG.</code></td>
+<td>SendGrid</td>
+</tr>
+<tr>
+<td><code>hf_</code></td>
+<td>HuggingFace</td>
+</tr>
+<tr>
+<td>更多...</td>
+<td>见源码</td>
+</tr>
+</tbody>
+</table>
+<h3 id="92">9.2 上下文感知脱敏</h3>
+<ul>
+<li><strong>环境变量赋值</strong>（L60-63）：<code>OPENAI_API_KEY=sk-abc...</code> -&gt; 脱敏</li>
+<li><strong>JSON 字段</strong>（L66-70）：<code>"apiKey": "value"</code> -&gt; 脱敏</li>
+<li><strong>Authorization 头</strong>（L72-76）：<code>Bearer token</code> -&gt; 脱敏</li>
+<li><strong>Telegram Bot Token</strong>（L80-82）：<code>bot123456:token</code> -&gt; 脱敏</li>
+<li><strong>私钥块</strong>（L85-87）：<code>BEGIN PRIVATE KEY</code> -&gt; <code>[REDACTED]</code></li>
+<li><strong>数据库连接串</strong>（L91-94）：<code>postgres://user:PASS@host</code> -&gt; 密码脱敏</li>
+<li><strong>电话号码</strong>（L98）：E.164 格式 -&gt; 部分掩码</li>
+</ul>
+<h3 id="93-l18">9.3 防禁用保护（L18）</h3>
+<div class="codehilite"><pre><span></span><code><span class="n">_REDACT_ENABLED</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">getenv</span><span class="p">(</span><span class="s2">&quot;HERMES_REDACT_SECRETS&quot;</span><span class="p">,</span> <span class="s2">&quot;&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="o">...</span><span class="p">)</span>
+</code></pre></div>
+
+<p><strong>导入时快照</strong>：运行时环境变量修改（如 LLM 生成的 <code>export HERMES_REDACT_SECRETS=false</code>）无法禁用脱敏。</p>
+<h3 id="94-l173-181">9.4 日志集成（L173-181）</h3>
+<p><code>RedactingFormatter</code> 自动脱敏所有日志输出。</p>
+<hr />
+<h2 id="10">10. 技能安全扫描</h2>
+<p><strong>文件</strong>: <code>tools/skills_guard.py</code></p>
+<h3 id="101-l39-49">10.1 信任分级体系（L39-49）</h3>
+<div class="codehilite"><pre><span></span><code><span class="n">TRUSTED_REPOS</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;openai/skills&quot;</span><span class="p">,</span> <span class="s2">&quot;anthropics/skills&quot;</span><span class="p">}</span>
+
+<span class="n">INSTALL_POLICY</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="c1">#                  safe      caution    dangerous</span>
+    <span class="s2">&quot;builtin&quot;</span><span class="p">:</span>       <span class="p">(</span><span class="s2">&quot;allow&quot;</span><span class="p">,</span>  <span class="s2">&quot;allow&quot;</span><span class="p">,</span>   <span class="s2">&quot;allow&quot;</span><span class="p">),</span>
+    <span class="s2">&quot;trusted&quot;</span><span class="p">:</span>       <span class="p">(</span><span class="s2">&quot;allow&quot;</span><span class="p">,</span>  <span class="s2">&quot;allow&quot;</span><span class="p">,</span>   <span class="s2">&quot;block&quot;</span><span class="p">),</span>
+    <span class="s2">&quot;community&quot;</span><span class="p">:</span>     <span class="p">(</span><span class="s2">&quot;allow&quot;</span><span class="p">,</span>  <span class="s2">&quot;block&quot;</span><span class="p">,</span>   <span class="s2">&quot;block&quot;</span><span class="p">),</span>
+    <span class="s2">&quot;agent-created&quot;</span><span class="p">:</span> <span class="p">(</span><span class="s2">&quot;allow&quot;</span><span class="p">,</span>  <span class="s2">&quot;allow&quot;</span><span class="p">,</span>   <span class="s2">&quot;ask&quot;</span><span class="p">),</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="102-l82-199">10.2 威胁模式库（L82-199+）</h3>
+<p>六大类 50+ 种威胁模式：</p>
+<table>
+<thead>
+<tr>
+<th>类别</th>
+<th>示例</th>
+<th>严重性</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>数据外泄</td>
+<td><code>curl ... $API_KEY</code>, <code>cat .env</code>, DNS exfil</td>
+<td>critical</td>
+</tr>
+<tr>
+<td>Prompt 注入</td>
+<td><code>ignore instructions</code>, <code>role hijack</code></td>
+<td>critical/high</td>
+</tr>
+<tr>
+<td>破坏性操作</td>
+<td><code>rm -rf /</code>, <code>DROP TABLE</code></td>
+<td>critical</td>
+</tr>
+<tr>
+<td>持久化</td>
+<td>crontab, systemd, <code>.bashrc</code></td>
+<td>high</td>
+</tr>
+<tr>
+<td>网络</td>
+<td>反向 shell, raw socket</td>
+<td>critical</td>
+</tr>
+<tr>
+<td>混淆</td>
+<td>base64 编码的 eval, 字符串拼接</td>
+<td>high</td>
+</tr>
+</tbody>
+</table>
+<h3 id="103">10.3 安装决策流程</h3>
+<div class="codehilite"><pre><span></span><code><span class="err">下载技能</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">隔离区（</span><span class="n">quarantine</span><span class="err">）</span><span class="o">-&gt;</span><span class="w"> </span><span class="err">静态扫描</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">信任策略</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">允许</span><span class="o">/</span><span class="err">阻止</span><span class="o">/</span><span class="err">询问</span><span class="w"></span>
+</code></pre></div>
+
+<hr />
+<h2 id="11-docker">11. 沙箱隔离（Docker 安全加固）</h2>
+<p><strong>文件</strong>: <code>tools/environments/docker.py</code></p>
+<h3 id="111-l135-145">11.1 安全参数（L135-145）</h3>
+<div class="codehilite"><pre><span></span><code><span class="n">_SECURITY_ARGS</span> <span class="o">=</span> <span class="p">[</span>
+    <span class="s2">&quot;--cap-drop&quot;</span><span class="p">,</span> <span class="s2">&quot;ALL&quot;</span><span class="p">,</span>                    <span class="c1"># 丢弃全部 Linux capabilities</span>
+    <span class="s2">&quot;--cap-add&quot;</span><span class="p">,</span> <span class="s2">&quot;DAC_OVERRIDE&quot;</span><span class="p">,</span>            <span class="c1"># 仅保留文件访问</span>
+    <span class="s2">&quot;--cap-add&quot;</span><span class="p">,</span> <span class="s2">&quot;CHOWN&quot;</span><span class="p">,</span>                   <span class="c1"># 仅保留文件所有权操作</span>
+    <span class="s2">&quot;--cap-add&quot;</span><span class="p">,</span> <span class="s2">&quot;FOWNER&quot;</span><span class="p">,</span>                  <span class="c1"># 仅保留包管理器需要</span>
+    <span class="s2">&quot;--security-opt&quot;</span><span class="p">,</span> <span class="s2">&quot;no-new-privileges&quot;</span><span class="p">,</span>  <span class="c1"># 禁止提权</span>
+    <span class="s2">&quot;--pids-limit&quot;</span><span class="p">,</span> <span class="s2">&quot;256&quot;</span><span class="p">,</span>                  <span class="c1"># PID 限制防 fork bomb</span>
+    <span class="s2">&quot;--tmpfs&quot;</span><span class="p">,</span> <span class="s2">&quot;/tmp:rw,nosuid,size=512m&quot;</span><span class="p">,</span>  <span class="c1"># tmpfs 限制</span>
+    <span class="s2">&quot;--tmpfs&quot;</span><span class="p">,</span> <span class="s2">&quot;/var/tmp:rw,noexec,nosuid,size=256m&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;--tmpfs&quot;</span><span class="p">,</span> <span class="s2">&quot;/run:rw,noexec,nosuid,size=64m&quot;</span><span class="p">,</span>
+<span class="p">]</span>
+</code></pre></div>
+
+<h3 id="112">11.2 设计理念</h3>
+<ul>
+<li>容器本身是安全边界，内部命令无需审批</li>
+<li>最小权限原则：仅保留 DAC_OVERRIDE/CHOWN/FOWNER 三个 capability</li>
+<li>资源限制：PID 限制、tmpfs 大小限制、磁盘配额（storage-opt）</li>
+</ul>
+<hr />
+<h2 id="12-ansi">12. ANSI 注入防护</h2>
+<p><strong>文件</strong>: <code>tools/ansi_strip.py</code></p>
+<h3 id="121">12.1 覆盖范围</h3>
+<p>完整 ECMA-48 规范覆盖：
+- CSI 序列（包括私有模式 <code>?</code> 前缀）
+- OSC 序列（BEL 和 ST 终结符）
+- DCS/SOS/PM/APC 字符串序列
+- nF 多字节转义
+- Fp/Fe/Fs 单字节转义
+- 8-bit C1 控制字符</p>
+<h3 id="122">12.2 性能优化</h3>
+<p>快速路径检查：无转义字节时直接返回，零开销（L32, L42）。</p>
+<h3 id="123">12.3 应用场景</h3>
+<ul>
+<li><code>terminal_tool</code>：命令输出清洗</li>
+<li><code>code_execution_tool</code>：代码执行输出清洗</li>
+<li><code>process_registry</code>：进程输出清洗</li>
+<li><code>approval.py</code>：危险命令检测前的预处理</li>
+</ul>
+<p>防止 ANSI 代码进入模型上下文，避免模型将转义序列复制到文件写入操作中。</p>
+<hr />
+<h2 id="13">13. 安全架构评估</h2>
+<h3 id="131">13.1 优势</h3>
+<ol>
+<li><strong>纵深防御</strong>：多层独立安全机制，单层失效不会导致全面突破</li>
+<li><strong>可配置性</strong>：每个安全模块都支持环境变量和 config.yaml 配置</li>
+<li><strong>Fail-open/Fail-closed 可选</strong>：根据场景选择可用性优先或安全性优先</li>
+<li><strong>供应链安全</strong>：Tirith 安装的 SHA-256 + Cosign 双重验证</li>
+<li><strong>Unicode 规范化</strong>：防止全角字符和不可见字符绕过</li>
+<li><strong>会话隔离</strong>：ContextVar 实现 Gateway 并发安全</li>
+<li><strong>智能审批</strong>：LLM 辅助降低误报率</li>
+</ol>
+<h3 id="132">13.2 潜在改进方向</h3>
+<ol>
+<li><strong>DNS 重绑定防护</strong>：url_safety.py 已记录此限制，可考虑连接层验证</li>
+<li><strong>Prompt 注入深度检测</strong>：当前基于正则，可引入语义分析模型</li>
+<li><strong>运行时行为监控</strong>：技能执行时的系统调用监控（如 seccomp profile）</li>
+<li><strong>审计日志</strong>：安全事件的结构化审计日志存储和告警</li>
+</ol>
+</body>
+</html>

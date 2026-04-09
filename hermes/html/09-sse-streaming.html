@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>09-sse-streaming</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1 id="hermes-agent-sse-streaming">Hermes-Agent SSE / Streaming 深度分析</h1>
+<h2 id="1">1. 架构概述</h2>
+<p>Hermes-Agent 的流式传输体系由三条独立管道组成，分别服务不同的客户端场景：</p>
+<table>
+<thead>
+<tr>
+<th>管道</th>
+<th>面向客户端</th>
+<th>传输协议</th>
+<th>核心文件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Gateway Stream Consumer</strong></td>
+<td>Telegram / Discord / Slack 等即时通讯平台</td>
+<td>平台原生 API（消息编辑）</td>
+<td><code>gateway/stream_consumer.py</code></td>
+</tr>
+<tr>
+<td><strong>OpenAI-Compatible SSE</strong></td>
+<td>Open WebUI / LobeChat / NextChat 等前端</td>
+<td>HTTP SSE (<code>text/event-stream</code>)</td>
+<td><code>gateway/platforms/api_server.py</code></td>
+</tr>
+<tr>
+<td><strong>ACP Session Updates</strong></td>
+<td>Agent Client Protocol 编辑器（如 Claude Code 编辑器）</td>
+<td>ACP WebSocket</td>
+<td><code>acp_adapter/events.py</code>, <code>acp_adapter/server.py</code></td>
+</tr>
+</tbody>
+</table>
+<p>这三条管道的共同上游是 <code>run_agent.py</code> 中的 <code>AIAgent</code>，它通过<strong>回调函数</strong>将流式 token 和工具进度推送给消费者。</p>
+<hr />
+<h2 id="2">2. 核心回调接口</h2>
+<p><code>AIAgent</code>（<code>run_agent.py:482-491</code>）构造函数定义了 10 种流式回调：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">stream_delta_callback</span><span class="p">(</span><span class="n">text</span><span class="p">:</span><span class="w"> </span><span class="nb">str</span><span class="w"> </span><span class="o">|</span><span class="w"> </span><span class="n">None</span><span class="p">)</span><span class="w">   </span><span class="c1"># 逐 token 文本增量（None 为工具边界信号）</span><span class="w"></span>
+<span class="n">tool_progress_callback</span><span class="p">(</span><span class="n">event_type</span><span class="p">,</span><span class="w"> </span><span class="n">name</span><span class="p">,</span><span class="w"> </span><span class="n">preview</span><span class="p">,</span><span class="w"> </span><span class="n">args</span><span class="p">,</span><span class="w"> </span><span class="o">**</span><span class="n">kw</span><span class="p">)</span><span class="w">  </span><span class="c1"># 工具执行进度</span><span class="w"></span>
+<span class="n">tool_start_callback</span><span class="p">(</span><span class="n">tool_name</span><span class="p">,</span><span class="w"> </span><span class="n">args</span><span class="p">)</span><span class="w">      </span><span class="c1"># 工具开始执行</span><span class="w"></span>
+<span class="n">tool_complete_callback</span><span class="p">(</span><span class="n">tool_name</span><span class="p">,</span><span class="w"> </span><span class="n">result</span><span class="p">)</span><span class="w"> </span><span class="c1"># 工具执行完成</span><span class="w"></span>
+<span class="n">thinking_callback</span><span class="p">(</span><span class="n">text</span><span class="p">:</span><span class="w"> </span><span class="nb">str</span><span class="p">)</span><span class="w">              </span><span class="c1"># 思考过程（extended thinking）</span><span class="w"></span>
+<span class="n">reasoning_callback</span><span class="p">(</span><span class="n">text</span><span class="p">:</span><span class="w"> </span><span class="nb">str</span><span class="p">)</span><span class="w">             </span><span class="c1"># 推理内容（reasoning_content）</span><span class="w"></span>
+<span class="n">clarify_callback</span><span class="p">(</span><span class="n">question</span><span class="p">:</span><span class="w"> </span><span class="nb">str</span><span class="p">)</span><span class="w">           </span><span class="c1"># 澄清问题回调</span><span class="w"></span>
+<span class="n">step_callback</span><span class="p">(</span><span class="n">api_call_count</span><span class="p">,</span><span class="w"> </span><span class="n">prev_tools</span><span class="p">)</span><span class="w"> </span><span class="c1"># 一轮 API 调用完成</span><span class="w"></span>
+<span class="n">tool_gen_callback</span><span class="p">(</span><span class="o">...</span><span class="p">)</span><span class="w">                    </span><span class="c1"># 工具生成进度</span><span class="w"></span>
+<span class="n">status_callback</span><span class="p">(</span><span class="n">status</span><span class="p">:</span><span class="w"> </span><span class="nb">str</span><span class="p">)</span><span class="w">              </span><span class="c1"># 状态变更通知</span><span class="w"></span>
+</code></pre></div>
+
+<p>注意：<code>message_callback</code> 不是构造参数，仅在 ACP 侧（<code>acp_adapter/server.py:408</code>）被动态挂到实例上。所有回调从 AIAgent 的<strong>同步工作线程</strong>中触发，消费者需要自行处理线程安全问题。</p>
+<hr />
+<h2 id="3-gateway-stream-consumer">3. Gateway Stream Consumer（平台流式消费者）</h2>
+<p><strong>文件</strong>: <code>gateway/stream_consumer.py</code> 第 44-372 行</p>
+<h3 id="31">3.1 设计模式</h3>
+<p>采用 <strong>"发送初始消息 + 反复编辑"</strong> 的模式实现流式效果：</p>
+<div class="codehilite"><pre><span></span><code>线程安全的 <span class="nv">queue</span>.<span class="nv">Queue</span>
+     ↓
+<span class="nv">AIAgent</span> <span class="nv">worker</span> <span class="nv">thread</span>  ─→  <span class="nv">on_delta</span><span class="ss">(</span><span class="nv">text</span><span class="ss">)</span>  ─→  <span class="nv">_queue</span>.<span class="nv">put</span><span class="ss">(</span><span class="nv">text</span><span class="ss">)</span>
+     ↓
+<span class="nv">asyncio</span> <span class="nv">event</span> <span class="k">loop</span>     ─→  <span class="nv">run</span><span class="ss">()</span> <span class="nv">task</span>      ─→  <span class="nv">drain</span> <span class="nv">queue</span> → <span class="nv">send_or_edit</span><span class="ss">()</span>
+</code></pre></div>
+
+<ul>
+<li><code>on_delta()</code> (第 86-97 行): 线程安全的入口，接收 delta 文本或 <code>None</code>（工具边界信号）</li>
+<li><code>finish()</code> (第 98-100 行): 放入 <code>_DONE</code> 哨兵标记流结束</li>
+<li><code>run()</code> (第 102-203 行): 异步任务，循环消耗队列、节流合并、调用平台 API</li>
+</ul>
+<h3 id="32">3.2 节流与缓冲策略</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1"># stream_consumer.py 第 37-41 行</span>
+<span class="k">class</span> <span class="nc">StreamConsumerConfig</span><span class="p">:</span>
+    <span class="n">edit_interval</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.3</span>        <span class="c1"># 编辑最小间隔 300ms</span>
+    <span class="n">buffer_threshold</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">40</span>        <span class="c1"># 缓冲 40 字符后强制刷新</span>
+    <span class="n">cursor</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot; ▉&quot;</span>               <span class="c1"># 打字光标视觉指示</span>
+</code></pre></div>
+
+<p>刷新触发条件（第 129-135 行）：
+1. 流结束（<code>_DONE</code>）
+2. 工具边界（<code>_NEW_SEGMENT</code>）
+3. 距离上次编辑超过 <code>edit_interval</code>
+4. 累积文本超过 <code>buffer_threshold</code></p>
+<h3 id="33">3.3 消息溢出分割</h3>
+<p>当累积文本超过平台消息长度限制时（第 140-158 行）：</p>
+<ol>
+<li>在安全长度内寻找最近的换行符分割</li>
+<li>发送当前块，重置 <code>message_id</code></li>
+<li>后续文本作为新消息发送</li>
+</ol>
+<h3 id="34">3.4 降级与容错</h3>
+<p><strong>编辑失败降级</strong> (第 330-343 行):
+- 首次编辑失败（如 Telegram 洪水控制）→ 记录已发送前缀 → 设置 <code>_fallback_final_send = True</code>
+- 后续增量静默丢弃，仅在流结束时发送<strong>未展示的尾部文本</strong></p>
+<p><strong>无 message_id 降级</strong> (第 356-367 行):
+- Signal / Email 等平台不返回 message_id → 无法编辑 → 切换到 fallback 模式</p>
+<p><strong>取消处理</strong> (第 194-199 行):
+- <code>asyncio.CancelledError</code> → 尽力完成最后一次编辑</p>
+<h3 id="35">3.5 工具边界信号</h3>
+<p>当 <code>on_delta(None)</code> 被调用时（第 95-96 行），插入 <code>_NEW_SEGMENT</code> 哨兵：
+- 当前消息被最终化（无光标）
+- 重置状态（<code>message_id = None</code>），后续文本将作为新消息发送
+- 确保工具进度消息不会被流式文本覆盖</p>
+<hr />
+<h2 id="4-openai-compatible-sseapi">4. OpenAI-Compatible SSE（API 服务器）</h2>
+<p><strong>文件</strong>: <code>gateway/platforms/api_server.py</code></p>
+<h3 id="41-sse">4.1 两套 SSE 端点</h3>
+<h4 id="a-v1chatcompletions">端点 A: <code>/v1/chat/completions</code>（流式）</h4>
+<p>遵循 OpenAI Chat Completions 流式格式（第 654-760 行）：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">data</span><span class="err">:</span><span class="w"> </span><span class="err">{</span><span class="ss">&quot;id&quot;</span><span class="err">:</span><span class="ss">&quot;chatcmpl-xxx&quot;</span><span class="p">,</span><span class="ss">&quot;object&quot;</span><span class="err">:</span><span class="ss">&quot;chat.completion.chunk&quot;</span><span class="p">,</span><span class="ss">&quot;choices&quot;</span><span class="err">:</span><span class="o">[</span><span class="n">{&quot;delta&quot;:{&quot;role&quot;:&quot;assistant&quot;}}</span><span class="o">]</span><span class="err">}</span><span class="w"></span>
+
+<span class="k">data</span><span class="err">:</span><span class="w"> </span><span class="err">{</span><span class="ss">&quot;id&quot;</span><span class="err">:</span><span class="ss">&quot;chatcmpl-xxx&quot;</span><span class="p">,</span><span class="ss">&quot;object&quot;</span><span class="err">:</span><span class="ss">&quot;chat.completion.chunk&quot;</span><span class="p">,</span><span class="ss">&quot;choices&quot;</span><span class="err">:</span><span class="o">[</span><span class="n">{&quot;delta&quot;:{&quot;content&quot;:&quot;Hello&quot;}}</span><span class="o">]</span><span class="err">}</span><span class="w"></span>
+
+<span class="k">data</span><span class="err">:</span><span class="w"> </span><span class="err">{</span><span class="ss">&quot;id&quot;</span><span class="err">:</span><span class="ss">&quot;chatcmpl-xxx&quot;</span><span class="p">,</span><span class="ss">&quot;object&quot;</span><span class="err">:</span><span class="ss">&quot;chat.completion.chunk&quot;</span><span class="p">,</span><span class="ss">&quot;choices&quot;</span><span class="err">:</span><span class="o">[</span><span class="n">{&quot;delta&quot;:{}},&quot;finish_reason&quot;:&quot;stop&quot;</span><span class="o">]</span><span class="p">,</span><span class="ss">&quot;usage&quot;</span><span class="err">:{</span><span class="p">...</span><span class="err">}}</span><span class="w"></span>
+
+<span class="k">data</span><span class="err">:</span><span class="w"> </span><span class="o">[</span><span class="n">DONE</span><span class="o">]</span><span class="w"></span>
+</code></pre></div>
+
+<p>实现细节：
+- 使用 <code>aiohttp.web.StreamResponse</code> 手写 SSE 帧（第 675 行）
+- <code>queue.Queue</code> 桥接同步 agent 线程和异步 SSE 写入（第 554 行）
+- 工具进度被注入为 Markdown 格式的 content delta（第 567-576 行）：<code>`🔧 tool_name`</code>
+- <strong>关键行为</strong>：<code>stream_delta_callback(None)</code> 在 SSE 端被显式过滤（第 556-564 行）。<code>None</code> 是 CLI 边界信号（用于关闭响应框后执行工具），但 SSE 写入器使用 <code>None</code> 作为结束哨兵——若不过滤会导致 HTTP 响应提前关闭，Open WebUI 等前端会丢失工具调用后的最终回答。SSE 循环通过 <code>agent_task.done()</code> 检测完成
+- 支持 CORS 头注入（第 669-672 行）</p>
+<h4 id="b-v1runsrun_idevents">端点 B: <code>/v1/runs/{run_id}/events</code>（结构化事件流）</h4>
+<p>提供更丰富的结构化事件（第 1332-1579 行）：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">data</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="s2">&quot;event&quot;</span><span class="p">:</span><span class="s2">&quot;tool.started&quot;</span><span class="p">,</span><span class="s2">&quot;run_id&quot;</span><span class="p">:</span><span class="s2">&quot;run_xxx&quot;</span><span class="p">,</span><span class="s2">&quot;tool&quot;</span><span class="p">:</span><span class="s2">&quot;web_search&quot;</span><span class="p">,</span><span class="s2">&quot;preview&quot;</span><span class="p">:</span><span class="s2">&quot;...&quot;</span><span class="p">}</span><span class="w"></span>
+<span class="n">data</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="s2">&quot;event&quot;</span><span class="p">:</span><span class="s2">&quot;tool.completed&quot;</span><span class="p">,</span><span class="s2">&quot;run_id&quot;</span><span class="p">:</span><span class="s2">&quot;run_xxx&quot;</span><span class="p">,</span><span class="s2">&quot;tool&quot;</span><span class="p">:</span><span class="s2">&quot;web_search&quot;</span><span class="p">,</span><span class="s2">&quot;duration&quot;</span><span class="p">:</span><span class="mf">1.234</span><span class="p">}</span><span class="w"></span>
+<span class="n">data</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="s2">&quot;event&quot;</span><span class="p">:</span><span class="s2">&quot;message.delta&quot;</span><span class="p">,</span><span class="s2">&quot;run_id&quot;</span><span class="p">:</span><span class="s2">&quot;run_xxx&quot;</span><span class="p">,</span><span class="s2">&quot;delta&quot;</span><span class="p">:</span><span class="s2">&quot;Hello&quot;</span><span class="p">}</span><span class="w"></span>
+<span class="n">data</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="s2">&quot;event&quot;</span><span class="p">:</span><span class="s2">&quot;reasoning.available&quot;</span><span class="p">,</span><span class="s2">&quot;run_id&quot;</span><span class="p">:</span><span class="s2">&quot;run_xxx&quot;</span><span class="p">,</span><span class="s2">&quot;text&quot;</span><span class="p">:</span><span class="s2">&quot;...&quot;</span><span class="p">}</span><span class="w"></span>
+<span class="n">data</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="s2">&quot;event&quot;</span><span class="p">:</span><span class="s2">&quot;run.completed&quot;</span><span class="p">,</span><span class="s2">&quot;run_id&quot;</span><span class="p">:</span><span class="s2">&quot;run_xxx&quot;</span><span class="p">,</span><span class="s2">&quot;output&quot;</span><span class="p">:</span><span class="s2">&quot;...&quot;</span><span class="p">,</span><span class="s2">&quot;usage&quot;</span><span class="p">:{</span><span class="o">...</span><span class="p">}}</span><span class="w"></span>
+<span class="n">data</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="s2">&quot;event&quot;</span><span class="p">:</span><span class="s2">&quot;run.failed&quot;</span><span class="p">,</span><span class="s2">&quot;run_id&quot;</span><span class="p">:</span><span class="s2">&quot;run_xxx&quot;</span><span class="p">,</span><span class="s2">&quot;error&quot;</span><span class="p">:</span><span class="s2">&quot;...&quot;</span><span class="p">}</span><span class="w"></span>
+<span class="p">:</span><span class="w"> </span><span class="n">keepalive</span><span class="w"></span>
+<span class="p">:</span><span class="w"> </span><span class="n">stream</span><span class="w"> </span><span class="n">closed</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="42">4.2 事件类型总结</h3>
+<table>
+<thead>
+<tr>
+<th>事件类型</th>
+<th>来源</th>
+<th>描述</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tool.started</code></td>
+<td><code>tool_progress_callback</code></td>
+<td>工具开始执行</td>
+</tr>
+<tr>
+<td><code>tool.completed</code></td>
+<td><code>tool_progress_callback</code></td>
+<td>工具执行完成，含 duration 和 error 标记</td>
+</tr>
+<tr>
+<td><code>reasoning.available</code></td>
+<td><code>tool_progress_callback</code></td>
+<td>推理过程可用</td>
+</tr>
+<tr>
+<td><code>message.delta</code></td>
+<td><code>stream_delta_callback</code></td>
+<td>文本增量</td>
+</tr>
+<tr>
+<td><code>run.completed</code></td>
+<td>内部</td>
+<td>运行完成，含最终输出和用量</td>
+</tr>
+<tr>
+<td><code>run.failed</code></td>
+<td>内部</td>
+<td>运行失败，含错误信息</td>
+</tr>
+</tbody>
+</table>
+<h3 id="43">4.3 客户端断开处理</h3>
+<p><strong>Chat Completions 端点</strong> (第 742-758 行):</p>
+<div class="codehilite"><pre><span></span><code><span class="k">except</span> <span class="p">(</span><span class="ne">ConnectionResetError</span><span class="p">,</span> <span class="ne">ConnectionAbortedError</span><span class="p">,</span> <span class="ne">BrokenPipeError</span><span class="p">,</span> <span class="ne">OSError</span><span class="p">):</span>
+    <span class="n">agent</span><span class="o">.</span><span class="n">interrupt</span><span class="p">(</span><span class="s2">&quot;SSE client disconnected&quot;</span><span class="p">)</span>
+    <span class="n">agent_task</span><span class="o">.</span><span class="n">cancel</span><span class="p">()</span>
+</code></pre></div>
+
+<ul>
+<li>捕获连接异常 → 调用 <code>agent.interrupt()</code> 停止 LLM 调用 → 取消 asyncio task</li>
+</ul>
+<p><strong>Runs 端点</strong> (第 1560-1577 行):
+- 30 秒超时发送 keepalive 注释（<code>: keepalive\n\n</code>）
+- 异常时清理 <code>_run_streams</code> 映射</p>
+<h3 id="44">4.4 并发控制</h3>
+<ul>
+<li>Runs 端点限制最大并发数: <code>_MAX_CONCURRENT_RUNS = 10</code>（第 1335 行）</li>
+<li>孤儿 run 超时清理: <code>_RUN_STREAM_TTL = 300</code> 秒（第 1336 行）</li>
+<li>支持 race condition 窗口: 订阅时允许最多 1 秒等待 run 注册（第 1541-1544 行）</li>
+</ul>
+<hr />
+<h2 id="5-acp-session-updatesagent-client-protocol">5. ACP Session Updates（Agent Client Protocol）</h2>
+<p><strong>文件</strong>: <code>acp_adapter/events.py</code>, <code>acp_adapter/server.py</code></p>
+<h3 id="51">5.1 回调工厂</h3>
+<p><code>events.py</code> 定义了四个回调工厂函数，每个返回一个闭包：</p>
+<table>
+<thead>
+<tr>
+<th>工厂函数</th>
+<th>AIAgent 回调</th>
+<th>ACP 更新类型</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>make_tool_progress_cb</code> (第 47-90 行)</td>
+<td><code>tool_progress_callback</code></td>
+<td><code>ToolCallStart</code></td>
+</tr>
+<tr>
+<td><code>make_thinking_cb</code> (第 97-110 行)</td>
+<td><code>thinking_callback</code></td>
+<td><code>update_agent_thought_text</code></td>
+</tr>
+<tr>
+<td><code>make_step_cb</code> (第 117-155 行)</td>
+<td><code>step_callback</code></td>
+<td><code>ToolCallComplete</code></td>
+</tr>
+<tr>
+<td><code>make_message_cb</code> (第 162-175 行)</td>
+<td><code>message_callback</code></td>
+<td><code>update_agent_message_text</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="52">5.2 线程安全桥接</h3>
+<p><code>_send_update()</code> (第 27-40 行):</p>
+<div class="codehilite"><pre><span></span><code><span class="n">future</span> <span class="o">=</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">run_coroutine_threadsafe</span><span class="p">(</span>
+    <span class="n">conn</span><span class="o">.</span><span class="n">session_update</span><span class="p">(</span><span class="n">session_id</span><span class="p">,</span> <span class="n">update</span><span class="p">),</span> <span class="n">loop</span>
+<span class="p">)</span>
+<span class="n">future</span><span class="o">.</span><span class="n">result</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="mi">5</span><span class="p">)</span>  <span class="c1"># 阻塞等待，最多 5 秒</span>
+</code></pre></div>
+
+<ul>
+<li>从 AIAgent 的同步工作线程安全地调度到 asyncio 事件循环</li>
+<li><code>timeout=5</code> 防止无限阻塞</li>
+<li>失败时静默记录 debug 日志，不中断 agent 执行</li>
+</ul>
+<h3 id="53-id">5.3 工具调用 ID 追踪</h3>
+<p>使用 <code>Dict[str, Deque[str]]</code> 的 FIFO 队列追踪并行工具调用（第 51 行）：
+- <code>tool.started</code> → 生成唯一 <code>tc_id</code>，推入对应工具名的队列
+- <code>step_callback</code> → 从队列头部弹出 <code>tc_id</code>，发送 <code>ToolCallComplete</code>
+- 支持同名工具的并行/重复调用</p>
+<h3 id="54-acp">5.4 ACP 取消机制</h3>
+<p><code>acp_adapter/server.py</code> 第 307-316 行:</p>
+<div class="codehilite"><pre><span></span><code><span class="k">async</span> <span class="k">def</span> <span class="nf">cancel</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">session_id</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">:</span> <span class="n">Any</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+    <span class="n">state</span><span class="o">.</span><span class="n">cancel_event</span><span class="o">.</span><span class="n">set</span><span class="p">()</span>
+    <span class="n">state</span><span class="o">.</span><span class="n">agent</span><span class="o">.</span><span class="n">interrupt</span><span class="p">()</span>
+</code></pre></div>
+
+<ul>
+<li>ACP 客户端可以通过协议层发送取消请求</li>
+<li>设置 <code>cancel_event</code> 并调用 <code>agent.interrupt()</code></li>
+</ul>
+<hr />
+<h2 id="6-cli">6. CLI 流式输出</h2>
+<p><strong>文件</strong>: <code>hermes_cli/callbacks.py</code></p>
+<p>CLI 的流式输出不走 SSE，而是通过 <code>prompt_toolkit</code> TUI 框架实现：</p>
+<ul>
+<li><code>clarify_callback</code> (第 19-63 行): 澄清问题 → 阻塞式交互 UI + 超时机制</li>
+<li><code>approval_callback</code> (第 186-242 行): 危险命令审批 → 选择 UI（once/session/always/deny）</li>
+<li><code>prompt_for_secret</code> (第 66-183 行): 密钥输入 → 隐藏输入 + 安全存储</li>
+</ul>
+<p>这些回调均使用 <code>queue.Queue</code> + 轮询模式实现同步阻塞等待用户输入。</p>
+<hr />
+<h2 id="7">7. 重连机制分析</h2>
+<p>Hermes-Agent <strong>不实现</strong>服务端重连机制：</p>
+<ul>
+<li><strong>Gateway Stream Consumer</strong>: 消息编辑模式天然不需要重连 — 每条消息是独立的编辑操作</li>
+<li><strong>Chat Completions SSE</strong>: 标准 OpenAI 格式无 <code>id:</code> 字段，不支持 <code>Last-Event-ID</code> 恢复</li>
+<li><strong>Runs SSE</strong>: 有 keepalive 保活（30 秒），但无事件 ID，断开后需重新创建 run</li>
+<li><strong>ACP</strong>: 依赖 ACP 协议层自身的连接管理</li>
+</ul>
+<hr />
+<h2 id="8">8. 架构特点总结</h2>
+<h3 id="_1">优势</h3>
+<ol>
+<li><strong>回调驱动的统一模型</strong>: 一个 AIAgent 实例通过不同回调适配多种消费者</li>
+<li><strong>线程安全设计</strong>: <code>queue.Queue</code> + <code>asyncio.run_coroutine_threadsafe</code> 的桥接模式成熟可靠</li>
+<li><strong>优雅降级</strong>: 编辑失败 → fallback 发送；无 message_id → 跳过中间更新</li>
+<li><strong>客户端断开感知</strong>: SSE 端点能主动中断 agent，避免资源浪费</li>
+</ol>
+<h3 id="_2">局限</h3>
+<ol>
+<li><strong>无标准 SSE 重连</strong>: 缺少 <code>id:</code> 字段和 <code>Last-Event-ID</code> 支持</li>
+<li><strong>工具结果非结构化</strong>: Chat Completions 流中工具进度被内联为 Markdown 文本</li>
+<li><strong>无事件持久化</strong>: 所有事件流都是内存态，进程重启后丢失</li>
+<li><strong>无类型安全的事件系统</strong>: 事件通过 dict 传递，缺少 Pydantic 模型定义</li>
+</ol>
+</body>
+</html>

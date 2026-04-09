@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>12-observability</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1 id="hermes-agent-observability">Hermes-Agent Observability 深度分析</h1>
+<h2 id="1">1. 概述</h2>
+<p>Hermes-Agent 的可观测性体系围绕 <strong>日志系统、轨迹追踪、调试工具、运行时状态检测、CLI 视觉反馈</strong> 五大维度构建。整体设计以 CLI 本地场景为核心，没有引入外部 APM/Tracing 服务（如 LangSmith、OpenTelemetry），而是通过自建的文件日志、轨迹保存、调试会话等机制完成可观测性覆盖。</p>
+<hr />
+<h2 id="2">2. 日志体系</h2>
+<h3 id="21-hermes_loggingpy">2.1 核心入口: <code>hermes_logging.py</code></h3>
+<p>文件路径: <code>/hermes_logging.py</code></p>
+<p><code>setup_logging()</code> 是整个日志子系统的唯一入口，CLI 和 Gateway 在启动早期调用。设计特点：</p>
+<ul>
+<li><strong>幂等初始化</strong>: 通过 <code>_logging_initialized</code> 哨兵值保证多次调用安全（第 25-26 行）</li>
+<li><strong>双文件输出策略</strong>:</li>
+<li><code>agent.log</code> -- INFO+ 级别，记录所有 agent/tool/session 活动（主日志），第 113-120 行</li>
+<li><code>errors.log</code> -- WARNING+ 级别，仅错误和警告（快速分诊），第 123-130 行</li>
+<li><strong>RotatingFileHandler</strong>: 默认 5MB 单文件上限、保留 3 个备份，支持通过 <code>config.yaml</code> 的 <code>logging.level</code>、<code>logging.max_size_mb</code>、<code>logging.backup_count</code> 覆盖（第 99-105 行）</li>
+<li><strong>噪音抑制</strong>: 对 <code>openai</code>、<code>httpx</code>、<code>httpcore</code>、<code>asyncio</code>、<code>grpc</code>、<code>modal</code> 等 15 个第三方 logger 强制 WARNING 级别（第 32-47 行）</li>
+<li><strong>配置读取</strong>: <code>_read_logging_config()</code> 从 <code>~/.hermes/config.yaml</code> 的 <code>logging</code> 段读取配置（第 209-229 行）</li>
+</ul>
+<h3 id="22-redactingformatter">2.2 安全保障: RedactingFormatter</h3>
+<p>文件路径: <code>/agent/redact.py</code></p>
+<p>所有日志 handler 使用 <code>RedactingFormatter</code>，通过正则匹配脱敏，确保密钥永不写入磁盘：</p>
+<ul>
+<li><strong>已知前缀模式</strong>: 覆盖 sk-（OpenAI）、ghp_（GitHub PAT）、xox-（Slack）、AIza（Google）、AKIA（AWS）等 30+ 种 API Key 前缀（第 22-57 行）</li>
+<li><strong>环境变量赋值</strong>: <code>KEY=value</code> 模式检测（第 60-63 行）</li>
+<li><strong>JSON 字段</strong>: <code>"apiKey": "value"</code> 格式脱敏（第 66-70 行）</li>
+<li><strong>Authorization Header</strong>: Bearer Token 脱敏（第 73-76 行）</li>
+<li><strong>Telegram Bot Token</strong>: <code>bot&lt;digits&gt;:&lt;token&gt;</code> 模式（第 80-82 行）</li>
+<li><strong>Private Key 块</strong>: PEM 格式私钥完全替换为 <code>[REDACTED PRIVATE KEY]</code>（第 85-87 行）</li>
+<li><strong>数据库连接串</strong>: postgres/mysql/mongodb/redis URL 中的密码脱敏（第 91-94 行）</li>
+<li><strong>E.164 电话号码</strong>: Signal/WhatsApp 场景的电话号码脱敏（第 98 行）</li>
+<li><strong>长短 Token 策略</strong>: 短于 18 字符完全掩码，长 Token 保留首 6 末 4 字符（第 106-110 行）</li>
+<li><strong>运行时锁定</strong>: <code>_REDACT_ENABLED</code> 在 import 时快照，防止运行时通过环境变量禁用（第 18 行）</li>
+</ul>
+<h3 id="23-verbose">2.3 Verbose 模式</h3>
+<p><code>setup_verbose_logging()</code> 为 <code>--verbose / -v</code> CLI 模式提供 DEBUG 级别的控制台输出（第 144-173 行），由 <code>AIAgent.__init__()</code> 在 <code>verbose_logging=True</code> 时调用。</p>
+<h3 id="24-cli-hermes_clilogspy">2.4 CLI 日志查看: <code>hermes_cli/logs.py</code></h3>
+<p>文件路径: <code>/hermes_cli/logs.py</code></p>
+<p>提供 <code>hermes logs</code> 命令的完整实现：</p>
+<ul>
+<li><strong>多日志文件支持</strong>: <code>agent.log</code>、<code>errors.log</code>、<code>gateway.log</code>（第 28-32 行）</li>
+<li><strong>过滤能力</strong>:</li>
+<li><code>--level WARNING</code> -- 按日志级别过滤（第 96-99 行）</li>
+<li><code>--session abc123</code> -- 按 Session ID 子串过滤（第 101-103 行）</li>
+<li><code>--since 1h</code> -- 支持相对时间范围（s/m/h/d），第 45-62 行</li>
+<li><strong>Follow 模式</strong>: <code>hermes logs -f</code> 实时跟踪新日志行，0.3s 轮询间隔（第 281-300 行）</li>
+<li><strong>高效尾部读取</strong>: 小于 1MB 全量读取，大文件从末尾按 chunk 读取（第 225-278 行）</li>
+<li><strong>日志列表</strong>: <code>list_logs()</code> 展示所有日志文件大小和最后修改时间（第 303-335 行）</li>
+</ul>
+<hr />
+<h2 id="3-trajectory">3. 轨迹追踪 (Trajectory)</h2>
+<h3 id="31-agenttrajectorypy">3.1 轨迹保存: <code>agent/trajectory.py</code></h3>
+<p>文件路径: <code>/agent/trajectory.py</code></p>
+<p>以 ShareGPT 格式保存对话轨迹到 JSONL 文件：</p>
+<ul>
+<li><strong>成功/失败分流</strong>: 完成的轨迹写入 <code>trajectory_samples.jsonl</code>，失败的写入 <code>failed_trajectories.jsonl</code>（第 42 行）</li>
+<li><strong>元数据记录</strong>: 每条 entry 包含 <code>conversations</code>、<code>timestamp</code>、<code>model</code>、<code>completed</code> 字段（第 44-48 行）</li>
+<li><strong>Scratchpad 转换</strong>: <code>convert_scratchpad_to_think()</code> 将 <code>&lt;REASONING_SCRATCHPAD&gt;</code> 标签转为 <code>&lt;think&gt;</code> 标签用于训练数据兼容（第 18-20 行）</li>
+</ul>
+<h3 id="32-trajectory_compressorpy">3.2 轨迹压缩: <code>trajectory_compressor.py</code></h3>
+<p>文件路径: <code>/trajectory_compressor.py</code></p>
+<p>后处理工具，将完成的轨迹压缩到目标 token 预算内：</p>
+<ul>
+<li><strong>压缩策略</strong>: 保护首几轮（system/human/first gpt/first tool）和最后 N 轮，仅压缩中间部分（第 8-11 行）</li>
+<li><strong>LLM 摘要</strong>: 使用 OpenRouter 调用 Gemini 等模型生成压缩摘要（第 73-74 行）</li>
+<li><strong>默认目标</strong>: 15250 tokens，摘要目标 750 tokens（第 62-63 行）</li>
+<li><strong>批量处理</strong>: 支持目录级 JSONL 文件批量处理和百分比采样（第 22-30 行）</li>
+</ul>
+<hr />
+<h2 id="4">4. 调试工具</h2>
+<h3 id="41-debugsession-toolsdebug_helperspy">4.1 DebugSession: <code>tools/debug_helpers.py</code></h3>
+<p>文件路径: <code>/tools/debug_helpers.py</code></p>
+<p>统一的调试会话基础设施，替代了之前分散在 web_tools、vision_tools 等模块中的重复代码：</p>
+<ul>
+<li><strong>环境变量控制</strong>: 每个工具通过独立环境变量激活调试（如 <code>WEB_TOOLS_DEBUG=true</code>），第 43-45 行</li>
+<li><strong>零开销禁用</strong>: 未启用时所有方法为 no-op（第 56-62 行）</li>
+<li><strong>结构化记录</strong>: <code>log_call()</code> 记录带时间戳的工具调用数据到内存（第 60-68 行）</li>
+<li><strong>JSON 持久化</strong>: <code>save()</code> 将调试日志刷写到 <code>~/.hermes/logs/{tool_name}_debug_{session_id}.json</code>（第 70-89 行）</li>
+<li><strong>会话信息查询</strong>: <code>get_session_info()</code> 返回摘要字典，包含 enabled、session_id、log_path、total_calls（第 91-105 行）</li>
+</ul>
+<h3 id="42-doctor-hermes_clidoctorpy">4.2 Doctor 诊断: <code>hermes_cli/doctor.py</code></h3>
+<p>文件路径: <code>/hermes_cli/doctor.py</code></p>
+<p><code>hermes doctor</code> 命令提供全面的设置诊断：</p>
+<ul>
+<li><strong>环境检测</strong>: Python 版本、.env 文件、项目路径</li>
+<li><strong>Provider 密钥检查</strong>: 检测 17+ 种 Provider 的环境变量配置（第 34-54 行）</li>
+<li><strong>工具可用性</strong>: 检查各工具的运行时可用性，包含 Honcho 等插件的特殊处理（第 62-76 行）</li>
+<li><strong>连接性测试</strong>: 在 <code>hermes status --deep</code> 模式下测试 OpenRouter API 连通性和 Gateway 端口状态</li>
+</ul>
+<hr />
+<h2 id="5">5. 运行时状态</h2>
+<h3 id="51-cli-hermes_clistatuspy">5.1 CLI 状态面板: <code>hermes_cli/status.py</code></h3>
+<p>文件路径: <code>/hermes_cli/status.py</code></p>
+<p><code>hermes status</code> 命令提供全景状态视图，共 8 个检查维度：</p>
+<ol>
+<li><strong>Environment</strong> -- 项目路径、Python 版本、.env 文件、模型、Provider（第 96-109 行）</li>
+<li><strong>API Keys</strong> -- 14 种服务密钥的配置状态（脱敏显示），第 115-147 行</li>
+<li><strong>Auth Providers</strong> -- Nous Portal、OpenAI Codex、Qwen OAuth 登录状态（第 155-208 行）</li>
+<li><strong>Nous Subscription Features</strong> -- 订阅功能的激活状态（第 212-232 行）</li>
+<li><strong>API-Key Providers</strong> -- Z.AI、Kimi、MiniMax 等按密钥认证的 Provider（第 237-255 行）</li>
+<li><strong>Terminal Backend</strong> -- local/ssh/docker/daytona 后端及配置（第 260-286 行）</li>
+<li><strong>Messaging Platforms</strong> -- Telegram/Discord/WhatsApp/Signal 等 10 个平台（第 293-319 行）</li>
+<li><strong>Gateway Service</strong> -- systemd(Linux)/launchd(macOS) 服务状态（第 325-362 行）</li>
+<li><strong>Scheduled Jobs</strong> -- cron 作业统计（第 370-382 行）</li>
+<li><strong>Sessions</strong> -- 活跃会话数（第 388-400 行）</li>
+<li><strong>Deep Checks</strong> -- API 连通性、端口占用检测（第 405-435 行）</li>
+</ol>
+<h3 id="52-gatewaystatuspy">5.2 网关状态: <code>gateway/status.py</code></h3>
+<p>文件路径: <code>/gateway/status.py</code></p>
+<p>PID 文件驱动的网关进程生命周期管理：</p>
+<ul>
+<li><strong>PID 文件</strong>: <code>~/.hermes/gateway.pid</code>，JSON 格式包含 pid、kind、argv、start_time（第 117-123 行）</li>
+<li><strong>Runtime Status</strong>: <code>gateway_state.json</code> 持久化网关健康信息，包含：</li>
+<li><code>gateway_state</code>: starting/running 等状态（第 129 行）</li>
+<li><code>platforms</code>: 各平台状态（state、error_code、error_message），第 199-221 行</li>
+<li><code>updated_at</code>: 最后更新时间</li>
+<li><strong>进程验证</strong>: <code>get_running_pid()</code> 通过 <code>os.kill(pid, 0)</code> 验证存活、<code>/proc/{pid}/stat</code> 比对启动时间、<code>/proc/{pid}/cmdline</code> 验证进程身份（第 60-96 行）</li>
+<li><strong>作用域锁</strong>: <code>acquire_scoped_lock()</code> 防止多个本地网关使用相同外部身份（如同一 Telegram bot token），第 237-314 行</li>
+</ul>
+<hr />
+<h2 id="6-cli-agentdisplaypy">6. CLI 视觉反馈: <code>agent/display.py</code></h2>
+<p>文件路径: <code>/agent/display.py</code></p>
+<h3 id="61-kawaiispinner">6.1 KawaiiSpinner</h3>
+<p>线程安全的动画 spinner，为工具执行提供 CLI 反馈（第 538-709 行）：</p>
+<ul>
+<li><strong>多种动画风格</strong>: dots、bounce、grow、arrows、star、moon、pulse、brain、sparkle（第 541-551 行）</li>
+<li><strong>Kawaii 表情</strong>: 等待和思考两组表情集（第 553-568 行）</li>
+<li><strong>环境自适应</strong>:</li>
+<li>非 TTY（Docker/systemd/pipe）: 跳过动画，仅输出一行（第 632-637 行）</li>
+<li>prompt_toolkit StdoutProxy: 不做 <code>\r</code> 覆盖动画（第 640-647 行）</li>
+<li>真实终端: 完整 <code>\r</code> 覆盖动画，120ms 帧率（第 653-668 行）</li>
+<li><strong>Skin 系统集成</strong>: 支持自定义 spinner faces、wings、thinking verbs（第 60-96 行）</li>
+</ul>
+<h3 id="62-tool-preview">6.2 工具预览 (Tool Preview)</h3>
+<p><code>build_tool_preview()</code> 为每个工具调用生成一行摘要显示（第 133-237 行）：</p>
+<ul>
+<li><strong>主参数映射</strong>: 30+ 种工具的主参数提取规则（terminal-&gt;command, web_search-&gt;query 等），第 143-154 行</li>
+<li><strong>特殊格式化</strong>: process、todo、session_search、memory、send_message、rl_* 等工具有定制预览逻辑（第 156-216 行）</li>
+<li><strong>长度截断</strong>: 支持全局 <code>_tool_preview_max_len</code> 配置（第 43-54 行）</li>
+</ul>
+<h3 id="63-inline-diff">6.3 Inline Diff 预览</h3>
+<p>文件编辑操作的 unified diff 实时预览（第 241-531 行）：</p>
+<ul>
+<li><strong>快照机制</strong>: <code>capture_local_edit_snapshot()</code> 在工具执行前捕获文件状态（第 317-326 行）</li>
+<li><strong>ANSI 着色</strong>: 红色(-)、绿色(+)、灰色(context)、紫色(file path)、暗色(hunk header)（第 23-29 行）</li>
+<li><strong>智能截断</strong>: 最多 6 个文件、80 行 diff，超出部分显示摘要统计（第 464-506 行）</li>
+</ul>
+<h3 id="64-tool-progress">6.4 Tool Progress 回调</h3>
+<p>通过 <code>tool_progress_callback</code> 机制实现跨组件的工具执行进度通知：</p>
+<ul>
+<li><strong>CLI 模式</strong>: 四级配置 off/new/all/verbose，CLI 中通过快捷键循环切换（<code>cli.py</code> 第 1348-1362 行、5271-5293 行）</li>
+<li><strong>ACP Adapter</strong>: <code>make_tool_progress_cb()</code> 为 ACP 协议创建进度回调（<code>acp_adapter/events.py</code> 第 47-90 行）</li>
+<li><strong>子 Agent 传播</strong>: delegate_tool 将父 Agent 的 progress callback 传递给子 Agent（<code>tools/delegate_tool.py</code> 第 127、314、352 行）</li>
+<li><strong>Gateway 集成</strong>: API Server 中通过 <code>_on_tool_progress</code> 函数桥接进度事件（<code>gateway/platforms/api_server.py</code> 第 567 行）</li>
+</ul>
+<hr />
+<h2 id="7-wandb">7. WandB 集成</h2>
+<p>Hermes-Agent 支持可选的 Weights &amp; Biases 集成用于 RL 训练场景的指标追踪：</p>
+<ul>
+<li>环境变量: <code>WANDB_API_KEY</code>（在 <code>hermes_cli/status.py</code> 第 130 行检测）</li>
+<li>RL 训练工具: <code>tools/rl_training_tool.py</code> 与 WandB 交互记录训练指标</li>
+<li>非通用 agent 可观测性组件，仅限 ML 训练场景</li>
+</ul>
+<hr />
+<h2 id="8">8. 架构总结</h2>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>实现方式</th>
+<th>核心文件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>日志体系</td>
+<td>RotatingFileHandler + RedactingFormatter</td>
+<td><code>hermes_logging.py</code>, <code>agent/redact.py</code></td>
+</tr>
+<tr>
+<td>日志查看</td>
+<td>CLI tail/follow + 多维过滤</td>
+<td><code>hermes_cli/logs.py</code></td>
+</tr>
+<tr>
+<td>轨迹追踪</td>
+<td>ShareGPT JSONL + LLM 压缩</td>
+<td><code>agent/trajectory.py</code>, <code>trajectory_compressor.py</code></td>
+</tr>
+<tr>
+<td>调试工具</td>
+<td>环境变量驱动的 DebugSession</td>
+<td><code>tools/debug_helpers.py</code></td>
+</tr>
+<tr>
+<td>运行时状态</td>
+<td>PID 文件 + JSON 状态文件</td>
+<td><code>gateway/status.py</code></td>
+</tr>
+<tr>
+<td>系统诊断</td>
+<td>hermes status / hermes doctor</td>
+<td><code>hermes_cli/status.py</code>, <code>hermes_cli/doctor.py</code></td>
+</tr>
+<tr>
+<td>CLI 反馈</td>
+<td>KawaiiSpinner + Tool Preview + Inline Diff</td>
+<td><code>agent/display.py</code></td>
+</tr>
+<tr>
+<td>进度通知</td>
+<td>tool_progress_callback 回调链</td>
+<td><code>cli.py</code>, <code>acp_adapter/events.py</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="_1">关键设计特征</h3>
+<ol>
+<li><strong>安全第一</strong>: RedactingFormatter 覆盖 30+ 种密钥模式，import 时锁定，不可运行时禁用</li>
+<li><strong>零外部依赖</strong>: 不依赖 LangSmith/OpenTelemetry/Datadog 等外部 tracing 服务</li>
+<li><strong>CLI 原生</strong>: 所有可观测性工具围绕 CLI 使用场景设计（tail、follow、doctor、status）</li>
+<li><strong>渐进式调试</strong>: 常规用 INFO 日志，需要时启用 verbose，深入调试用 DebugSession</li>
+<li><strong>多 Profile 隔离</strong>: 通过 <code>get_hermes_home()</code> 的 profile 感知实现日志和状态的自然隔离</li>
+</ol>
+</body>
+</html>

@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>00-index</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1 id="hermes-agent">Hermes-Agent 架构研究索引</h1>
+<p>本目录聚焦 Hermes-Agent 的核心架构与子系统深度分析，每篇文档包含架构图、关键接口、数据流与设计模式总结。</p>
+<h2 id="_1">文档列表</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>文件</th>
+<th>主题</th>
+<th>行数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>01</td>
+<td><a href="01-agent-loop.html">01-agent-loop.md</a></td>
+<td>Agent Loop 循环、调度与执行流程</td>
+<td>~338</td>
+</tr>
+<tr>
+<td>02</td>
+<td><a href="02-system-prompt.html">02-system-prompt.md</a></td>
+<td>System Prompt 构建、注入与管理</td>
+<td>~367</td>
+</tr>
+<tr>
+<td>03</td>
+<td><a href="03-context-management.html">03-context-management.md</a></td>
+<td>上下文管理、压缩与窗口策略</td>
+<td>~230</td>
+</tr>
+<tr>
+<td>04</td>
+<td><a href="04-memory-system.html">04-memory-system.md</a></td>
+<td>记忆系统、存储与检索机制</td>
+<td>~328</td>
+</tr>
+<tr>
+<td>05</td>
+<td><a href="05-tool-calling.html">05-tool-calling.md</a></td>
+<td>Tool Calling 架构、注册与执行</td>
+<td>~468</td>
+</tr>
+<tr>
+<td>06</td>
+<td><a href="06-subagent.html">06-subagent.md</a></td>
+<td>Subagent 机制、生命周期与通信</td>
+<td>~265</td>
+</tr>
+<tr>
+<td>07</td>
+<td><a href="07-permissions.html">07-permissions.md</a></td>
+<td>权限系统、审批与访问控制</td>
+<td>~353</td>
+</tr>
+<tr>
+<td>08</td>
+<td><a href="08-mcp-integration.html">08-mcp-integration.md</a></td>
+<td>MCP 集成、Server 管理与协议适配</td>
+<td>~382</td>
+</tr>
+<tr>
+<td>09</td>
+<td><a href="09-sse-streaming.html">09-sse-streaming.md</a></td>
+<td>SSE/流式输出、事件推送管线</td>
+<td>~265</td>
+</tr>
+<tr>
+<td>10</td>
+<td><a href="10-state-management.html">10-state-management.md</a></td>
+<td>State 管理、会话状态与持久化</td>
+<td>~339</td>
+</tr>
+<tr>
+<td>11</td>
+<td><a href="11-safety.html">11-safety.md</a></td>
+<td>安全架构、防护策略与威胁缓解</td>
+<td>~457</td>
+</tr>
+<tr>
+<td>12</td>
+<td><a href="12-observability.html">12-observability.md</a></td>
+<td>可观测性、日志、指标与追踪</td>
+<td>~223</td>
+</tr>
+<tr>
+<td>13</td>
+<td><a href="13-cost-management.html">13-cost-management.md</a></td>
+<td>成本管理、Token 计量与预算控制</td>
+<td>~319</td>
+</tr>
+<tr>
+<td>14</td>
+<td><a href="14-sandbox.html">14-sandbox.md</a></td>
+<td>沙箱机制、隔离执行与安全边界</td>
+<td>~382</td>
+</tr>
+<tr>
+<td>15</td>
+<td><a href="15-skill-plugin-system.html">15-skill-plugin-system.md</a></td>
+<td>Skill/Plugin 生态、加载与扩展</td>
+<td>~476</td>
+</tr>
+<tr>
+<td>16</td>
+<td><a href="16-multi-platform-gateway.html">16-multi-platform-gateway.md</a></td>
+<td>多平台 Gateway、接入适配与路由</td>
+<td>~478</td>
+</tr>
+</tbody>
+</table>
+<p><strong>总计</strong>: ~4,870+ 行深度分析</p>
+<h2 id="_2">建议阅读顺序</h2>
+<ol>
+<li><code>01-agent-loop.md</code> — 先理解核心 Agent 循环与执行流程</li>
+<li><code>02-system-prompt.md</code> — 再看 System Prompt 的构建与注入</li>
+<li><code>03-context-management.md</code> — 上下文装配、压缩与窗口管理</li>
+<li><code>04-memory-system.md</code> — 记忆存储与检索机制</li>
+<li><code>05-tool-calling.md</code> — Tool 注册、调用与结果处理</li>
+<li><code>06-subagent.md</code> — Subagent 派发与生命周期管理</li>
+<li><code>10-state-management.md</code> — 会话状态与持久化</li>
+<li><code>07-permissions.md</code> — 权限审批与访问控制</li>
+<li><code>08-mcp-integration.md</code> — MCP 协议集成与 Server 管理</li>
+<li><code>09-sse-streaming.md</code> — 流式输出与事件推送</li>
+<li><code>11-safety.md</code> — 安全架构与防护策略</li>
+<li><code>14-sandbox.md</code> — 沙箱隔离与安全执行</li>
+<li><code>12-observability.md</code> — 可观测性与监控体系</li>
+<li><code>13-cost-management.md</code> — 成本控制与 Token 管理</li>
+<li><code>15-skill-plugin-system.md</code> — Skill/Plugin 生态与扩展</li>
+<li><code>16-multi-platform-gateway.md</code> — 多平台接入与 Gateway 路由</li>
+</ol>
+<h2 id="_3">按主题阅读</h2>
+<ul>
+<li><strong>核心循环</strong>: <code>01-agent-loop.md</code></li>
+<li><strong>Prompt 工程</strong>: <code>02-system-prompt.md</code></li>
+<li><strong>上下文与记忆</strong>: <code>03-context-management.md</code>, <code>04-memory-system.md</code></li>
+<li><strong>工具与扩展</strong>: <code>05-tool-calling.md</code>, <code>08-mcp-integration.md</code>, <code>15-skill-plugin-system.md</code></li>
+<li><strong>Agent 编排</strong>: <code>06-subagent.md</code>, <code>10-state-management.md</code></li>
+<li><strong>安全体系</strong>: <code>07-permissions.md</code>, <code>11-safety.md</code>, <code>14-sandbox.md</code></li>
+<li><strong>输出与通信</strong>: <code>09-sse-streaming.md</code>, <code>16-multi-platform-gateway.md</code></li>
+<li><strong>运维与成本</strong>: <code>12-observability.md</code>, <code>13-cost-management.md</code></li>
+</ul>
+</body>
+</html>

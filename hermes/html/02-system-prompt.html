@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>02-system-prompt</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1 id="hermes-agent-system-prompt">Hermes-Agent System Prompt 深度分析</h1>
+<h2 id="1">1. 总体架构</h2>
+<p>Hermes-Agent 的 System Prompt 采用<strong>分层组装</strong>架构，核心组装逻辑位于 <code>run_agent.py</code> 的 <code>AIAgent._build_system_prompt()</code> 方法（第 2605-2764 行）。该方法按固定顺序拼接多个独立模块，最终通过 <code>"\n\n".join(prompt_parts)</code> 合并为完整的系统提示词。</p>
+<p>所有构建函数定义在 <code>agent/prompt_builder.py</code> 中，保持<strong>无状态设计</strong>（stateless）。<code>AIAgent</code> 在会话启动时调用一次并缓存结果（<code>self._cached_system_prompt</code>），仅在上下文压缩事件后重建，以最大化 prefix cache 命中率。</p>
+<h3 id="_1">组装层次（按拼接顺序）</h3>
+<table>
+<thead>
+<tr>
+<th>层次</th>
+<th>来源</th>
+<th>条件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1. Agent 身份</td>
+<td><code>SOUL.md</code> 或 <code>DEFAULT_AGENT_IDENTITY</code></td>
+<td>SOUL.md 优先</td>
+</tr>
+<tr>
+<td>2. 工具行为引导</td>
+<td><code>MEMORY_GUIDANCE</code> / <code>SESSION_SEARCH_GUIDANCE</code> / <code>SKILLS_GUIDANCE</code></td>
+<td>对应工具已加载时</td>
+</tr>
+<tr>
+<td>3. Nous 订阅能力</td>
+<td><code>build_nous_subscription_prompt()</code></td>
+<td>Nous 托管工具启用时</td>
+</tr>
+<tr>
+<td>4. 工具使用强制引导</td>
+<td><code>TOOL_USE_ENFORCEMENT_GUIDANCE</code> + 模型特定引导</td>
+<td>按模型名匹配或配置</td>
+</tr>
+<tr>
+<td>5. 用户/网关系统消息</td>
+<td><code>system_message</code> 参数</td>
+<td>外部传入时</td>
+</tr>
+<tr>
+<td>6. 持久化记忆</td>
+<td><code>self._memory_store.format_for_system_prompt()</code></td>
+<td>记忆存储启用时</td>
+</tr>
+<tr>
+<td>7. 外部记忆提供者</td>
+<td><code>self._memory_manager.build_system_prompt()</code></td>
+<td>外部记忆提供者注册时</td>
+</tr>
+<tr>
+<td>8. 技能索引</td>
+<td><code>build_skills_system_prompt()</code></td>
+<td>技能工具已加载时</td>
+</tr>
+<tr>
+<td>9. 项目上下文文件</td>
+<td><code>build_context_files_prompt()</code></td>
+<td>未跳过上下文文件时</td>
+</tr>
+<tr>
+<td>10. 时间戳与元信息</td>
+<td>日期、Session ID、Model、Provider</td>
+<td>始终</td>
+</tr>
+<tr>
+<td>11. 平台适配提示</td>
+<td><code>PLATFORM_HINTS[platform]</code></td>
+<td>匹配到平台时</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="2-agent-identity">2. Agent 身份层（Identity）</h2>
+<h3 id="21-soulmd">2.1 SOUL.md 人格定义</h3>
+<p><strong>文件</strong>: <code>agent/prompt_builder.py</code> 第 831-856 行 <code>load_soul_md()</code></p>
+<p>SOUL.md 是 Hermes-Agent 的人格定义文件，位于 <code>~/.hermes/SOUL.md</code>。用户可自定义 Agent 的人格和沟通风格。该文件<strong>在会话级缓存</strong>：<code>run_agent.py:7073-7089</code> 中 <code>_cached_system_prompt</code> 优先从 SessionDB 复用已存档的 system prompt，仅在首次构建或压缩后重建时才从磁盘读取并调用 <code>_build_system_prompt()</code>。这一设计是为了保持 Anthropic prefix cache 的稳定性。</p>
+<p>加载流程：
+1. 调用 <code>ensure_hermes_home()</code> 确保目录存在
+2. 读取 <code>~/.hermes/SOUL.md</code> 文件内容
+3. 通过 <code>_scan_context_content()</code> 进行<strong>安全扫描</strong>（见第 4 节）
+4. 通过 <code>_truncate_content()</code> 截断至 20,000 字符</p>
+<h3 id="22">2.2 默认身份回退</h3>
+<p><strong>文件</strong>: <code>agent/prompt_builder.py</code> 第 134-142 行 <code>DEFAULT_AGENT_IDENTITY</code>
+<strong>文件</strong>: <code>hermes_cli/default_soul.py</code> 第 3-11 行 <code>DEFAULT_SOUL_MD</code></p>
+<p>当 SOUL.md 不存在或为空时，使用硬编码的默认身份："You are Hermes Agent, an intelligent AI assistant created by Nous Research..."</p>
+<p><code>default_soul.py</code> 中的 <code>DEFAULT_SOUL_MD</code> 与 <code>prompt_builder.py</code> 中的 <code>DEFAULT_AGENT_IDENTITY</code> 内容一致，前者用于首次运行时写入种子文件。</p>
+<hr />
+<h2 id="3-tool-aware-guidance">3. 工具感知行为引导（Tool-Aware Guidance）</h2>
+<h3 id="31">3.1 条件注入机制</h3>
+<p><strong>文件</strong>: <code>run_agent.py</code> 第 2636-2643 行</p>
+<p>系统仅在相应工具实际加载时才注入对应引导：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">if</span> <span class="s2">&quot;memory&quot;</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">valid_tool_names</span><span class="p">:</span>
+    <span class="n">tool_guidance</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">MEMORY_GUIDANCE</span><span class="p">)</span>
+<span class="k">if</span> <span class="s2">&quot;session_search&quot;</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">valid_tool_names</span><span class="p">:</span>
+    <span class="n">tool_guidance</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">SESSION_SEARCH_GUIDANCE</span><span class="p">)</span>
+<span class="k">if</span> <span class="s2">&quot;skill_manage&quot;</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">valid_tool_names</span><span class="p">:</span>
+    <span class="n">tool_guidance</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">SKILLS_GUIDANCE</span><span class="p">)</span>
+</code></pre></div>
+
+<p>这种设计避免了在未加载工具时提及不存在的能力，减少模型产生幻觉的可能。</p>
+<h3 id="32-memory_guidance">3.2 记忆引导 (MEMORY_GUIDANCE)</h3>
+<p><strong>文件</strong>: <code>agent/prompt_builder.py</code> 第 144-156 行</p>
+<p>核心指令：
+- 保存持久事实：用户偏好、环境细节、工具特性、惯例
+- <strong>不保存</strong>任务进度、会话结果、临时 TODO 状态
+- 优先保存"减少未来用户纠正"的信息
+- 用户偏好和重复纠正优先于过程细节</p>
+<h3 id="33-skills_guidance">3.3 技能引导 (SKILLS_GUIDANCE)</h3>
+<p><strong>文件</strong>: <code>agent/prompt_builder.py</code> 第 164-171 行</p>
+<p>指示 Agent 在完成复杂任务（5+ 工具调用）后保存为技能，并在使用技能时发现过时内容立即修补。</p>
+<h3 id="34-tool_use_enforcement">3.4 工具使用强制引导 (TOOL_USE_ENFORCEMENT)</h3>
+<p><strong>文件</strong>: <code>agent/prompt_builder.py</code> 第 173-186 行</p>
+<p>要求模型必须实际调用工具而非描述意图。这是针对部分模型倾向"描述行动而非执行"的行为矫正。</p>
+<hr />
+<h2 id="4-model-specific-adaptation">4. 模型特定适配（Model-Specific Adaptation）</h2>
+<h3 id="41">4.1 适配矩阵</h3>
+<p><strong>文件</strong>: <code>agent/prompt_builder.py</code> 第 188-283 行</p>
+<table>
+<thead>
+<tr>
+<th>模型族</th>
+<th>触发条件</th>
+<th>注入内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GPT/Codex</td>
+<td>模型名含 "gpt" / "codex"</td>
+<td><code>TOOL_USE_ENFORCEMENT_GUIDANCE</code> + <code>OPENAI_MODEL_EXECUTION_GUIDANCE</code></td>
+</tr>
+<tr>
+<td>Gemini/Gemma</td>
+<td>模型名含 "gemini" / "gemma"</td>
+<td><code>TOOL_USE_ENFORCEMENT_GUIDANCE</code> + <code>GOOGLE_MODEL_OPERATIONAL_GUIDANCE</code></td>
+</tr>
+<tr>
+<td>Grok</td>
+<td>模型名含 "grok"</td>
+<td><code>TOOL_USE_ENFORCEMENT_GUIDANCE</code></td>
+</tr>
+<tr>
+<td>Alibaba</td>
+<td>provider == "alibaba"</td>
+<td>模型身份注入（修复 API 返回错误模型名）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="42-openai-openai_model_execution_guidance">4.2 OpenAI 执行纪律 (OPENAI_MODEL_EXECUTION_GUIDANCE)</h3>
+<p><strong>文件</strong>: <code>agent/prompt_builder.py</code> 第 196-254 行</p>
+<p>使用 XML 标签结构化指令，涵盖 6 个维度：
+- <code>&lt;tool_persistence&gt;</code>: 工具使用持续性
+- <code>&lt;mandatory_tool_use&gt;</code>: 强制工具使用场景
+- <code>&lt;act_dont_ask&gt;</code>: 立即行动原则
+- <code>&lt;prerequisite_checks&gt;</code>: 前置条件检查
+- <code>&lt;verification&gt;</code>: 结果验证
+- <code>&lt;missing_context&gt;</code>: 缺失上下文处理</p>
+<h3 id="43-developer-role">4.3 Developer Role 切换</h3>
+<p><strong>文件</strong>: <code>agent/prompt_builder.py</code> 第 280-283 行</p>
+<div class="codehilite"><pre><span></span><code><span class="n">DEVELOPER_ROLE_MODELS</span> <span class="o">=</span> <span class="p">(</span><span class="s2">&quot;gpt-5&quot;</span><span class="p">,</span> <span class="s2">&quot;codex&quot;</span><span class="p">)</span>
+</code></pre></div>
+
+<p>GPT-5 和 Codex 模型在 API 层将 <code>system</code> 角色替换为 <code>developer</code> 角色，以获得更强的指令遵循权重。</p>
+<hr />
+<h2 id="5">5. 安全扫描机制</h2>
+<h3 id="51">5.1 上下文文件注入防御</h3>
+<p><strong>文件</strong>: <code>agent/prompt_builder.py</code> 第 36-73 行</p>
+<p>所有加载的上下文文件（SOUL.md、AGENTS.md、.cursorrules 等）在注入前都经过 <code>_scan_context_content()</code> 扫描：</p>
+<p><strong>威胁模式检测</strong>（第 36-47 行）：
+- <code>prompt_injection</code>: "ignore previous/all instructions"
+- <code>deception_hide</code>: "do not tell the user"
+- <code>sys_prompt_override</code>: "system prompt override"
+- <code>disregard_rules</code>: "disregard your rules/instructions"
+- <code>bypass_restrictions</code>: "act as if you have no restrictions"
+- <code>html_comment_injection</code>: HTML 注释中含 ignore/override/secret
+- <code>hidden_div</code>: CSS display:none 隐藏内容
+- <code>translate_execute</code>: 翻译并执行
+- <code>exfil_curl</code>: curl 命令含 KEY/TOKEN/SECRET 等变量
+- <code>read_secrets</code>: cat 命令读取 .env/credentials 等文件</p>
+<p><strong>不可见字符检测</strong>（第 49-52 行）：
+- 零宽空格 (U+200B)
+- 零宽非连接器 (U+200C)
+- 零宽连接器 (U+200D)
+- 字宽非断行空格 (U+2060)
+- BOM (U+FEFF)
+- 双向覆盖字符 (U+202A-202E)</p>
+<p>检测到威胁时，内容被替换为 <code>[BLOCKED: {filename} contained potential prompt injection ...]</code>。</p>
+<h3 id="52">5.2 上下文引用安全</h3>
+<p><strong>文件</strong>: <code>agent/context_references.py</code> 第 20-36 行</p>
+<p><code>@file:</code>/<code>@folder:</code> 引用的路径安全检查：</p>
+<p><strong>敏感目录黑名单</strong>: <code>.ssh</code>, <code>.aws</code>, <code>.gnupg</code>, <code>.kube</code>, <code>.docker</code>, <code>.azure</code>, <code>.config/gh</code></p>
+<p><strong>敏感文件黑名单</strong>: <code>~/.ssh/id_rsa</code>, <code>~/.ssh/id_ed25519</code>, <code>~/.bashrc</code>, <code>~/.zshrc</code>, <code>~/.netrc</code>, <code>~/.pgpass</code>, <code>~/.npmrc</code>, <code>~/.pypirc</code> 等</p>
+<p><strong>路径沙箱</strong>: 引用路径不得超出允许的工作目录（<code>allowed_root</code>，默认为 cwd）。</p>
+<h3 id="53-token">5.3 Token 注入限制</h3>
+<p><strong>文件</strong>: <code>agent/context_references.py</code> 第 170-184 行</p>
+<ul>
+<li><strong>硬限制</strong>: 注入 token 数超过上下文长度 50% 时拒绝注入</li>
+<li><strong>软限制</strong>: 超过 25% 时发出警告</li>
+</ul>
+<hr />
+<h2 id="6-skills-system">6. 技能系统（Skills System）</h2>
+<h3 id="61">6.1 技能索引构建</h3>
+<p><strong>文件</strong>: <code>agent/prompt_builder.py</code> 第 529-746 行 <code>build_skills_system_prompt()</code></p>
+<p>技能索引采用<strong>两层缓存</strong>架构：</p>
+<ol>
+<li><strong>进程内 LRU 缓存</strong>（第 554-573 行）: <code>OrderedDict</code> 实现，最大 8 条目，键包含 skills_dir + external_dirs + available_tools + available_toolsets + platform</li>
+<li><strong>磁盘快照</strong>（第 577-608 行）: <code>.skills_prompt_snapshot.json</code>，通过 mtime/size manifest 验证有效性</li>
+<li><strong>文件系统扫描</strong>（第 610-650 行）: 冷路径兜底，扫描后写入快照</li>
+</ol>
+<p>技能索引输出格式：</p>
+<div class="codehilite"><pre><span></span><code>## Skills (mandatory)
+Before replying, scan the skills below...
+<span class="nt">&lt;available_skills&gt;</span>
+  category: description
+    - skill_name: description
+<span class="nt">&lt;/available_skills&gt;</span>
+</code></pre></div>
+
+<h3 id="62">6.2 条件技能可见性</h3>
+<p><strong>文件</strong>: <code>agent/prompt_builder.py</code> 第 498-526 行 <code>_skill_should_show()</code></p>
+<p>技能支持条件激活规则：
+- <code>fallback_for_toolsets/tools</code>: 当主工具/工具集可用时隐藏
+- <code>requires_toolsets/tools</code>: 当必需的工具/工具集不可用时隐藏</p>
+<h3 id="63-skill">6.3 Skill 命令调用</h3>
+<p><strong>文件</strong>: <code>agent/skill_commands.py</code> 第 291-326 行 <code>build_skill_invocation_message()</code></p>
+<p>用户通过 <code>/skill-name</code> 命令激活技能时，构建包含以下内容的消息：
+1. 激活注释: <code>[SYSTEM: The user has invoked the "..." skill...]</code>
+2. 技能内容（Markdown body）
+3. 解析后的技能配置值（来自 <code>~/.hermes/config.yaml</code>）
+4. 关联文件列表（references/templates/scripts/assets）
+5. 用户附加指令
+6. 运行时注释</p>
+<h3 id="64">6.4 预加载技能</h3>
+<p><strong>文件</strong>: <code>agent/skill_commands.py</code> 第 329-368 行 <code>build_preloaded_skills_prompt()</code></p>
+<p>CLI 启动时可预加载技能，生成包含 <code>[SYSTEM: ... skill preloaded. Treat its instructions as active guidance...]</code> 的系统级提示。</p>
+<hr />
+<h2 id="7-context-files">7. 上下文文件系统（Context Files）</h2>
+<h3 id="71">7.1 优先级与发现</h3>
+<p><strong>文件</strong>: <code>agent/prompt_builder.py</code> 第 944-984 行 <code>build_context_files_prompt()</code></p>
+<p>项目上下文文件按优先级加载（<strong>首个命中即停止</strong>）：</p>
+<table>
+<thead>
+<tr>
+<th>优先级</th>
+<th>文件</th>
+<th>搜索范围</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>.hermes.md</code> / <code>HERMES.md</code></td>
+<td>cwd 向上至 git root</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>AGENTS.md</code> / <code>agents.md</code></td>
+<td>仅 cwd</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>CLAUDE.md</code> / <code>claude.md</code></td>
+<td>仅 cwd</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>.cursorrules</code> / <code>.cursor/rules/*.mdc</code></td>
+<td>仅 cwd</td>
+</tr>
+</tbody>
+</table>
+<p>SOUL.md 独立于项目上下文，始终加载。</p>
+<h3 id="72-hermesmd">7.2 Hermes.md 发现算法</h3>
+<p><strong>文件</strong>: <code>agent/prompt_builder.py</code> 第 76-110 行</p>
+<p><code>_find_hermes_md()</code> 从当前工作目录向上遍历至 git root，返回第一个找到的 <code>.hermes.md</code> 或 <code>HERMES.md</code>。支持 YAML frontmatter（通过 <code>_strip_yaml_frontmatter()</code> 剥离结构化配置，仅保留 Markdown body）。</p>
+<h3 id="73">7.3 截断策略</h3>
+<p><strong>文件</strong>: <code>agent/prompt_builder.py</code> 第 354-356 行, 第 819-828 行</p>
+<div class="codehilite"><pre><span></span><code><span class="n">CONTEXT_FILE_MAX_CHARS</span> <span class="o">=</span> <span class="mi">20_000</span>
+<span class="n">CONTEXT_TRUNCATE_HEAD_RATIO</span> <span class="o">=</span> <span class="mf">0.7</span>
+<span class="n">CONTEXT_TRUNCATE_TAIL_RATIO</span> <span class="o">=</span> <span class="mf">0.2</span>
+</code></pre></div>
+
+<p>超过 20,000 字符的上下文文件采用 head (70%) + tail (20%) 截断，中间插入截断标记。</p>
+<hr />
+<h2 id="8-platform-hints">8. 平台适配（Platform Hints）</h2>
+<h3 id="81">8.1 支持的平台</h3>
+<p><strong>文件</strong>: <code>agent/prompt_builder.py</code> 第 285-352 行</p>
+<table>
+<thead>
+<tr>
+<th>平台</th>
+<th>核心指令</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>WhatsApp</td>
+<td>禁用 Markdown，支持 <code>MEDIA:/path</code> 原生附件</td>
+</tr>
+<tr>
+<td>Telegram</td>
+<td>禁用 Markdown，支持 <code>MEDIA:/path</code>（ogg 语音、mp4 视频）</td>
+</tr>
+<tr>
+<td>Discord</td>
+<td>支持 Markdown，支持 <code>MEDIA:/path</code> 照片附件</td>
+</tr>
+<tr>
+<td>Slack</td>
+<td>支持 Markdown，支持 <code>MEDIA:/path</code> 上传附件</td>
+</tr>
+<tr>
+<td>Signal</td>
+<td>禁用 Markdown，支持 <code>MEDIA:/path</code></td>
+</tr>
+<tr>
+<td>Email</td>
+<td>纯文本格式，支持文件附件，保留主题行</td>
+</tr>
+<tr>
+<td>Cron</td>
+<td>无用户交互模式，全自主执行</td>
+</tr>
+<tr>
+<td>CLI</td>
+<td>终端纯文本渲染</td>
+</tr>
+<tr>
+<td>SMS</td>
+<td>1600 字符限制，纯文本</td>
+</tr>
+</tbody>
+</table>
+<h3 id="82-media">8.2 MEDIA 协议</h3>
+<p>所有消息平台统一使用 <code>MEDIA:/absolute/path/to/file</code> 协议发送媒体文件。模型通过在回复中包含此标记触发附件发送。</p>
+<hr />
+<h2 id="9-context-references">9. 上下文引用系统（Context References）</h2>
+<h3 id="91">9.1 引用类型</h3>
+<p><strong>文件</strong>: <code>agent/context_references.py</code> 第 16-19 行</p>
+<p>正则模式: <code>(?&lt;![\w/])@(?:(?P&lt;simple&gt;diff|staged)\b|(?P&lt;kind&gt;file|folder|git|url):(?P&lt;value&gt;\S+))</code></p>
+<table>
+<thead>
+<tr>
+<th>类型</th>
+<th>语法</th>
+<th>功能</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>@diff</code></td>
+<td><code>@diff</code></td>
+<td>注入 <code>git diff</code></td>
+</tr>
+<tr>
+<td><code>@staged</code></td>
+<td><code>@staged</code></td>
+<td>注入 <code>git diff --staged</code></td>
+</tr>
+<tr>
+<td><code>@file:path</code></td>
+<td><code>@file:path:10-20</code></td>
+<td>注入文件内容（支持行号范围）</td>
+</tr>
+<tr>
+<td><code>@folder:path</code></td>
+<td><code>@folder:src</code></td>
+<td>注入目录结构清单</td>
+</tr>
+<tr>
+<td><code>@git:N</code></td>
+<td><code>@git:3</code></td>
+<td>注入最近 N 次提交日志（1-10）</td>
+</tr>
+<tr>
+<td><code>@url:http...</code></td>
+<td><code>@url:https://example.com</code></td>
+<td>提取并注入网页内容</td>
+</tr>
+</tbody>
+</table>
+<h3 id="92">9.2 处理流程</h3>
+<ol>
+<li>解析消息中的 <code>@</code> 引用 → <code>parse_context_references()</code></li>
+<li>展开每个引用为内容块 → <code>_expand_reference()</code></li>
+<li>检查 token 预算（硬限制 50%，软限制 25%）</li>
+<li>从原始消息中移除引用 token → <code>_remove_reference_tokens()</code></li>
+<li>拼接警告和附加上下文至消息末尾</li>
+</ol>
+<hr />
+<h2 id="10">10. 持久化记忆注入</h2>
+<h3 id="101">10.1 内置记忆存储</h3>
+<p><strong>文件</strong>: <code>run_agent.py</code> 第 2688-2697 行</p>
+<p>两种记忆类型独立注入：
+- <code>format_for_system_prompt("memory")</code>: 记忆条目（事实性知识）
+- <code>format_for_system_prompt("user")</code>: USER.md 用户画像</p>
+<h3 id="102">10.2 外部记忆提供者</h3>
+<p><strong>文件</strong>: <code>agent/memory_manager.py</code> 第 151-168 行</p>
+<p><code>MemoryManager.build_system_prompt()</code> 遍历所有已注册的 <code>MemoryProvider</code>，收集各自的 <code>system_prompt_block()</code> 并合并。支持 Honcho 等第三方记忆后端。</p>
+<hr />
+<h2 id="11">11. 关键设计决策</h2>
+<h3 id="111">11.1 缓存策略</h3>
+<p>System Prompt <strong>每会话构建一次</strong>，仅在上下文压缩事件后重建。这使得 LLM 提供商的 prefix caching 能够生效，显著降低首 token 延迟和成本。</p>
+<h3 id="112">11.2 安全纵深</h3>
+<p>多层安全防御：
+1. 上下文文件内容的 prompt injection 检测
+2. 文件路径的敏感文件/目录黑名单
+3. 路径沙箱限制（不得逃逸工作目录）
+4. Token 注入量硬限制
+5. 不可见 Unicode 字符检测</p>
+<h3 id="113">11.3 可扩展性</h3>
+<ul>
+<li>新平台只需在 <code>PLATFORM_HINTS</code> 字典添加条目</li>
+<li>新模型族只需在 <code>TOOL_USE_ENFORCEMENT_MODELS</code> 添加匹配模式</li>
+<li>技能系统通过文件系统自动发现，无需代码修改</li>
+<li>记忆系统通过 Provider 模式支持任意后端</li>
+</ul>
+<h3 id="114">11.4 上下文感知</h3>
+<p>System Prompt 根据运行时状态动态调整：
+- 已加载的工具集决定注入哪些行为引导
+- 当前模型决定注入哪些执行纪律
+- 当前平台决定注入哪些格式约束
+- 是否有 Nous 订阅决定能力状态描述</p>
+</body>
+</html>

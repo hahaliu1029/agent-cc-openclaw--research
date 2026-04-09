@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>16-multi-platform-gateway</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1 id="hermes-agent-gateway">Hermes-agent 多平台 Gateway 深度分析</h1>
+<h2 id="1">1. 架构总览</h2>
+<p>Hermes-agent 的 Gateway 是一个<strong>进程内多平台消息总线</strong>，运行在单个 Python 异步进程中，同时维护与多个消息平台的连接。所有平台共享同一个 AI Agent 后端，通过统一的消息事件模型实现"一个 Agent, 多平台触达"。</p>
+<p>核心组件关系：</p>
+<div class="codehilite"><pre><span></span><code>GatewayRunner (gateway/run.py)
+  |
+  +-- GatewayConfig (gateway/config.py)           # 配置中心
+  +-- SessionStore (gateway/session.py)            # 会话持久化
+  +-- DeliveryRouter (gateway/delivery.py)         # 消息投递路由
+  +-- HookRegistry (gateway/hooks.py)              # 事件钩子
+  +-- PairingStore (gateway/pairing.py)            # 设备配对/用户授权
+  +-- ChannelDirectory (gateway/channel_directory.py) # 频道发现
+  +-- Dict[Platform, BasePlatformAdapter]          # 平台适配器池
+</code></pre></div>
+
+<h2 id="2">2. 平台抽象层</h2>
+<h3 id="21-platform">2.1 Platform 枚举</h3>
+<p>文件：<code>gateway/config.py</code> 第 48-65 行</p>
+<div class="codehilite"><pre><span></span><code><span class="k">class</span> <span class="nc">Platform</span><span class="p">(</span><span class="n">Enum</span><span class="p">):</span>
+    <span class="n">LOCAL</span> <span class="o">=</span> <span class="s2">&quot;local&quot;</span>
+    <span class="n">TELEGRAM</span> <span class="o">=</span> <span class="s2">&quot;telegram&quot;</span>
+    <span class="n">DISCORD</span> <span class="o">=</span> <span class="s2">&quot;discord&quot;</span>
+    <span class="n">WHATSAPP</span> <span class="o">=</span> <span class="s2">&quot;whatsapp&quot;</span>
+    <span class="n">SLACK</span> <span class="o">=</span> <span class="s2">&quot;slack&quot;</span>
+    <span class="n">SIGNAL</span> <span class="o">=</span> <span class="s2">&quot;signal&quot;</span>
+    <span class="n">MATTERMOST</span> <span class="o">=</span> <span class="s2">&quot;mattermost&quot;</span>
+    <span class="n">MATRIX</span> <span class="o">=</span> <span class="s2">&quot;matrix&quot;</span>
+    <span class="n">HOMEASSISTANT</span> <span class="o">=</span> <span class="s2">&quot;homeassistant&quot;</span>
+    <span class="n">EMAIL</span> <span class="o">=</span> <span class="s2">&quot;email&quot;</span>
+    <span class="n">SMS</span> <span class="o">=</span> <span class="s2">&quot;sms&quot;</span>
+    <span class="n">DINGTALK</span> <span class="o">=</span> <span class="s2">&quot;dingtalk&quot;</span>
+    <span class="n">API_SERVER</span> <span class="o">=</span> <span class="s2">&quot;api_server&quot;</span>
+    <span class="n">WEBHOOK</span> <span class="o">=</span> <span class="s2">&quot;webhook&quot;</span>
+    <span class="n">FEISHU</span> <span class="o">=</span> <span class="s2">&quot;feishu&quot;</span>
+    <span class="n">WECOM</span> <span class="o">=</span> <span class="s2">&quot;wecom&quot;</span>
+</code></pre></div>
+
+<p>共 16 个平台（含 LOCAL），覆盖即时通讯（Telegram/Discord/Slack/WhatsApp/Signal/Matrix/Mattermost）、企业办公（飞书/钉钉/企业微信）、传统通信（Email/SMS）、IoT（HomeAssistant）以及开放接入（API Server/Webhook）。</p>
+<h3 id="22-baseplatformadapter">2.2 BasePlatformAdapter 基类</h3>
+<p>文件：<code>gateway/platforms/base.py</code> 第 470-797 行</p>
+<p>这是所有平台适配器的抽象基类（ABC），定义了完整的适配器契约：</p>
+<p><strong>必须实现的抽象方法：</strong></p>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>签名</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>connect()</code></td>
+<td><code>async def connect(self) -&gt; bool</code></td>
+<td>连接平台、启动监听</td>
+</tr>
+<tr>
+<td><code>disconnect()</code></td>
+<td><code>async def disconnect() -&gt; None</code></td>
+<td>断开连接、释放资源</td>
+</tr>
+<tr>
+<td><code>send()</code></td>
+<td><code>async def send(chat_id, content, reply_to?, metadata?) -&gt; SendResult</code></td>
+<td>发送文本消息</td>
+</tr>
+</tbody>
+</table>
+<p><strong>可选方法（有默认实现）：</strong></p>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>默认行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>send_typing(chat_id)</code></td>
+<td>无操作</td>
+</tr>
+<tr>
+<td><code>stop_typing(chat_id)</code></td>
+<td>无操作</td>
+</tr>
+<tr>
+<td><code>send_image(chat_id, url, caption)</code></td>
+<td>降级为发送 URL 文本</td>
+</tr>
+<tr>
+<td><code>send_animation(chat_id, url, caption)</code></td>
+<td>降级为 <code>send_image</code></td>
+</tr>
+<tr>
+<td><code>send_voice(chat_id, path, caption)</code></td>
+<td>降级为发送路径文本</td>
+</tr>
+<tr>
+<td><code>send_video(chat_id, path, caption)</code></td>
+<td>降级为发送路径文本</td>
+</tr>
+<tr>
+<td><code>send_document(chat_id, path, caption)</code></td>
+<td>降级为发送路径文本</td>
+</tr>
+<tr>
+<td><code>edit_message(chat_id, msg_id, content)</code></td>
+<td>返回 <code>success=False</code></td>
+</tr>
+<tr>
+<td><code>get_chat_info(chat_id)</code></td>
+<td>返回空 dict</td>
+</tr>
+</tbody>
+</table>
+<p><strong>内置辅助功能：</strong></p>
+<ul>
+<li><strong>消息处理回调注册</strong>：<code>set_message_handler(handler)</code> -- 由 <code>GatewayRunner</code> 在启动时注入</li>
+<li><strong>会话存储注入</strong>：<code>set_session_store(store)</code> -- 用于 Slack 等平台的线程上下文检查</li>
+<li><strong>致命错误处理</strong>：<code>_set_fatal_error(code, message, retryable)</code> + <code>_notify_fatal_error()</code> -- 触发 GatewayRunner 的重连逻辑</li>
+<li><strong>图片提取</strong>：<code>extract_images(content)</code> -- 从 Markdown/HTML 中提取图片 URL 和 alt 文本</li>
+<li><strong>发送重试</strong>：基类封装了对 <code>_RETRYABLE_ERROR_PATTERNS</code>（第 453-463 行）的自动重试逻辑</li>
+</ul>
+<h3 id="23">2.3 统一消息事件模型</h3>
+<p>文件：<code>gateway/platforms/base.py</code> 第 367-433 行</p>
+<div class="codehilite"><pre><span></span><code><span class="k">class</span> <span class="nc">MessageType</span><span class="p">(</span><span class="n">Enum</span><span class="p">):</span>
+    <span class="n">TEXT</span> <span class="o">=</span> <span class="s2">&quot;text&quot;</span>
+    <span class="n">LOCATION</span> <span class="o">=</span> <span class="s2">&quot;location&quot;</span>
+    <span class="n">PHOTO</span> <span class="o">=</span> <span class="s2">&quot;photo&quot;</span>
+    <span class="n">VIDEO</span> <span class="o">=</span> <span class="s2">&quot;video&quot;</span>
+    <span class="n">AUDIO</span> <span class="o">=</span> <span class="s2">&quot;audio&quot;</span>
+    <span class="n">VOICE</span> <span class="o">=</span> <span class="s2">&quot;voice&quot;</span>
+    <span class="n">DOCUMENT</span> <span class="o">=</span> <span class="s2">&quot;document&quot;</span>
+    <span class="n">STICKER</span> <span class="o">=</span> <span class="s2">&quot;sticker&quot;</span>
+    <span class="n">COMMAND</span> <span class="o">=</span> <span class="s2">&quot;command&quot;</span>
+
+<span class="nd">@dataclass</span>
+<span class="k">class</span> <span class="nc">MessageEvent</span><span class="p">:</span>
+    <span class="n">text</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">message_type</span><span class="p">:</span> <span class="n">MessageType</span>
+    <span class="n">source</span><span class="p">:</span> <span class="n">SessionSource</span>
+    <span class="n">raw_message</span><span class="p">:</span> <span class="n">Any</span>           <span class="c1"># 保留原始平台对象</span>
+    <span class="n">message_id</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>
+    <span class="n">media_urls</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>      <span class="c1"># 本地文件路径（已下载到缓存）</span>
+    <span class="n">media_types</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>
+    <span class="n">reply_to_message_id</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>
+    <span class="n">reply_to_text</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>
+    <span class="n">auto_skill</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>  <span class="c1"># 频道/主题绑定的 Skill</span>
+    <span class="n">timestamp</span><span class="p">:</span> <span class="n">datetime</span>
+</code></pre></div>
+
+<p>所有平台入站消息都被规范化为 <code>MessageEvent</code>，Agent 层完全不感知平台差异。关键设计：</p>
+<ul>
+<li><code>media_urls</code> 存放的是<strong>本地缓存路径</strong>而非平台 URL，因为平台 URL 会过期（如 Telegram 文件链接约 1 小时后失效）。每个适配器负责在消息处理时将媒体下载到 <code>~/.hermes/cache/images/</code>、<code>~/.hermes/cache/audio/</code> 等目录。</li>
+<li><code>raw_message</code> 保留了原始平台消息对象，用于回复引用等平台特有操作。</li>
+<li><code>auto_skill</code> 支持频道/主题级别的 Skill 自动加载（如 Telegram 论坛主题绑定特定 Skill）。</li>
+</ul>
+<h3 id="24-sendresult">2.4 SendResult 统一响应</h3>
+<div class="codehilite"><pre><span></span><code><span class="nd">@dataclass</span>
+<span class="k">class</span> <span class="nc">SendResult</span><span class="p">:</span>
+    <span class="n">success</span><span class="p">:</span> <span class="nb">bool</span>
+    <span class="n">message_id</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>
+    <span class="n">error</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>
+    <span class="n">raw_response</span><span class="p">:</span> <span class="n">Any</span>
+    <span class="n">retryable</span><span class="p">:</span> <span class="nb">bool</span>  <span class="c1"># True 时基类自动重试</span>
+</code></pre></div>
+
+<h2 id="3">3. 适配器工厂模式</h2>
+<p>文件：<code>gateway/run.py</code> 第 1534-1657 行 <code>_create_adapter()</code></p>
+<p>GatewayRunner 使用延迟导入 + 依赖检查的工厂模式创建适配器：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">def</span> <span class="nf">_create_adapter</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">platform</span><span class="p">,</span> <span class="n">config</span><span class="p">):</span>
+    <span class="k">if</span> <span class="n">platform</span> <span class="o">==</span> <span class="n">Platform</span><span class="o">.</span><span class="n">TELEGRAM</span><span class="p">:</span>
+        <span class="kn">from</span> <span class="nn">gateway.platforms.telegram</span> <span class="kn">import</span> <span class="n">TelegramAdapter</span><span class="p">,</span> <span class="n">check_telegram_requirements</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">check_telegram_requirements</span><span class="p">():</span>
+            <span class="k">return</span> <span class="kc">None</span>
+        <span class="k">return</span> <span class="n">TelegramAdapter</span><span class="p">(</span><span class="n">config</span><span class="p">)</span>
+    <span class="k">elif</span> <span class="n">platform</span> <span class="o">==</span> <span class="n">Platform</span><span class="o">.</span><span class="n">DISCORD</span><span class="p">:</span>
+        <span class="kn">from</span> <span class="nn">gateway.platforms.discord</span> <span class="kn">import</span> <span class="n">DiscordAdapter</span><span class="p">,</span> <span class="n">check_discord_requirements</span>
+        <span class="o">...</span>
+</code></pre></div>
+
+<p><strong>设计要点：</strong></p>
+<ol>
+<li><strong>延迟导入</strong>：每个平台的 SDK 只在对应平台启用时导入，避免安装所有平台依赖</li>
+<li><strong>依赖前置检查</strong>：每个适配器模块导出 <code>check_*_requirements()</code> 函数，在实例化前检查依赖</li>
+<li><strong>统一接口</strong>：所有适配器接收 <code>PlatformConfig</code> 对象，通过 <code>config.extra</code> 字典传递平台特有配置</li>
+<li><strong>会话隔离配置注入</strong>：工厂方法将全局的 <code>group_sessions_per_user</code> 和 <code>thread_sessions_per_user</code> 注入每个适配器的 <code>config.extra</code></li>
+</ol>
+<p>启动流程（<code>gateway/run.py</code> 第 1044-1143 行）：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">for</span><span class="w"> </span><span class="n">platform</span><span class="p">,</span><span class="w"> </span><span class="n">platform_config</span><span class="w"> </span><span class="ow">in</span><span class="w"> </span><span class="n">self</span><span class="p">.</span><span class="n">config</span><span class="p">.</span><span class="n">platforms</span><span class="p">.</span><span class="n">items</span><span class="p">()</span><span class="err">:</span><span class="w"></span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="ow">not</span><span class="w"> </span><span class="n">platform_config</span><span class="p">.</span><span class="nl">enabled</span><span class="p">:</span><span class="w"></span>
+<span class="w">        </span><span class="k">continue</span><span class="w"></span>
+<span class="w">    </span><span class="n">adapter</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">self</span><span class="p">.</span><span class="n">_create_adapter</span><span class="p">(</span><span class="n">platform</span><span class="p">,</span><span class="w"> </span><span class="n">platform_config</span><span class="p">)</span><span class="w"></span>
+<span class="w">    </span><span class="n">adapter</span><span class="p">.</span><span class="n">set_message_handler</span><span class="p">(</span><span class="n">self</span><span class="p">.</span><span class="n">_handle_message</span><span class="p">)</span><span class="w"></span>
+<span class="w">    </span><span class="n">adapter</span><span class="p">.</span><span class="n">set_fatal_error_handler</span><span class="p">(</span><span class="n">self</span><span class="p">.</span><span class="n">_handle_adapter_fatal_error</span><span class="p">)</span><span class="w"></span>
+<span class="w">    </span><span class="n">adapter</span><span class="p">.</span><span class="n">set_session_store</span><span class="p">(</span><span class="n">self</span><span class="p">.</span><span class="n">session_store</span><span class="p">)</span><span class="w"></span>
+<span class="w">    </span><span class="n">success</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">await</span><span class="w"> </span><span class="n">adapter</span><span class="p">.</span><span class="k">connect</span><span class="p">()</span><span class="w"></span>
+<span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="nl">success</span><span class="p">:</span><span class="w"></span>
+<span class="w">        </span><span class="n">self</span><span class="p">.</span><span class="n">adapters</span><span class="o">[</span><span class="n">platform</span><span class="o">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">adapter</span><span class="w"></span>
+</code></pre></div>
+
+<h2 id="4">4. 会话管理</h2>
+<h3 id="41-sessionsource-">4.1 SessionSource -- 消息来源描述</h3>
+<p>文件：<code>gateway/session.py</code> 第 73-155 行</p>
+<div class="codehilite"><pre><span></span><code><span class="nd">@dataclass</span>
+<span class="k">class</span> <span class="nc">SessionSource</span><span class="p">:</span>
+    <span class="n">platform</span><span class="p">:</span> <span class="n">Platform</span>
+    <span class="n">chat_id</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">chat_name</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>
+    <span class="n">chat_type</span><span class="p">:</span> <span class="nb">str</span>           <span class="c1"># &quot;dm&quot; | &quot;group&quot; | &quot;channel&quot; | &quot;thread&quot;</span>
+    <span class="n">user_id</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>
+    <span class="n">user_name</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>
+    <span class="n">thread_id</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>
+    <span class="n">chat_topic</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>
+    <span class="n">user_id_alt</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>   <span class="c1"># Signal UUID</span>
+    <span class="n">chat_id_alt</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>   <span class="c1"># Signal 群组内部 ID</span>
+</code></pre></div>
+
+<p>每个平台适配器在处理入站消息时，通过 <code>self.build_source(...)</code> 构造 <code>SessionSource</code>，注入 <code>MessageEvent.source</code>。</p>
+<h3 id="42-session-key">4.2 Session Key 构建</h3>
+<p>文件：<code>gateway/session.py</code> 第 444-500 行 <code>build_session_key()</code></p>
+<p>Session Key 是会话隔离的核心标识符，构建规则：</p>
+<ul>
+<li><strong>DM 会话</strong>：<code>agent:main:{platform}:dm:{chat_id}[:{thread_id}]</code></li>
+<li><strong>群组/频道会话</strong>：<code>agent:main:{platform}:{chat_type}:{chat_id}[:{thread_id}][:{user_id}]</code></li>
+</ul>
+<p>关键隔离策略：</p>
+<table>
+<thead>
+<tr>
+<th>配置项</th>
+<th>默认值</th>
+<th>效果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>group_sessions_per_user</code></td>
+<td><code>True</code></td>
+<td>群组中每个用户独立会话</td>
+</tr>
+<tr>
+<td><code>thread_sessions_per_user</code></td>
+<td><code>False</code></td>
+<td>线程中所有用户共享会话（符合论坛/Discord 线程 UX）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="43-sessionstore">4.3 SessionStore 持久化</h3>
+<p>文件：<code>gateway/session.py</code> 第 503-540 行</p>
+<ul>
+<li>主存储：SQLite（通过 <code>hermes_state.SessionDB</code>）</li>
+<li>备份：JSONL 文件（<code>~/.hermes/sessions/{session_id}.jsonl</code>）</li>
+<li>索引：<code>sessions.json</code>（内存 + 磁盘双写）</li>
+</ul>
+<h3 id="44-session-reset-policy">4.4 Session Reset Policy</h3>
+<p>文件：<code>gateway/config.py</code> 第 96-136 行</p>
+<div class="codehilite"><pre><span></span><code><span class="nd">@dataclass</span>
+<span class="k">class</span> <span class="nc">SessionResetPolicy</span><span class="p">:</span>
+    <span class="n">mode</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;both&quot;</span>       <span class="c1"># &quot;daily&quot; | &quot;idle&quot; | &quot;both&quot; | &quot;none&quot;</span>
+    <span class="n">at_hour</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">4</span>         <span class="c1"># 每日重置时间</span>
+    <span class="n">idle_minutes</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1440</span> <span class="c1"># 空闲超时（24 小时）</span>
+    <span class="n">notify</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>
+    <span class="n">notify_exclude_platforms</span><span class="p">:</span> <span class="nb">tuple</span> <span class="o">=</span> <span class="p">(</span><span class="s2">&quot;api_server&quot;</span><span class="p">,</span> <span class="s2">&quot;webhook&quot;</span><span class="p">)</span>
+</code></pre></div>
+
+<p>支持三级覆盖优先级：平台级 &gt; 会话类型级 &gt; 全局默认</p>
+<h3 id="45-sessioncontext-agent">4.5 SessionContext -- Agent 上下文注入</h3>
+<p>文件：<code>gateway/session.py</code> 第 158-340 行</p>
+<p><code>build_session_context_prompt()</code> 生成动态系统提示，告知 Agent：
+- 当前消息来自哪个平台、哪个聊天
+- 连接了哪些平台
+- 各平台的 Home Channel
+- 可用的投递选项（<code>"origin"</code> / <code>"local"</code> / <code>"telegram"</code> 等）
+- 平台特定行为提示（如 Slack/Discord 无法搜索历史消息）</p>
+<p>PII 保护：对 WhatsApp/Signal/Telegram 等平台，用户 ID 和聊天 ID 在注入系统提示前会被 SHA-256 哈希替换（第 192-200 行 <code>_PII_SAFE_PLATFORMS</code>）。</p>
+<h2 id="5">5. 消息投递系统</h2>
+<h3 id="51-deliveryrouter">5.1 DeliveryRouter</h3>
+<p>文件：<code>gateway/delivery.py</code></p>
+<p>投递路由器解析目标字符串并分发消息：</p>
+<p><strong>目标格式：</strong></p>
+<table>
+<thead>
+<tr>
+<th>格式</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>"origin"</code></td>
+<td>回到消息来源</td>
+</tr>
+<tr>
+<td><code>"local"</code></td>
+<td>保存到本地文件</td>
+</tr>
+<tr>
+<td><code>"telegram"</code></td>
+<td>发送到 Telegram Home Channel</td>
+</tr>
+<tr>
+<td><code>"telegram:123456"</code></td>
+<td>发送到指定 Telegram 聊天</td>
+</tr>
+<tr>
+<td><code>"discord:123:456"</code></td>
+<td>发送到指定 Discord 频道的线程</td>
+</tr>
+</tbody>
+</table>
+<p><strong>路由逻辑（<code>resolve_targets()</code> 第 127-172 行）：</strong></p>
+<ol>
+<li>解析每个目标字符串为 <code>DeliveryTarget</code></li>
+<li>无 <code>chat_id</code> 时查找 Home Channel</li>
+<li>去重（平台+聊天+线程组合）</li>
+<li>如果 <code>always_log_local=True</code>，自动追加本地投递</li>
+</ol>
+<p><strong>平台消息截断（第 287-294 行）：</strong></p>
+<p>超过 4000 字符的消息会被截断（显示前 3800 字符），完整内容保存到磁盘，并在截断消息末尾附上文件路径引用。</p>
+<h3 id="52">5.2 消息镜像</h3>
+<p>文件：<code>gateway/mirror.py</code></p>
+<p>当通过 <code>send_message</code> 工具或 cron 投递向某个平台会话发送消息时，<code>mirror_to_session()</code> 会将该消息追加到目标会话的 transcript 中，使接收方的 Agent 有发送上下文。</p>
+<p>工作流：
+1. 通过 <code>sessions.json</code> 查找匹配 <code>platform + chat_id</code> 的活跃 session_id
+2. 将消息以 <code>{"role": "assistant", "mirror": true, "mirror_source": "cli"}</code> 格式写入 JSONL + SQLite</p>
+<h2 id="6">6. 频道目录</h2>
+<p>文件：<code>gateway/channel_directory.py</code></p>
+<p>频道目录是所有可达频道/联系人的缓存索引，存储在 <code>~/.hermes/channel_directory.json</code>。</p>
+<p><strong>构建策略（第 60-94 行）：</strong></p>
+<table>
+<thead>
+<tr>
+<th>平台</th>
+<th>枚举方式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Discord</td>
+<td>遍历 <code>client.guilds</code> 中的 <code>text_channels</code></td>
+</tr>
+<tr>
+<td>Slack</td>
+<td>尝试 Web API，降级为会话历史</td>
+</tr>
+<tr>
+<td>Telegram/WhatsApp/Signal/Email/SMS</td>
+<td>从 <code>sessions.json</code> 提取历史会话</td>
+</tr>
+</tbody>
+</table>
+<p><strong>名称解析（第 189-225 行）：</strong></p>
+<p>支持多种匹配策略：
+- 精确匹配（含 <code>#</code> 前缀）
+- Guild 限定匹配（<code>GuildName/channel</code>）
+- 唯一前缀匹配</p>
+<h2 id="7">7. 用户授权与配对</h2>
+<h3 id="71">7.1 多层授权检查</h3>
+<p>文件：<code>gateway/run.py</code> 第 1659-1758 行 <code>_is_user_authorized()</code></p>
+<p>检查优先级：
+1. 平台级 allow-all（<code>{PLATFORM}_ALLOW_ALL_USERS=true</code>）
+2. DM 配对已批准列表
+3. 平台级 allowlist（<code>{PLATFORM}_ALLOWED_USERS=id1,id2</code>）
+4. 全局 allowlist（<code>GATEWAY_ALLOWED_USERS</code>）
+5. 全局 allow-all（<code>GATEWAY_ALLOW_ALL_USERS</code>）
+6. 默认拒绝</p>
+<p>特殊处理：
+- HomeAssistant 和 Webhook 始终授权（系统事件/HMAC 签名验证）
+- WhatsApp 支持 phone/LID 别名解析（第 1746-1754 行）</p>
+<h3 id="72-dm">7.2 DM 配对系统</h3>
+<p>文件：<code>gateway/pairing.py</code></p>
+<p>基于一次性验证码的用户授权流：</p>
+<p><strong>安全设计（基于 OWASP + NIST SP 800-63-4）：</strong></p>
+<table>
+<thead>
+<tr>
+<th>特性</th>
+<th>参数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>验证码字母表</td>
+<td>32 字符无歧义集（排除 0/O/1/I）</td>
+</tr>
+<tr>
+<td>验证码长度</td>
+<td>8 字符</td>
+</tr>
+<tr>
+<td>随机源</td>
+<td><code>secrets.choice()</code>（密码学安全）</td>
+</tr>
+<tr>
+<td>有效期</td>
+<td>1 小时</td>
+</tr>
+<tr>
+<td>每平台最大待批准数</td>
+<td>3</td>
+</tr>
+<tr>
+<td>请求频率限制</td>
+<td>每用户每 10 分钟 1 次</td>
+</tr>
+<tr>
+<td>失败锁定</td>
+<td>5 次错误后锁定 1 小时</td>
+</tr>
+<tr>
+<td>文件权限</td>
+<td><code>chmod 0600</code></td>
+</tr>
+<tr>
+<td>原子写入</td>
+<td>tempfile + <code>os.replace()</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="8">8. 事件钩子系统</h2>
+<p>文件：<code>gateway/hooks.py</code></p>
+<h3 id="81">8.1 支持的事件类型</h3>
+<table>
+<thead>
+<tr>
+<th>事件</th>
+<th>触发时机</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>gateway:startup</code></td>
+<td>网关进程启动</td>
+</tr>
+<tr>
+<td><code>session:start</code></td>
+<td>新会话首条消息</td>
+</tr>
+<tr>
+<td><code>session:end</code></td>
+<td>用户执行 /new 或 /reset</td>
+</tr>
+<tr>
+<td><code>session:reset</code></td>
+<td>会话重置完成</td>
+</tr>
+<tr>
+<td><code>agent:start</code></td>
+<td>Agent 开始处理消息</td>
+</tr>
+<tr>
+<td><code>agent:step</code></td>
+<td>工具调用循环每轮</td>
+</tr>
+<tr>
+<td><code>agent:end</code></td>
+<td>Agent 完成处理</td>
+</tr>
+<tr>
+<td><code>command:*</code></td>
+<td>任意斜杠命令执行（通配符）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="82">8.2 钩子发现</h3>
+<p>钩子存储在 <code>~/.hermes/hooks/{hook_name}/</code> 目录：
+- <code>HOOK.yaml</code>：元数据（名称、描述、监听事件列表）
+- <code>handler.py</code>：包含 <code>async def handle(event_type, context)</code> 函数</p>
+<p>内置钩子：<code>boot-md</code>（<code>gateway/builtin_hooks/boot_md.py</code>），在启动时执行 <code>~/.hermes/BOOT.md</code>。</p>
+<h3 id="83">8.3 执行模型</h3>
+<ul>
+<li>支持同步和异步 handler（自动检测 coroutine）</li>
+<li>通配符匹配（如 <code>command:*</code> 匹配所有 <code>command:xxx</code> 事件）</li>
+<li><strong>错误隔离</strong>：handler 异常被捕获并记录日志，永远不阻塞主流水线</li>
+</ul>
+<h2 id="9">9. 消息处理主流水线</h2>
+<p>文件：<code>gateway/run.py</code> 第 1767-1916 行 <code>_handle_message()</code></p>
+<div class="codehilite"><pre><span></span><code>入站消息 (MessageEvent)
+  |
+  +-- 1. 授权检查 (_is_user_authorized)
+  |     |-- 未授权 DM: 生成配对码
+  |     |-- 未授权群组: 静默忽略
+  |
+  +-- 2. 更新提示拦截 (_update_prompt_pending)
+  |
+  +-- 3. 运行中 Agent 检查
+  |     |-- /stop: 强制终止
+  |     |-- /status: 返回状态
+  |     |-- 普通消息: 中断当前处理，追加新消息
+  |     |-- 过期锁清理: 基于空闲时间 + 墙钟时间
+  |
+  +-- 4. 命令路由 (/new, /reset, /model, /voice, ...)
+  |
+  +-- 5. 获取/创建会话 (SessionStore)
+  |
+  +-- 6. 构建上下文 (build_session_context_prompt)
+  |
+  +-- 7. 运行 Agent 对话 (_handle_message_with_agent)
+  |
+  +-- 8. 返回响应
+</code></pre></div>
+
+<h2 id="10">10. 高级特性</h2>
+<h3 id="101">10.1 实时流式输出</h3>
+<p>文件：<code>gateway/config.py</code> 第 187-214 行 <code>StreamingConfig</code></p>
+<p>支持通过 <code>editMessageText</code>（Telegram）等 API 实现实时 token 流式展示：</p>
+<div class="codehilite"><pre><span></span><code><span class="nd">@dataclass</span>
+<span class="k">class</span> <span class="nc">StreamingConfig</span><span class="p">:</span>
+    <span class="n">enabled</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
+    <span class="n">transport</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;edit&quot;</span>
+    <span class="n">edit_interval</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.3</span>   <span class="c1"># 编辑间隔</span>
+    <span class="n">buffer_threshold</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">40</span>   <span class="c1"># 字符缓冲阈值</span>
+    <span class="n">cursor</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot; ▉&quot;</span>           <span class="c1"># 流式光标</span>
+</code></pre></div>
+
+<h3 id="102">10.2 语音模式</h3>
+<p>GatewayRunner 维护 per-chat 语音回复模式（<code>_voice_mode</code>），支持 <code>"off"</code> / <code>"voice_only"</code> / <code>"all"</code> 三种模式，持久化到 <code>~/.hermes/gateway_voice_mode.json</code>。</p>
+<h3 id="103-agent-prompt-caching">10.3 Agent 缓存与 Prompt Caching</h3>
+<p><code>_agent_cache</code>（第 510-513 行）按 session_key 缓存 AIAgent 实例，避免每条消息重建系统提示。这对支持 prompt caching 的提供商（如 Anthropic）可节省约 10 倍 token 成本。</p>
+<h3 id="104">10.4 后台重连</h3>
+<p><code>_failed_platforms</code>（第 528-530 行）跟踪连接失败的平台。可重试的失败会排队进行指数退避重连，而非直接退出。如果所有平台都失败且为可重试错误，网关以失败状态退出以触发 systemd <code>Restart=on-failure</code>。</p>
+<h3 id="105-memory-flush">10.5 Memory Flush</h3>
+<p>会话重置前，网关会在线程池中运行一个临时 AIAgent，回顾对话内容并通过 <code>memory</code> / <code>skill_manage</code> 工具保存有价值的信息，避免上下文丢失。</p>
+<h2 id="11">11. 添加新平台的标准化流程</h2>
+<p>文件：<code>gateway/platforms/ADDING_A_PLATFORM.md</code></p>
+<p>添加一个新平台需要修改 <strong>16 个集成点</strong>：</p>
+<ol>
+<li>适配器实现（<code>gateway/platforms/&lt;platform&gt;.py</code>）</li>
+<li>Platform 枚举（<code>gateway/config.py</code>）</li>
+<li>适配器工厂（<code>gateway/run.py :: _create_adapter()</code>）</li>
+<li>授权映射（<code>gateway/run.py :: _is_user_authorized()</code>）</li>
+<li>Session Source（<code>gateway/session.py</code>）</li>
+<li>系统提示（<code>agent/prompt_builder.py :: PLATFORM_HINTS</code>）</li>
+<li>工具集（<code>toolsets.py</code>）</li>
+<li>Cron 投递（<code>cron/scheduler.py</code>）</li>
+<li>发送消息工具（<code>tools/send_message_tool.py</code>）</li>
+<li>Cronjob 工具 Schema（<code>tools/cronjob_tools.py</code>）</li>
+<li>频道目录（<code>gateway/channel_directory.py</code>）</li>
+<li>状态展示（<code>hermes_cli/status.py</code>）</li>
+<li>设置向导（<code>hermes_cli/gateway.py</code>）</li>
+<li>PII 脱敏（<code>agent/redact.py</code>）</li>
+<li>文档更新</li>
+<li>测试用例</li>
+</ol>
+<h2 id="12">12. 总结</h2>
+<p>Hermes-agent Gateway 的核心设计理念：</p>
+<table>
+<thead>
+<tr>
+<th>设计原则</th>
+<th>具体表现</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>适配器模式</strong></td>
+<td><code>BasePlatformAdapter</code> 抽象 + 16 个具体适配器</td>
+</tr>
+<tr>
+<td><strong>统一消息模型</strong></td>
+<td><code>MessageEvent</code> / <code>SendResult</code> 抹平平台差异</td>
+</tr>
+<tr>
+<td><strong>渐进式降级</strong></td>
+<td>基类提供默认实现，平台按能力覆盖</td>
+</tr>
+<tr>
+<td><strong>延迟加载</strong></td>
+<td>平台 SDK 仅在需要时导入</td>
+</tr>
+<tr>
+<td><strong>安全优先</strong></td>
+<td>多层授权 + 配对码 + PII 脱敏 + SSRF 防护</td>
+</tr>
+<tr>
+<td><strong>可观测性</strong></td>
+<td>钩子系统 + 运行时状态文件 + 结构化日志</td>
+</tr>
+<tr>
+<td><strong>容错性</strong></td>
+<td>自动重连 + 重试 + 错误隔离 + 优雅退出</td>
+</tr>
+</tbody>
+</table>
+</body>
+</html>

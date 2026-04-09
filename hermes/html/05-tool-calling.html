@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>05-tool-calling</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1 id="hermes-agent-tool-calling">Hermes-Agent Tool Calling 深度分析</h1>
+<h2 id="1">1. 整体架构概览</h2>
+<p>Hermes-Agent 的工具调用机制采用 <strong>中央注册表 + 模块级自注册 + 统一分发</strong> 的三层架构：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">tools</span><span class="o">/*.</span><span class="n">py</span><span class="w"> </span><span class="p">(</span><span class="err">各工具文件</span><span class="p">,</span><span class="w"> </span><span class="err">模块级自注册</span><span class="p">)</span><span class="w"></span>
+<span class="w">       </span><span class="err">↓</span><span class="w"> </span><span class="n">registry</span><span class="o">.</span><span class="n">register</span><span class="p">()</span><span class="w"></span>
+<span class="n">tools</span><span class="o">/</span><span class="n">registry</span><span class="o">.</span><span class="n">py</span><span class="w"> </span><span class="p">(</span><span class="n">ToolRegistry</span><span class="w"> </span><span class="err">单例</span><span class="p">)</span><span class="w"></span>
+<span class="w">       </span><span class="err">↓</span><span class="w"> </span><span class="n">get_definitions</span><span class="p">()</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">dispatch</span><span class="p">()</span><span class="w"></span>
+<span class="n">model_tools</span><span class="o">.</span><span class="n">py</span><span class="w"> </span><span class="p">(</span><span class="err">发现层</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="err">公共</span><span class="w"> </span><span class="n">API</span><span class="p">)</span><span class="w"></span>
+<span class="w">       </span><span class="err">↓</span><span class="w"> </span><span class="n">get_tool_definitions</span><span class="p">()</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">handle_function_call</span><span class="p">()</span><span class="w"></span>
+<span class="n">run_agent</span><span class="o">.</span><span class="n">py</span><span class="w"> </span><span class="p">(</span><span class="n">Agent</span><span class="w"> </span><span class="err">主循环</span><span class="p">,</span><span class="w"> </span><span class="err">工具调用编排</span><span class="p">)</span><span class="w"></span>
+</code></pre></div>
+
+<p><strong>核心设计原则</strong>：每个工具文件是自包含的，在模块导入时即完成注册，无需中心化维护工具列表。</p>
+<hr />
+<h2 id="2">2. 工具注册机制</h2>
+<h3 id="21-toolregistry-toolsregistrypy">2.1 ToolRegistry 单例 (<code>tools/registry.py</code>)</h3>
+<p><code>ToolRegistry</code> 是整个系统的核心数据结构，维护一个 <code>Dict[str, ToolEntry]</code> 映射。</p>
+<p><strong>ToolEntry 数据结构</strong> (第 24-45 行)：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">class</span> <span class="nc">ToolEntry</span><span class="p">:</span>
+    <span class="vm">__slots__</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="s2">&quot;name&quot;</span><span class="p">,</span> <span class="s2">&quot;toolset&quot;</span><span class="p">,</span> <span class="s2">&quot;schema&quot;</span><span class="p">,</span> <span class="s2">&quot;handler&quot;</span><span class="p">,</span> <span class="s2">&quot;check_fn&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;requires_env&quot;</span><span class="p">,</span> <span class="s2">&quot;is_async&quot;</span><span class="p">,</span> <span class="s2">&quot;description&quot;</span><span class="p">,</span> <span class="s2">&quot;emoji&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;max_result_size_chars&quot;</span><span class="p">,</span>
+    <span class="p">)</span>
+</code></pre></div>
+
+<p>关键字段：
+- <code>name</code>: 工具唯一标识符 (如 <code>"terminal"</code>, <code>"read_file"</code>)
+- <code>toolset</code>: 所属工具集 (如 <code>"terminal"</code>, <code>"file"</code>)
+- <code>schema</code>: OpenAI 函数调用格式的 JSON Schema
+- <code>handler</code>: 实际执行函数 (同步或异步)
+- <code>check_fn</code>: 可用性检查函数 (如检查 API key 是否配置)
+- <code>is_async</code>: 标识是否为异步 handler
+- <code>max_result_size_chars</code>: 单个工具结果的最大字符数限制</p>
+<p><strong>注册方法</strong> (<code>registry.register()</code>, 第 59-93 行)：
+- 在模块导入时由各工具文件调用
+- 支持工具名冲突检测 (不同 toolset 间的同名工具会发出 warning)
+- 自动收集 toolset 级别的 check_fn (每个 toolset 只保留一个)</p>
+<p><strong>反注册方法</strong> (<code>registry.deregister()</code>, 第 95-110 行)：
+- 用于 MCP 动态工具发现场景
+- 当 MCP 服务器发送 <code>notifications/tools/list_changed</code> 时，先清除再重注册
+- 自动清理无工具残留的 toolset check</p>
+<h3 id="22">2.2 模块级自注册模式</h3>
+<p>每个工具文件在底部调用 <code>registry.register()</code>，示例：</p>
+<p><strong><code>tools/file_tools.py</code> (第 832-835 行)</strong>：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">registry</span><span class="o">.</span><span class="n">register</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;read_file&quot;</span><span class="p">,</span> <span class="n">toolset</span><span class="o">=</span><span class="s2">&quot;file&quot;</span><span class="p">,</span> <span class="n">schema</span><span class="o">=</span><span class="n">READ_FILE_SCHEMA</span><span class="p">,</span>
+                  <span class="n">handler</span><span class="o">=</span><span class="n">_handle_read_file</span><span class="p">,</span> <span class="n">check_fn</span><span class="o">=</span><span class="n">_check_file_reqs</span><span class="p">,</span>
+                  <span class="n">emoji</span><span class="o">=</span><span class="s2">&quot;📖&quot;</span><span class="p">,</span> <span class="n">max_result_size_chars</span><span class="o">=</span><span class="nb">float</span><span class="p">(</span><span class="s1">&#39;inf&#39;</span><span class="p">))</span>
+<span class="n">registry</span><span class="o">.</span><span class="n">register</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;write_file&quot;</span><span class="p">,</span> <span class="n">toolset</span><span class="o">=</span><span class="s2">&quot;file&quot;</span><span class="p">,</span> <span class="n">schema</span><span class="o">=</span><span class="n">WRITE_FILE_SCHEMA</span><span class="p">,</span>
+                  <span class="n">handler</span><span class="o">=</span><span class="n">_handle_write_file</span><span class="p">,</span> <span class="n">check_fn</span><span class="o">=</span><span class="n">_check_file_reqs</span><span class="p">,</span>
+                  <span class="n">emoji</span><span class="o">=</span><span class="s2">&quot;✍️&quot;</span><span class="p">,</span> <span class="n">max_result_size_chars</span><span class="o">=</span><span class="mi">100_000</span><span class="p">)</span>
+</code></pre></div>
+
+<p><strong><code>tools/terminal_tool.py</code> (第 1616 行)</strong>：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">registry</span><span class="o">.</span><span class="n">register</span><span class="p">(</span>
+    <span class="n">name</span><span class="o">=</span><span class="s2">&quot;terminal&quot;</span><span class="p">,</span>
+    <span class="n">toolset</span><span class="o">=</span><span class="s2">&quot;terminal&quot;</span><span class="p">,</span>
+    <span class="n">schema</span><span class="o">=</span><span class="n">TERMINAL_SCHEMA</span><span class="p">,</span>
+    <span class="n">handler</span><span class="o">=</span><span class="n">_handle_terminal</span><span class="p">,</span>
+    <span class="n">check_fn</span><span class="o">=</span><span class="n">check_terminal_requirements</span><span class="p">,</span>
+    <span class="o">...</span>
+<span class="p">)</span>
+</code></pre></div>
+
+<h3 id="23-model_tools_discover_tools-132-184">2.3 工具发现流程 (<code>model_tools._discover_tools()</code>, 第 132-184 行)</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">def</span> <span class="nf">_discover_tools</span><span class="p">():</span>
+    <span class="n">_modules</span> <span class="o">=</span> <span class="p">[</span>
+        <span class="s2">&quot;tools.web_tools&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;tools.terminal_tool&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;tools.file_tools&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;tools.vision_tools&quot;</span><span class="p">,</span>
+        <span class="o">...</span>  <span class="c1"># 20+ 个模块</span>
+    <span class="p">]</span>
+    <span class="k">for</span> <span class="n">mod_name</span> <span class="ow">in</span> <span class="n">_modules</span><span class="p">:</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">importlib</span><span class="o">.</span><span class="n">import_module</span><span class="p">(</span><span class="n">mod_name</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">&quot;Could not import tool module </span><span class="si">%s</span><span class="s2">: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">mod_name</span><span class="p">,</span> <span class="n">e</span><span class="p">)</span>
+</code></pre></div>
+
+<p><strong>三阶段发现</strong>：
+1. <strong>内置工具</strong>：<code>_discover_tools()</code> 导入所有内置工具模块
+2. <strong>MCP 工具</strong>：<code>discover_mcp_tools()</code> 从 <code>~/.hermes/config.yaml</code> 读取 MCP 服务器配置
+3. <strong>插件工具</strong>：<code>discover_plugins()</code> 加载用户/项目/pip 插件</p>
+<p><strong>容错设计</strong>：每个模块的导入失败不影响其他模块 (第 163-167 行)。</p>
+<hr />
+<h2 id="3-schema">3. Schema 定义</h2>
+<h3 id="31-openai">3.1 OpenAI 函数调用格式</h3>
+<p>所有工具 Schema 统一采用 OpenAI function calling 格式：</p>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span>
+    <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;function&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;function&quot;</span><span class="p">:</span> <span class="p">{</span>
+        <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;tool_name&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;description&quot;</span><span class="p">:</span> <span class="s2">&quot;工具描述&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;parameters&quot;</span><span class="p">:</span> <span class="p">{</span>
+            <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;object&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;properties&quot;</span><span class="p">:</span> <span class="p">{</span> <span class="o">...</span> <span class="p">},</span>
+            <span class="s2">&quot;required&quot;</span><span class="p">:</span> <span class="p">[</span> <span class="o">...</span> <span class="p">]</span>
+        <span class="p">}</span>
+    <span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p><strong><code>registry.get_definitions()</code> (第 116-143 行)</strong> 负责：
+1. 遍历请求的工具名集合
+2. 对每个工具执行 <code>check_fn()</code> 可用性检查 (带缓存避免重复调用)
+3. 为 Schema 补充 <code>name</code> 字段
+4. 包装为 <code>{"type": "function", "function": schema}</code> 格式</p>
+<h3 id="32-schema-model_toolsget_tool_definitions">3.2 动态 Schema 调整 (<code>model_tools.get_tool_definitions()</code>)</h3>
+<p><strong>execute_code Schema 动态生成</strong> (第 314-321 行)：
+<code>execute_code</code> 工具的描述中会列出沙箱内可用的工具。该列表根据当前会话实际启用的工具动态生成，避免模型幻觉调用不存在的工具。</p>
+<p><strong>browser_navigate 描述裁剪</strong> (第 327-341 行)：
+当 <code>web_search</code>/<code>web_extract</code> 不可用时，从 <code>browser_navigate</code> 描述中移除对它们的引用，防止模型幻觉。</p>
+<hr />
+<h2 id="4-toolsetspy">4. 工具集管理 (<code>toolsets.py</code>)</h2>
+<h3 id="41">4.1 工具集定义结构</h3>
+<p>工具集通过静态字典 <code>TOOLSETS</code> 定义 (第 68-373 行)：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">TOOLSETS</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s2">&quot;web&quot;</span><span class="p">:</span> <span class="p">{</span>
+        <span class="s2">&quot;description&quot;</span><span class="p">:</span> <span class="s2">&quot;Web research and content extraction tools&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;tools&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;web_search&quot;</span><span class="p">,</span> <span class="s2">&quot;web_extract&quot;</span><span class="p">],</span>
+        <span class="s2">&quot;includes&quot;</span><span class="p">:</span> <span class="p">[]</span>
+    <span class="p">},</span>
+    <span class="s2">&quot;debugging&quot;</span><span class="p">:</span> <span class="p">{</span>
+        <span class="s2">&quot;description&quot;</span><span class="p">:</span> <span class="s2">&quot;Debugging and troubleshooting toolkit&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;tools&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;terminal&quot;</span><span class="p">,</span> <span class="s2">&quot;process&quot;</span><span class="p">],</span>
+        <span class="s2">&quot;includes&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;web&quot;</span><span class="p">,</span> <span class="s2">&quot;file&quot;</span><span class="p">]</span>  <span class="c1"># 组合工具集</span>
+    <span class="p">},</span>
+    <span class="o">...</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="42">4.2 工具集层次</h3>
+<ul>
+<li><strong>原子工具集</strong>：<code>web</code>, <code>terminal</code>, <code>file</code>, <code>vision</code>, <code>browser</code>, <code>tts</code> 等</li>
+<li><strong>场景工具集</strong>：<code>debugging</code> (组合 terminal + web + file), <code>safe</code> (无 terminal)</li>
+<li><strong>平台工具集</strong>：<code>hermes-cli</code>, <code>hermes-telegram</code>, <code>hermes-discord</code> 等 (共享 <code>_HERMES_CORE_TOOLS</code>)</li>
+<li><strong>聚合工具集</strong>：<code>hermes-gateway</code> (includes 所有平台工具集)</li>
+<li><strong>特殊别名</strong>：<code>all</code> / <code>*</code> 解析为所有工具集的并集</li>
+</ul>
+<h3 id="43-resolve_toolset-392-449">4.3 递归解析 (<code>resolve_toolset()</code>, 第 392-449 行)</h3>
+<ul>
+<li>支持 <code>includes</code> 字段的递归解析</li>
+<li>使用 <code>visited</code> 集合进行环检测和菱形依赖去重</li>
+<li>支持插件工具集的动态解析 (从 registry 回查)</li>
+</ul>
+<h3 id="44">4.4 运行时自定义</h3>
+<div class="codehilite"><pre><span></span><code><span class="n">create_custom_toolset</span><span class="p">(</span>
+    <span class="n">name</span><span class="o">=</span><span class="s2">&quot;my_custom&quot;</span><span class="p">,</span>
+    <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Custom toolset&quot;</span><span class="p">,</span>
+    <span class="n">tools</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;web_search&quot;</span><span class="p">],</span>
+    <span class="n">includes</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;terminal&quot;</span><span class="p">,</span> <span class="s2">&quot;vision&quot;</span><span class="p">]</span>
+<span class="p">)</span>
+</code></pre></div>
+
+<h3 id="45">4.5 三级过滤流程</h3>
+<p><code>get_tool_definitions()</code> (第 234-353 行) 的过滤逻辑：</p>
+<ol>
+<li><strong>工具集过滤</strong>：根据 <code>enabled_toolsets</code> / <code>disabled_toolsets</code> 确定候选工具名集合</li>
+<li><strong>可用性过滤</strong>：<code>registry.get_definitions()</code> 执行每个工具的 <code>check_fn()</code></li>
+<li><strong>动态 Schema 修正</strong>：根据实际可用工具调整 <code>execute_code</code> 和 <code>browser_navigate</code> 的描述</li>
+</ol>
+<hr />
+<h2 id="5">5. 分发与执行机制</h2>
+<h3 id="51-registrydispatch-149-166">5.1 统一分发器 (<code>registry.dispatch()</code>, 第 149-166 行)</h3>
+<div class="codehilite"><pre><span></span><code><span class="k">def</span> <span class="nf">dispatch</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">args</span><span class="p">:</span> <span class="nb">dict</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+    <span class="n">entry</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_tools</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">name</span><span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">entry</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">({</span><span class="s2">&quot;error&quot;</span><span class="p">:</span> <span class="sa">f</span><span class="s2">&quot;Unknown tool: </span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">})</span>
+    <span class="k">if</span> <span class="n">entry</span><span class="o">.</span><span class="n">is_async</span><span class="p">:</span>
+        <span class="kn">from</span> <span class="nn">model_tools</span> <span class="kn">import</span> <span class="n">_run_async</span>
+        <span class="k">return</span> <span class="n">_run_async</span><span class="p">(</span><span class="n">entry</span><span class="o">.</span><span class="n">handler</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">))</span>
+    <span class="k">return</span> <span class="n">entry</span><span class="o">.</span><span class="n">handler</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+</code></pre></div>
+
+<p><strong>关键特性</strong>：
+- 异步 handler 自动通过 <code>_run_async()</code> 桥接
+- 所有异常统一捕获并返回 JSON 错误格式
+- 返回值始终为 JSON 字符串</p>
+<h3 id="52-agent-loop-run_agentpy-6100-6146">5.2 Agent Loop 级拦截 (<code>run_agent.py</code>, 第 6100-6146 行)</h3>
+<p>部分工具需要 Agent 级别状态，在 <code>handle_function_call()</code> 之前拦截：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">_AGENT_LOOP_TOOLS</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;todo&quot;</span><span class="p">,</span> <span class="s2">&quot;memory&quot;</span><span class="p">,</span> <span class="s2">&quot;session_search&quot;</span><span class="p">,</span> <span class="s2">&quot;delegate_task&quot;</span><span class="p">}</span>  <span class="c1"># 定义于 model_tools.py L364</span>
+</code></pre></div>
+
+<p>这些工具由 <code>AIAgent._execute_tool_calls()</code>（<code>run_agent.py:6051</code>）拦截后直接处理：
+- <code>todo</code>: 访问 TodoStore
+- <code>memory</code>: 访问 MemoryManager
+- <code>delegate_task</code>: 需要父 Agent 引用
+- <code>clarify</code>: 需要 UI 回调</p>
+<h3 id="53-coerce_tool_args-372-456">5.3 参数类型矫正 (<code>coerce_tool_args()</code>, 第 372-456 行)</h3>
+<p>LLM 常将数字/布尔值输出为字符串。矫正器根据 JSON Schema 自动转换：
+- <code>"42"</code> -&gt; <code>42</code> (integer)
+- <code>"3.14"</code> -&gt; <code>3.14</code> (number)
+- <code>"true"</code> -&gt; <code>True</code> (boolean)
+- 支持联合类型 <code>["integer", "string"]</code></p>
+<h3 id="54-run_agentpy-265-290">5.4 并行工具执行 (<code>run_agent.py</code>, 第 265-290 行)</h3>
+<p><code>_should_parallelize_tool_batch()</code> 判断一批工具调用是否可并行：
+- 单个调用不并行
+- <code>_NEVER_PARALLEL_TOOLS</code> 中的工具不并行
+- 检查文件路径冲突 (读写同一文件时序列化)
+- 通过 <code>ThreadPoolExecutor</code> 执行并行分发</p>
+<h3 id="55-model_toolspy-500-511-529-540">5.5 插件钩子 (<code>model_tools.py</code>, 第 500-511 行, 第 529-540 行)</h3>
+<p>每个工具调用前后触发 <code>pre_tool_call</code> / <code>post_tool_call</code> 钩子：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">invoke_hook</span><span class="p">(</span><span class="s2">&quot;pre_tool_call&quot;</span><span class="p">,</span> <span class="n">tool_name</span><span class="o">=</span><span class="n">function_name</span><span class="p">,</span> <span class="n">args</span><span class="o">=</span><span class="n">function_args</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+<span class="n">result</span> <span class="o">=</span> <span class="n">registry</span><span class="o">.</span><span class="n">dispatch</span><span class="p">(</span><span class="n">function_name</span><span class="p">,</span> <span class="n">function_args</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+<span class="n">invoke_hook</span><span class="p">(</span><span class="s2">&quot;post_tool_call&quot;</span><span class="p">,</span> <span class="n">tool_name</span><span class="o">=</span><span class="n">function_name</span><span class="p">,</span> <span class="n">result</span><span class="o">=</span><span class="n">result</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+</code></pre></div>
+
+<hr />
+<h2 id="6-toolsapprovalpy">6. 危险命令审批系统 (<code>tools/approval.py</code>)</h2>
+<h3 id="61-68-106">6.1 模式检测 (第 68-106 行)</h3>
+<p><code>DANGEROUS_PATTERNS</code> 包含 30+ 条正则规则，覆盖：
+- 文件系统破坏 (<code>rm -rf</code>, <code>mkfs</code>, <code>dd</code>)
+- SQL 危险操作 (<code>DROP TABLE</code>, <code>DELETE FROM</code> 无 WHERE)
+- 系统服务操作 (<code>systemctl stop</code>)
+- 远程代码执行 (<code>curl | bash</code>)
+- 进程杀伤 (<code>kill -9 -1</code>, fork bomb)</p>
+<p><strong>反规避措施</strong> (<code>_normalize_command_for_detection()</code>, 第 136-151 行)：
+- 剥离 ANSI 转义序列
+- 移除 null 字节
+- Unicode NFKC 规范化 (防全角字符绕过)</p>
+<h3 id="62">6.2 三级审批模式</h3>
+<p>通过 <code>config.yaml</code> 的 <code>approvals.mode</code> 配置：
+- <strong>manual</strong> (默认)：每次危险命令弹出交互审批
+- <strong>smart</strong>：先让辅助 LLM 评估风险，低风险自动放行，高风险或不确定时降级为手动
+- <strong>off</strong>：跳过所有审批</p>
+<h3 id="63">6.3 审批范围</h3>
+<p>用户可选择：
+- <strong>once</strong>：仅本次放行
+- <strong>session</strong>：本会话内同类命令免审批
+- <strong>always</strong>：永久放行 (写入 <code>config.yaml</code> 的 <code>command_allowlist</code>)
+- <strong>deny</strong>：拒绝执行</p>
+<h3 id="64-gateway-756-826">6.4 Gateway 异步审批 (第 756-826 行)</h3>
+<p>网关模式下使用队列阻塞机制：
+- 每个审批请求创建 <code>_ApprovalEntry</code> (含 <code>threading.Event</code>)
+- Agent 线程阻塞等待用户 <code>/approve</code> 或 <code>/deny</code>
+- 支持并行子 Agent 的独立审批队列</p>
+<hr />
+<h2 id="7-environmentstool_call_parsers">7. 工具调用解析器 (<code>environments/tool_call_parsers/</code>)</h2>
+<h3 id="71">7.1 解析器注册表</h3>
+<p>采用装饰器模式注册，与工具注册表独立 (<code>__init__.py</code>, 第 62-79 行)：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">PARSER_REGISTRY</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Type</span><span class="p">[</span><span class="n">ToolCallParser</span><span class="p">]]</span> <span class="o">=</span> <span class="p">{}</span>
+
+<span class="k">def</span> <span class="nf">register_parser</span><span class="p">(</span><span class="n">name</span><span class="p">:</span> <span class="nb">str</span><span class="p">):</span>
+    <span class="k">def</span> <span class="nf">decorator</span><span class="p">(</span><span class="bp">cls</span><span class="p">):</span>
+        <span class="n">PARSER_REGISTRY</span><span class="p">[</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="bp">cls</span>
+        <span class="k">return</span> <span class="bp">cls</span>
+    <span class="k">return</span> <span class="n">decorator</span>
+</code></pre></div>
+
+<h3 id="72">7.2 解析器用途</h3>
+<p>当使用本地/自托管 VLLM 服务器时，模型输出是原始文本，不含结构化 <code>tool_calls</code>。
+解析器负责从原始文本中提取工具调用结构。</p>
+<h3 id="73">7.3 已实现的解析器</h3>
+<table>
+<thead>
+<tr>
+<th>解析器</th>
+<th>适用模型</th>
+<th>格式特征</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>hermes</code></td>
+<td>Hermes-2-Pro</td>
+<td><code>&lt;tool_call&gt;{"name":"...", "arguments":{...}}&lt;/tool_call&gt;</code></td>
+</tr>
+<tr>
+<td><code>qwen</code></td>
+<td>Qwen 2.5</td>
+<td>同 Hermes 格式 (继承 HermesParser)</td>
+</tr>
+<tr>
+<td><code>deepseek_v3</code></td>
+<td>DeepSeek V3</td>
+<td>Unicode 特殊 token <code>&lt;｜tool▁calls▁begin｜&gt;</code></td>
+</tr>
+<tr>
+<td><code>deepseek_v3_1</code></td>
+<td>DeepSeek V3.1</td>
+<td>变体格式</td>
+</tr>
+<tr>
+<td><code>kimi_k2</code></td>
+<td>Kimi K2</td>
+<td>独立格式</td>
+</tr>
+<tr>
+<td><code>mistral</code></td>
+<td>Mistral</td>
+<td>独立格式</td>
+</tr>
+<tr>
+<td><code>llama</code></td>
+<td>Llama 3</td>
+<td>JSON 格式</td>
+</tr>
+<tr>
+<td><code>glm45</code></td>
+<td>GLM-4.5</td>
+<td>独立格式</td>
+</tr>
+<tr>
+<td><code>glm47</code></td>
+<td>GLM-4.7</td>
+<td>独立格式</td>
+</tr>
+<tr>
+<td><code>longcat</code></td>
+<td>Longcat</td>
+<td>独立格式</td>
+</tr>
+<tr>
+<td><code>qwen3_coder</code></td>
+<td>Qwen3 Coder</td>
+<td>独立格式</td>
+</tr>
+</tbody>
+</table>
+<h3 id="74">7.4 解析器输出</h3>
+<p>所有解析器返回统一类型：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">ParseResult</span> <span class="o">=</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">],</span> <span class="n">Optional</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="n">ChatCompletionMessageToolCall</span><span class="p">]]]</span>
+<span class="c1"># (content_文本, tool_calls_列表)</span>
+</code></pre></div>
+
+<hr />
+<h2 id="8-mcp-toolsmcp_toolpy">8. MCP 工具集成 (<code>tools/mcp_tool.py</code>)</h2>
+<h3 id="81">8.1 架构</h3>
+<p>使用独立后台事件循环线程管理 MCP 连接：
+- 每个 MCP 服务器运行为长寿命 asyncio Task
+- 工具调用通过 <code>run_coroutine_threadsafe()</code> 调度到后台循环
+- 支持 stdio 和 HTTP/StreamableHTTP 两种传输协议</p>
+<h3 id="82">8.2 动态注册</h3>
+<p>MCP 工具发现后注册到统一 registry (第 1777-1785 行)：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">registry</span><span class="o">.</span><span class="n">register</span><span class="p">(</span>
+    <span class="n">name</span><span class="o">=</span><span class="n">tool_name_prefixed</span><span class="p">,</span>      <span class="c1"># &quot;mcp_{server}_{tool}&quot;</span>
+    <span class="n">toolset</span><span class="o">=</span><span class="n">toolset_name</span><span class="p">,</span>          <span class="c1"># &quot;mcp-{server}&quot;</span>
+    <span class="n">schema</span><span class="o">=</span><span class="n">schema</span><span class="p">,</span>
+    <span class="n">handler</span><span class="o">=</span><span class="n">_make_tool_handler</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">mcp_tool</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="n">server</span><span class="o">.</span><span class="n">tool_timeout</span><span class="p">),</span>
+    <span class="n">check_fn</span><span class="o">=</span><span class="n">_make_check_fn</span><span class="p">(</span><span class="n">name</span><span class="p">),</span>
+<span class="p">)</span>
+</code></pre></div>
+
+<p><strong>冲突保护</strong>：MCP 工具名与内置工具冲突时，跳过 MCP 工具保留内置工具。</p>
+<h3 id="83">8.3 高级特性</h3>
+<ul>
+<li>自动重连 (指数退避, 最多 5 次)</li>
+<li>环境变量安全过滤</li>
+<li>错误信息中的凭证剥离</li>
+<li>Sampling 支持 (MCP 服务器可请求 LLM 补全)</li>
+</ul>
+<hr />
+<h2 id="9-programmatic-tool-calling-toolscode_execution_toolpy">9. 特殊工具：Programmatic Tool Calling (<code>tools/code_execution_tool.py</code>)</h2>
+<h3 id="91">9.1 设计目标</h3>
+<p>让 LLM 编写 Python 脚本通过 RPC 调用 Hermes 工具，将多步工具链折叠为单次推理轮次。</p>
+<h3 id="92">9.2 双传输架构</h3>
+<ul>
+<li><strong>本地后端 (UDS)</strong>：父进程开 Unix Domain Socket → 子进程通过 <code>hermes_tools.py</code> 桩模块调用 → 请求经 UDS 路由到父进程分发</li>
+<li><strong>远程后端 (文件 RPC)</strong>：请求/响应通过文件交换 → 父进程轮询读取 → 分发后写回响应文件</li>
+</ul>
+<h3 id="93">9.3 沙箱安全</h3>
+<p>只有 7 个工具允许在沙箱内使用 (第 55-63 行)：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">SANDBOX_ALLOWED_TOOLS</span> <span class="o">=</span> <span class="nb">frozenset</span><span class="p">([</span>
+    <span class="s2">&quot;web_search&quot;</span><span class="p">,</span> <span class="s2">&quot;web_extract&quot;</span><span class="p">,</span> <span class="s2">&quot;read_file&quot;</span><span class="p">,</span> <span class="s2">&quot;write_file&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;search_files&quot;</span><span class="p">,</span> <span class="s2">&quot;patch&quot;</span><span class="p">,</span> <span class="s2">&quot;terminal&quot;</span><span class="p">,</span>
+<span class="p">])</span>
+</code></pre></div>
+
+<hr />
+<h2 id="10">10. 结果处理</h2>
+<h3 id="101-json">10.1 统一 JSON 返回</h3>
+<p>所有工具 handler 返回 JSON 字符串。辅助函数 (<code>registry.py</code>, 第 309-335 行)：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">tool_error</span><span class="p">(</span><span class="s2">&quot;file not found&quot;</span><span class="p">)</span>        <span class="c1"># → &#39;{&quot;error&quot;: &quot;file not found&quot;}&#39;</span>
+<span class="n">tool_result</span><span class="p">(</span><span class="n">success</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">count</span><span class="o">=</span><span class="mi">42</span><span class="p">)</span> <span class="c1"># → &#39;{&quot;success&quot;: true, &quot;count&quot;: 42}&#39;</span>
+</code></pre></div>
+
+<h3 id="102">10.2 结果大小控制</h3>
+<ul>
+<li><code>max_result_size_chars</code> 字段控制每个工具的返回大小上限</li>
+<li><code>budget_config.DEFAULT_RESULT_SIZE_CHARS</code> 作为全局默认值</li>
+<li><code>read_file</code> 设为 <code>float('inf')</code> (不限制)，其他多为 100,000 字符</li>
+</ul>
+<h3 id="103">10.3 上下文窗口保护</h3>
+<ul>
+<li><code>file_tools</code> 中的 <code>_get_max_read_chars()</code> 默认限制 100K 字符/次读取</li>
+<li>大文件提示使用 offset+limit 分段读取</li>
+<li><code>code_execution_tool</code> 限制 stdout 50KB / stderr 10KB</li>
+</ul>
+<hr />
+<h2 id="11">11. 工具调用全链路流程</h2>
+<div class="codehilite"><pre><span></span><code><span class="mf">1.</span><span class="w"> </span><span class="n">LLM</span><span class="w"> </span><span class="n">返回</span><span class="w"> </span><span class="kr">to</span><span class="n">ol_calls</span><span class="w"> </span><span class="p">(</span><span class="kr">Open</span><span class="n">AI</span><span class="w"> </span><span class="n">API</span><span class="w"> </span><span class="n">或解析器解析</span><span class="p">)</span><span class="w"></span>
+<span class="w">     </span><span class="err">↓</span><span class="w"></span>
+<span class="mf">2.</span><span class="w"> </span><span class="kr">run</span><span class="n">_agent</span><span class="mf">.</span><span class="n">_should_parallelize_tool_batch</span><span class="p">()</span><span class="w"> </span><span class="n">判断可否并行</span><span class="w"></span>
+<span class="w">     </span><span class="err">↓</span><span class="w"></span>
+<span class="mf">3.</span><span class="w"> </span><span class="n">AIAgent</span><span class="mf">.</span><span class="n">_execute_tool_calls</span><span class="p">()</span><span class="w"> </span><span class="p">(</span><span class="kr">run</span><span class="n">_agent</span><span class="mf">.</span><span class="n">py</span><span class="p">:</span><span class="mf">6051</span><span class="p">)</span><span class="w"> </span><span class="n">判断串行</span><span class="o">/</span><span class="n">并行</span><span class="w"></span>
+<span class="w">     </span><span class="err">├──</span><span class="w"> </span><span class="n">_execute_tool_calls_sequential</span><span class="p">()</span><span class="w"> </span><span class="n">或</span><span class="w"> </span><span class="n">_execute_tool_calls_concurrent</span><span class="p">()</span><span class="w"></span>
+<span class="w">     </span><span class="err">├──</span><span class="w"> </span><span class="n">Agent</span><span class="w"> </span><span class="n">Loop</span><span class="w"> </span><span class="n">工具</span><span class="w"> </span><span class="p">(</span><span class="kr">to</span><span class="n">do</span><span class="o">/</span><span class="n">memory</span><span class="o">/</span><span class="n">session_search</span><span class="o">/</span><span class="n">delegate_task</span><span class="p">)</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="n">直接处理</span><span class="w"></span>
+<span class="w">     </span><span class="err">└──</span><span class="w"> </span><span class="n">其他工具</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="n">handle_function_call</span><span class="p">()</span><span class="w"></span>
+<span class="w">          </span><span class="err">↓</span><span class="w"></span>
+<span class="mf">4.</span><span class="w"> </span><span class="n">coerce_tool_args</span><span class="p">()</span><span class="w"> </span><span class="n">参数类型矫正</span><span class="w"></span>
+<span class="w">     </span><span class="err">↓</span><span class="w"></span>
+<span class="mf">5.</span><span class="w"> </span><span class="n">pre_tool_call</span><span class="w"> </span><span class="n">插件钩子</span><span class="w"></span>
+<span class="w">     </span><span class="err">↓</span><span class="w"></span>
+<span class="mf">6.</span><span class="w"> </span><span class="n">registry</span><span class="mf">.</span><span class="n">dispatch</span><span class="p">()</span><span class="w"></span>
+<span class="w">     </span><span class="err">├──</span><span class="w"> </span><span class="n">同步</span><span class="w"> </span><span class="n">handler</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="n">直接调用</span><span class="w"></span>
+<span class="w">     </span><span class="err">└──</span><span class="w"> </span><span class="n">异步</span><span class="w"> </span><span class="n">handler</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="n">_run_async</span><span class="p">()</span><span class="w"> </span><span class="n">桥接</span><span class="w"></span>
+<span class="w">          </span><span class="err">↓</span><span class="w"></span>
+<span class="mf">7.</span><span class="w"> </span><span class="nb">pos</span><span class="n">t_tool_call</span><span class="w"> </span><span class="n">插件钩子</span><span class="w"></span>
+<span class="w">     </span><span class="err">↓</span><span class="w"></span>
+<span class="mf">8.</span><span class="w"> </span><span class="n">结果</span><span class="w"> </span><span class="p">(</span><span class="n">JSON</span><span class="w"> </span><span class="n">字符串</span><span class="p">)</span><span class="w"> </span><span class="n">追加到</span><span class="w"> </span><span class="n">messages</span><span class="w"></span>
+<span class="w">     </span><span class="err">↓</span><span class="w"></span>
+<span class="mf">9.</span><span class="w"> </span><span class="n">下一轮</span><span class="w"> </span><span class="n">LLM</span><span class="w"> </span><span class="n">推理</span><span class="w"></span>
+</code></pre></div>
+
+<hr />
+<h2 id="12">12. 设计亮点</h2>
+<ol>
+<li><strong>模块级自注册</strong>：每个工具文件自包含，新增工具只需在 <code>_discover_tools()</code> 列表加一行</li>
+<li><strong>三级可用性检查</strong>：toolset 级 → check_fn 级 → 动态 Schema 修正</li>
+<li><strong>多模型适配</strong>：11 种工具调用解析器覆盖主流开源模型</li>
+<li><strong>安全纵深</strong>：approval 系统 + tirith 安全扫描 + smart approval (LLM 辅助)</li>
+<li><strong>Programmatic Tool Calling</strong>：<code>execute_code</code> 将多步工具调用压缩为单次 LLM 轮次</li>
+<li><strong>异步桥接</strong>：<code>_run_async()</code> 自适应处理三种上下文 (主线程/工作线程/异步上下文)</li>
+<li><strong>插件体系</strong>：pre/post 钩子 + 插件工具集动态注册</li>
+</ol>
+</body>
+</html>

@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>10-state-management</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1 id="hermes-agent-state">Hermes-Agent State 管理深度分析</h1>
+<h2 id="1">1. 架构总览</h2>
+<p>Hermes-Agent 的状态管理采用 <strong>本地优先 (local-first)</strong> 架构，核心存储为 SQLite，辅以 JSON 文件和内存状态。整体分为四层：</p>
+<table>
+<thead>
+<tr>
+<th>层级</th>
+<th>组件</th>
+<th>存储介质</th>
+<th>生命周期</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>持久化层</td>
+<td><code>SessionDB</code></td>
+<td>SQLite WAL (<code>~/.hermes/state.db</code>)</td>
+<td>跨会话持久</td>
+</tr>
+<tr>
+<td>网关会话层</td>
+<td><code>SessionStore</code> + <code>SessionEntry</code></td>
+<td>JSON + SQLite</td>
+<td>进程生命周期 + 持久</td>
+</tr>
+<tr>
+<td>工具状态层</td>
+<td><code>TodoStore</code></td>
+<td>内存</td>
+<td>单会话</td>
+</tr>
+<tr>
+<td>检查点层</td>
+<td><code>CheckpointManager</code></td>
+<td>Shadow Git Repo</td>
+<td>跨会话持久</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_1">关键设计原则</h3>
+<ul>
+<li><strong>单机部署</strong>：SQLite 作为唯一数据库，无外部依赖</li>
+<li><strong>WAL 并发</strong>：多进程（gateway + CLI + worktree agent）共享一个 <code>state.db</code></li>
+<li><strong>渐进迁移</strong>：SQLite 与 JSONL 双写，兼容旧版存储</li>
+</ul>
+<hr />
+<h2 id="2-sessiondbsqlite">2. SessionDB：SQLite 持久化核心</h2>
+<p><strong>文件</strong>：<code>/Users/liuyixuan/Desktop/code/hermes-agent/hermes_state.py</code></p>
+<h3 id="21-schema-36-91">2.1 数据库 Schema（第 36-91 行）</h3>
+<p>两张核心表 + 一张 FTS 虚表：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">sessions</span><span class="w"> </span><span class="p">(</span><span class="err">元数据</span><span class="p">)</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">id</span><span class="w"> </span><span class="n">TEXT</span><span class="w"> </span><span class="n">PRIMARY</span><span class="w"> </span><span class="n">KEY</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">source</span><span class="w"> </span><span class="n">TEXT</span><span class="w">          </span><span class="o">--</span><span class="w"> </span><span class="s1">&#39;cli&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;telegram&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;discord&#39;</span><span class="w"> </span><span class="err">等</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">user_id</span><span class="w"> </span><span class="n">TEXT</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">model</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">model_config</span><span class="w"> </span><span class="o">--</span><span class="w"> </span><span class="err">模型配置快照</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">system_prompt</span><span class="w"> </span><span class="n">TEXT</span><span class="w">   </span><span class="o">--</span><span class="w"> </span><span class="err">完整</span><span class="w"> </span><span class="n">system</span><span class="w"> </span><span class="n">prompt</span><span class="w"> </span><span class="err">存档</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">parent_session_id</span><span class="w">    </span><span class="o">--</span><span class="w"> </span><span class="err">压缩导致的会话链</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">started_at</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">ended_at</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">end_reason</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">message_count</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">tool_call_count</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">input_tokens</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">output_tokens</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">cache_</span><span class="o">*</span><span class="n">_tokens</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">reasoning_tokens</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">billing_</span><span class="o">*</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">estimated_cost_usd</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">actual_cost_usd</span><span class="w"></span>
+<span class="err">└──</span><span class="w"> </span><span class="n">title</span><span class="w"> </span><span class="n">TEXT</span><span class="w"> </span><span class="n">UNIQUE</span><span class="w">    </span><span class="o">--</span><span class="w"> </span><span class="err">命名会话（可</span><span class="w"> </span><span class="o">/</span><span class="n">resume</span><span class="err">）</span><span class="w"></span>
+
+<span class="n">messages</span><span class="w"> </span><span class="p">(</span><span class="err">消息历史</span><span class="p">)</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">id</span><span class="w"> </span><span class="n">INTEGER</span><span class="w"> </span><span class="n">PRIMARY</span><span class="w"> </span><span class="n">KEY</span><span class="w"> </span><span class="n">AUTOINCREMENT</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">session_id</span><span class="w"> </span><span class="n">TEXT</span><span class="w"> </span><span class="n">FK</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">sessions</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">role</span><span class="w"> </span><span class="n">TEXT</span><span class="w">             </span><span class="o">--</span><span class="w"> </span><span class="s1">&#39;user&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;assistant&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;tool&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;system&#39;</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">content</span><span class="w"> </span><span class="n">TEXT</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">tool_call_id</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">tool_calls</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">tool_name</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">timestamp</span><span class="w"> </span><span class="n">REAL</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">token_count</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">finish_reason</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">reasoning</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">reasoning_details</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">codex_reasoning_items</span><span class="w"></span>
+<span class="err">└──</span><span class="w"> </span><span class="p">(</span><span class="n">FTS5</span><span class="w"> </span><span class="err">自动同步</span><span class="p">)</span><span class="w"></span>
+
+<span class="n">messages_fts</span><span class="w"> </span><span class="p">(</span><span class="err">全文搜索虚表</span><span class="p">)</span><span class="w"></span>
+<span class="err">└──</span><span class="w"> </span><span class="n">content</span><span class="w"> </span><span class="o">--</span><span class="w"> </span><span class="n">FTS5</span><span class="p">,</span><span class="w"> </span><span class="n">content</span><span class="o">=</span><span class="n">messages</span><span class="p">,</span><span class="w"> </span><span class="n">content_rowid</span><span class="o">=</span><span class="n">id</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="22-schema-252-349">2.2 Schema 迁移（第 252-349 行）</h3>
+<p>采用 <strong>版本号递增</strong> 迁移策略（<code>SCHEMA_VERSION = 6</code>），每个版本对应一组 <code>ALTER TABLE</code> 操作：</p>
+<ul>
+<li>v2: 添加 <code>finish_reason</code> 列</li>
+<li>v3: 添加 <code>title</code> 列</li>
+<li>v4: 添加 title 唯一索引（允许 NULL）</li>
+<li>v5: 添加 billing/cost 相关列（11 个）</li>
+<li>v6: 添加 reasoning 列（支持 OpenRouter/Nous reasoning 持久化）</li>
+</ul>
+<p>迁移在 <code>__init__</code> 时同步执行，<code>ALTER TABLE</code> 失败（列已存在）被静默忽略。</p>
+<h3 id="23-122-234">2.3 写入并发控制（第 122-234 行）</h3>
+<p>核心写入方法 <code>_execute_write()</code> 实现了精细的并发控制：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># BEGIN IMMEDIATE 在事务开始时获取写锁（而非提交时）</span>
+<span class="c1"># 随机抖动重试（20-150ms）打破 SQLite 内置确定性退避导致的 convoy effect</span>
+<span class="n">_WRITE_MAX_RETRIES</span> <span class="o">=</span> <span class="mi">15</span>
+<span class="n">_WRITE_RETRY_MIN_S</span> <span class="o">=</span> <span class="mf">0.020</span>   <span class="c1"># 20ms</span>
+<span class="n">_WRITE_RETRY_MAX_S</span> <span class="o">=</span> <span class="mf">0.150</span>   <span class="c1"># 150ms</span>
+</code></pre></div>
+
+<p>关键决策：
+- <strong>短超时 + 应用层重试</strong>：SQLite 连接 <code>timeout=1.0</code> 秒，不依赖内置 busy handler
+- <strong>随机抖动</strong>：<code>random.uniform(20ms, 150ms)</code> 自然分散竞争写入者
+- <strong>周期性 WAL checkpoint</strong>：每 50 次写入触发一次 <code>PRAGMA wal_checkpoint(PASSIVE)</code>
+- <strong>线程锁</strong>：<code>threading.Lock()</code> 保护连接级并发</p>
+<h3 id="24-fts5-93-112-999-1144">2.4 FTS5 全文搜索（第 93-112 行，第 999-1144 行）</h3>
+<p>FTS5 通过触发器与 <code>messages</code> 表自动同步：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1">-- 插入时自动索引</span>
+<span class="k">CREATE</span><span class="w"> </span><span class="k">TRIGGER</span><span class="w"> </span><span class="n">messages_fts_insert</span><span class="w"> </span><span class="k">AFTER</span><span class="w"> </span><span class="k">INSERT</span><span class="w"> </span><span class="k">ON</span><span class="w"> </span><span class="n">messages</span><span class="w"> </span><span class="k">BEGIN</span><span class="w"></span>
+<span class="w">    </span><span class="k">INSERT</span><span class="w"> </span><span class="k">INTO</span><span class="w"> </span><span class="n">messages_fts</span><span class="p">(</span><span class="n">rowid</span><span class="p">,</span><span class="w"> </span><span class="n">content</span><span class="p">)</span><span class="w"> </span><span class="k">VALUES</span><span class="w"> </span><span class="p">(</span><span class="k">new</span><span class="p">.</span><span class="n">id</span><span class="p">,</span><span class="w"> </span><span class="k">new</span><span class="p">.</span><span class="n">content</span><span class="p">);</span><span class="w"></span>
+<span class="k">END</span><span class="p">;</span><span class="w"></span>
+<span class="c1">-- 删除/更新同理</span>
+</code></pre></div>
+
+<p><code>search_messages()</code> 方法（第 1052 行）提供完整搜索能力：
+- 支持 FTS5 查询语法：关键词、精确短语 <code>"exact phrase"</code>、布尔 <code>AND/OR/NOT</code>、前缀 <code>deploy*</code>
+- <code>_sanitize_fts5_query()</code> 防御注入：保护配对引号、去除特殊字符、wrap 连字符/点号词
+- 返回 snippet 高亮（<code>&gt;&gt;&gt;</code> / <code>&lt;&lt;&lt;</code> 标记）和上下文（前后各 1 条消息）
+- 支持按 source、role 过滤</p>
+<h3 id="25-625-781">2.5 会话标题与血缘（第 625-781 行）</h3>
+<ul>
+<li><code>sanitize_title()</code>: 清理控制字符、零宽字符、RTL override，限制 100 字</li>
+<li><code>resolve_session_by_title()</code>: 支持 <code>"title"</code> 和 <code>"title #N"</code> 变体解析</li>
+<li><code>get_next_title_in_lineage()</code>: 自动编号 <code>"my session" -&gt; "my session #2"</code></li>
+</ul>
+<h3 id="26-857-969">2.6 消息存储与检索（第 857-969 行）</h3>
+<ul>
+<li><code>append_message()</code>: 插入消息并原子更新 <code>message_count</code> / <code>tool_call_count</code></li>
+<li><code>get_messages_as_conversation()</code>: 以 OpenAI conversation format 返回（role + content + tool_calls）</li>
+<li>支持 reasoning chain 持久化（v6 schema）：<code>reasoning</code>, <code>reasoning_details</code>, <code>codex_reasoning_items</code></li>
+<li><code>list_sessions_rich()</code>: 单次 SQL 带 correlated subquery 获取 preview + last_active</li>
+</ul>
+<hr />
+<h2 id="3-gateway-sessionstore">3. Gateway SessionStore：会话路由层</h2>
+<p><strong>文件</strong>：<code>/Users/liuyixuan/Desktop/code/hermes-agent/gateway/session.py</code></p>
+<h3 id="31-sessionsource-73-155">3.1 SessionSource（第 73-155 行）</h3>
+<p>描述消息来源的 dataclass，携带：
+- <code>platform</code>: LOCAL / TELEGRAM / DISCORD / SLACK / WHATSAPP / SIGNAL
+- <code>chat_id</code> / <code>chat_name</code> / <code>chat_type</code> (dm / group / channel / thread)
+- <code>user_id</code> / <code>user_name</code> / <code>thread_id</code> / <code>chat_topic</code>
+- PII 安全字段：<code>user_id_alt</code>（Signal UUID）、<code>chat_id_alt</code></p>
+<h3 id="32-sessioncontext-158-189">3.2 SessionContext（第 158-189 行）</h3>
+<p>完整会话上下文，用于动态 system prompt 注入：
+- 当前消息来源（SessionSource）
+- 已连接平台列表
+- Home channel 配置（定时任务默认投递目标）
+- <code>build_session_context_prompt()</code> 生成 Markdown 格式 context 注入 system prompt</p>
+<h3 id="33-444-500">3.3 会话键构建（第 444-500 行）</h3>
+<p><code>build_session_key()</code> 是会话路由的核心，生成确定性键：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">DM</span><span class="o">:</span><span class="w">       </span><span class="n">agent</span><span class="o">:</span><span class="n">main</span><span class="o">:{</span><span class="n">platform</span><span class="o">}:</span><span class="n">dm</span><span class="o">:{</span><span class="n">chat_id</span><span class="o">}[:{</span><span class="n">thread_id</span><span class="o">}]</span><span class="w"></span>
+<span class="n">Group</span><span class="o">:</span><span class="w">    </span><span class="n">agent</span><span class="o">:</span><span class="n">main</span><span class="o">:{</span><span class="n">platform</span><span class="o">}:</span><span class="n">group</span><span class="o">:{</span><span class="n">chat_id</span><span class="o">}[:{</span><span class="n">thread_id</span><span class="o">}][:{</span><span class="n">user_id</span><span class="o">}]</span><span class="w"></span>
+</code></pre></div>
+
+<p>关键策略：
+- <strong>DM 隔离</strong>：按 chat_id 隔离，thread_id 进一步分割
+- <strong>群组用户隔离</strong>：<code>group_sessions_per_user=True</code> 时按 user_id 隔离
+- <strong>线程共享</strong>：<code>thread_sessions_per_user=False</code>（默认）时线程内所有用户共享会话</p>
+<h3 id="34-sessionstore-503-1000">3.4 SessionStore（第 503-1000+ 行）</h3>
+<p>双层存储架构：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">SessionStore</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">_entries</span><span class="o">:</span><span class="w"> </span><span class="n">Dict</span><span class="p">[</span><span class="n">str</span><span class="p">,</span><span class="w"> </span><span class="n">SessionEntry</span><span class="p">]</span><span class="w">    </span><span class="o">--</span><span class="w"> </span><span class="err">内存索引（</span><span class="n">session_key</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">entry</span><span class="err">）</span><span class="w"></span>
+<span class="err">├──</span><span class="w"> </span><span class="n">sessions</span><span class="p">.</span><span class="n">json</span><span class="w">                         </span><span class="o">--</span><span class="w"> </span><span class="err">持久化索引</span><span class="w"></span>
+<span class="err">└──</span><span class="w"> </span><span class="n">SessionDB</span><span class="w"> </span><span class="p">(</span><span class="n">SQLite</span><span class="p">)</span><span class="w">                   </span><span class="o">--</span><span class="w"> </span><span class="err">消息和元数据存储</span><span class="w"></span>
+</code></pre></div>
+
+<p>核心方法：
+- <strong><code>get_or_create_session()</code></strong>（第 692 行）：评估 reset policy -&gt; 复用/创建 -&gt; SQLite 持久化
+- <strong><code>_should_reset()</code></strong>（第 626 行）：支持 idle / daily / both 模式
+- <strong><code>switch_session()</code></strong>（第 876 行）：<code>/resume</code> 命令切换到历史会话
+- <strong><code>rewrite_transcript()</code></strong>（第 970 行）：<code>/retry</code>、<code>/undo</code>、<code>/compress</code> 重写历史
+- <strong><code>load_transcript()</code></strong>（第 1002 行）：SQLite 优先，JSONL 降级</p>
+<h3 id="35-pii-33-61">3.5 PII 脱敏（第 33-61 行）</h3>
+<p>Gateway 层内置 PII 保护：
+- <code>_hash_sender_id()</code>: SHA-256 前 12 字符 -&gt; <code>user_&lt;12hex&gt;</code>
+- <code>_hash_chat_id()</code>: 保留平台前缀 <code>telegram:&lt;hash&gt;</code>
+- <code>_looks_like_phone()</code>: E.164 电话号码检测
+- 仅对安全平台（WhatsApp/Signal/Telegram）启用，Discord 需保留原始 ID 用于 mention</p>
+<h3 id="36-772-806">3.6 线程会话继承（第 772-806 行）</h3>
+<p>新 DM 线程创建时自动从父会话复制历史：</p>
+<div class="codehilite"><pre><span></span><code><span class="c1"># 当 Slack 回复创建线程时，复制父 DM 的 transcript 到新线程</span>
+<span class="n">parent_history</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">load_transcript</span><span class="p">(</span><span class="n">parent_entry</span><span class="o">.</span><span class="n">session_id</span><span class="p">)</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">rewrite_transcript</span><span class="p">(</span><span class="n">entry</span><span class="o">.</span><span class="n">session_id</span><span class="p">,</span> <span class="n">parent_history</span><span class="p">)</span>
+</code></pre></div>
+
+<hr />
+<h2 id="4-todostore">4. TodoStore：会话级工具状态</h2>
+<p><strong>文件</strong>：<code>/Users/liuyixuan/Desktop/code/hermes-agent/tools/todo_tool.py</code></p>
+<h3 id="41">4.1 设计原则</h3>
+<ul>
+<li><strong>纯内存</strong>：一个 <code>AIAgent</code> 实例一个 <code>TodoStore</code>，会话级生命周期</li>
+<li><strong>单工具入口</strong>：<code>todo</code> 工具统一读写，<code>todos</code> 参数存在则写，否则读</li>
+<li><strong>replace/merge 模式</strong>：<code>merge=False</code> 全量替换，<code>merge=True</code> 按 id 更新</li>
+<li><strong>压缩保活</strong>：<code>format_for_injection()</code> 在 context compression 后注入 active items</li>
+</ul>
+<h3 id="42">4.2 状态模型</h3>
+<div class="codehilite"><pre><span></span><code><span class="c1"># 每个 item 结构</span>
+<span class="p">{</span><span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="s2">&quot;1&quot;</span><span class="p">,</span> <span class="s2">&quot;content&quot;</span><span class="p">:</span> <span class="s2">&quot;任务描述&quot;</span><span class="p">,</span> <span class="s2">&quot;status&quot;</span><span class="p">:</span> <span class="s2">&quot;pending|in_progress|completed|cancelled&quot;</span><span class="p">}</span>
+</code></pre></div>
+
+<p>列表顺序 = 优先级，同时只允许一个 <code>in_progress</code>。</p>
+<h3 id="43-context-compression-90-122">4.3 Context Compression 集成（第 90-122 行）</h3>
+<p>压缩后仅注入 <code>pending</code> + <code>in_progress</code> 项（避免模型重复已完成工作）：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">[Your active task list was preserved across context compression]</span><span class="w"></span>
+<span class="na">- [&gt;] 1. 正在执行的任务 (in_progress)</span><span class="w"></span>
+<span class="na">- [ ] 2. 等待中的任务 (pending)</span><span class="w"></span>
+</code></pre></div>
+
+<hr />
+<h2 id="5-checkpointmanager">5. CheckpointManager：文件系统快照</h2>
+<p><strong>文件</strong>：<code>/Users/liuyixuan/Desktop/code/hermes-agent/tools/checkpoint_manager.py</code></p>
+<h3 id="51">5.1 架构</h3>
+<p>透明的文件系统快照机制，基于 <strong>shadow git repo</strong>：</p>
+<div class="codehilite"><pre><span></span><code>~/.hermes/checkpoints/{sha256(abs_dir)[:16]}/   -- shadow git repo
+    HEAD, refs/, objects/                        -- 标准 git 内部结构
+    HERMES_WORKDIR                               -- 记录原始目录路径
+    info/exclude                                 -- 默认排除规则
+</code></pre></div>
+
+<p>关键特性：
+- <strong>不可见性</strong>：LLM 永远不知道 checkpoint 的存在（非 tool），纯基础设施
+- <strong>GIT_DIR + GIT_WORK_TREE</strong>：不在用户项目目录中留下任何 git 状态
+- <strong>每 turn 去重</strong>：<code>_checkpointed_dirs</code> 集合确保每目录每 turn 最多一次快照</p>
+<h3 id="52-438-517">5.2 快照流程（第 438-517 行）</h3>
+<div class="codehilite"><pre><span></span><code><span class="n">new_turn</span><span class="p">()</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">清空</span><span class="w"> </span><span class="n">_checkpointed_dirs</span><span class="w"></span>
+<span class="n">ensure_checkpoint</span><span class="p">(</span><span class="n">dir</span><span class="p">,</span><span class="w"> </span><span class="n">reason</span><span class="p">)</span><span class="w"></span>
+<span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="err">检查</span><span class="w"> </span><span class="n">enabled</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">git</span><span class="w"> </span><span class="err">可用</span><span class="w"></span>
+<span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="err">跳过</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="err">和</span><span class="w"> </span><span class="o">~</span><span class="w"> </span><span class="err">目录</span><span class="w"></span>
+<span class="w">  </span><span class="err">├──</span><span class="w"> </span><span class="err">去重检查</span><span class="w"></span>
+<span class="w">  </span><span class="err">└──</span><span class="w"> </span><span class="n">_take</span><span class="p">(</span><span class="n">dir</span><span class="p">,</span><span class="w"> </span><span class="n">reason</span><span class="p">)</span><span class="w"></span>
+<span class="w">       </span><span class="err">├──</span><span class="w"> </span><span class="err">初始化</span><span class="w"> </span><span class="n">shadow</span><span class="w"> </span><span class="n">repo</span><span class="err">（如需要）</span><span class="w"></span>
+<span class="w">       </span><span class="err">├──</span><span class="w"> </span><span class="err">文件数检查（</span><span class="o">&gt;</span><span class="mi">50000</span><span class="w"> </span><span class="err">跳过）</span><span class="w"></span>
+<span class="w">       </span><span class="err">├──</span><span class="w"> </span><span class="n">git</span><span class="w"> </span><span class="n">add</span><span class="w"> </span><span class="o">-</span><span class="n">A</span><span class="w"></span>
+<span class="w">       </span><span class="err">├──</span><span class="w"> </span><span class="n">git</span><span class="w"> </span><span class="n">diff</span><span class="w"> </span><span class="o">--</span><span class="n">cached</span><span class="w"> </span><span class="o">--</span><span class="n">quiet</span><span class="err">（无变更跳过）</span><span class="w"></span>
+<span class="w">       </span><span class="err">├──</span><span class="w"> </span><span class="n">git</span><span class="w"> </span><span class="n">commit</span><span class="w"> </span><span class="o">-</span><span class="n">m</span><span class="w"> </span><span class="n">reason</span><span class="w"></span>
+<span class="w">       </span><span class="err">└──</span><span class="w"> </span><span class="n">_prune</span><span class="p">()</span><span class="err">（日志限制</span><span class="w"> </span><span class="n">max_snapshots</span><span class="o">=</span><span class="mi">50</span><span class="err">）</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="53-354-407">5.3 回滚能力（第 354-407 行）</h3>
+<ul>
+<li><code>list_checkpoints()</code>: 返回 hash / timestamp / reason / diffstat</li>
+<li><code>diff()</code>: 检查点与当前工作树的 diff</li>
+<li><code>restore()</code>: <strong>回滚前自动快照当前状态</strong>（可撤销回滚），然后 <code>git checkout &lt;hash&gt; -- .</code></li>
+<li>支持单文件回滚：<code>restore(dir, hash, file_path="specific_file.py")</code></li>
+</ul>
+<hr />
+<h2 id="6">6. 常量与路径</h2>
+<p><strong>文件</strong>：<code>/Users/liuyixuan/Desktop/code/hermes-agent/hermes_constants.py</code></p>
+<div class="codehilite"><pre><span></span><code><span class="n">get_hermes_home</span><span class="p">()</span>       <span class="c1"># ~/.hermes（HERMES_HOME 可覆盖）</span>
+<span class="n">get_hermes_dir</span><span class="p">()</span>        <span class="c1"># 新旧路径兼容（cache/images vs image_cache）</span>
+<span class="n">display_hermes_home</span><span class="p">()</span>   <span class="c1"># 用户友好显示（~/. 缩写）</span>
+</code></pre></div>
+
+<p>所有状态存储路径均以 <code>HERMES_HOME</code> 为根：
+- <code>~/.hermes/state.db</code> -- SessionDB
+- <code>~/.hermes/checkpoints/</code> -- CheckpointManager
+- <code>~/.hermes/sessions/</code> -- Gateway 会话索引和 JSONL</p>
+<hr />
+<h2 id="7">7. 状态流转全景</h2>
+<div class="codehilite"><pre><span></span><code><span class="n">用户消息</span><span class="w"></span>
+<span class="w">    </span><span class="err">│</span><span class="w"></span>
+<span class="w">    </span><span class="err">▼</span><span class="w"></span>
+<span class="p">[</span><span class="n">Gateway</span><span class="w"> </span><span class="n">SessionStore</span><span class="p">]</span><span class="w"></span>
+<span class="w">    </span><span class="err">├──</span><span class="w"> </span><span class="n">build_session_key</span><span class="p">(</span><span class="n">source</span><span class="p">)</span><span class="w">        </span><span class="o">--</span><span class="w"> </span><span class="n">确定性路由</span><span class="w"></span>
+<span class="w">    </span><span class="err">├──</span><span class="w"> </span><span class="n">get_or_create_session</span><span class="p">()</span><span class="w">          </span><span class="o">--</span><span class="w"> </span><span class="n">评估</span><span class="w"> </span><span class="n">reset</span><span class="w"> </span><span class="n">policy</span><span class="w"></span>
+<span class="w">    </span><span class="err">│</span><span class="w">   </span><span class="err">├──</span><span class="w"> </span><span class="n">idle</span><span class="o">/</span><span class="n">daily</span><span class="w"> </span><span class="n">过期</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="n">新建会话</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">结束旧会话</span><span class="w"></span>
+<span class="w">    </span><span class="err">│</span><span class="w">   </span><span class="err">└──</span><span class="w"> </span><span class="n">有效</span><span class="w"> </span><span class="err">→</span><span class="w"> </span><span class="n">复用现有会话</span><span class="w"></span>
+<span class="w">    </span><span class="err">├──</span><span class="w"> </span><span class="n">load_transcript</span><span class="p">(</span><span class="n">session_id</span><span class="p">)</span><span class="w">      </span><span class="o">--</span><span class="w"> </span><span class="n">SQLite</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="n">JSONL</span><span class="w"> </span><span class="n">降级</span><span class="w"></span>
+<span class="w">    </span><span class="err">└──</span><span class="w"> </span><span class="n">build_session_context_prompt</span><span class="p">()</span><span class="w">   </span><span class="o">--</span><span class="w"> </span><span class="n">注入</span><span class="w"> </span><span class="n">system</span><span class="w"> </span><span class="n">prompt</span><span class="w"></span>
+<span class="w">            </span><span class="err">│</span><span class="w"></span>
+<span class="w">            </span><span class="err">▼</span><span class="w"></span>
+<span class="p">[</span><span class="n">AIAgent</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">TodoStore</span><span class="p">]</span><span class="w"></span>
+<span class="w">    </span><span class="err">├──</span><span class="w"> </span><span class="n">TodoStore</span><span class="p">.</span><span class="n">write</span><span class="o">/</span><span class="n">read</span><span class="w">             </span><span class="o">--</span><span class="w"> </span><span class="n">内存中任务管理</span><span class="w"></span>
+<span class="w">    </span><span class="err">├──</span><span class="w"> </span><span class="n">CheckpointManager</span><span class="p">.</span><span class="n">ensure_checkpoint</span><span class="p">()</span><span class="w"> </span><span class="o">--</span><span class="w"> </span><span class="n">文件变更前快照</span><span class="w"></span>
+<span class="w">    </span><span class="err">└──</span><span class="w"> </span><span class="n">对话交互</span><span class="w"></span>
+<span class="w">            </span><span class="err">│</span><span class="w"></span>
+<span class="w">            </span><span class="err">▼</span><span class="w"></span>
+<span class="p">[</span><span class="n">SessionDB</span><span class="p">]</span><span class="w"></span>
+<span class="w">    </span><span class="err">├──</span><span class="w"> </span><span class="n">append_message</span><span class="p">()</span><span class="w">                 </span><span class="o">--</span><span class="w"> </span><span class="n">消息持久化</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">FTS</span><span class="w"> </span><span class="n">自动索引</span><span class="w"></span>
+<span class="w">    </span><span class="err">├──</span><span class="w"> </span><span class="n">update_token_counts</span><span class="p">()</span><span class="w">            </span><span class="o">--</span><span class="w"> </span><span class="n">计费追踪</span><span class="w"></span>
+<span class="w">    </span><span class="err">└──</span><span class="w"> </span><span class="n">set_session_title</span><span class="p">()</span><span class="w">              </span><span class="o">--</span><span class="w"> </span><span class="n">命名会话</span><span class="w"></span>
+<span class="w">            </span><span class="err">│</span><span class="w"></span>
+<span class="w">            </span><span class="err">▼</span><span class="w"></span>
+<span class="p">[</span><span class="n">会话结束</span><span class="p">]</span><span class="w"></span>
+<span class="w">    </span><span class="err">├──</span><span class="w"> </span><span class="n">end_session</span><span class="p">(</span><span class="n">reason</span><span class="p">)</span><span class="w">              </span><span class="o">--</span><span class="w"> </span><span class="n">标记</span><span class="w"> </span><span class="n">ended_at</span><span class="w"></span>
+<span class="w">    </span><span class="err">├──</span><span class="w"> </span><span class="n">Memory</span><span class="w"> </span><span class="n">flush</span><span class="w">                     </span><span class="o">--</span><span class="w"> </span><span class="n">记忆提取</span><span class="err">（</span><span class="n">如配置</span><span class="err">）</span><span class="w"></span>
+<span class="w">    </span><span class="err">└──</span><span class="w"> </span><span class="n">sessions</span><span class="p">.</span><span class="n">json</span><span class="w"> </span><span class="n">更新</span><span class="w">              </span><span class="o">--</span><span class="w"> </span><span class="n">Gateway</span><span class="w"> </span><span class="n">索引持久化</span><span class="w"></span>
+</code></pre></div>
+
+<hr />
+<h2 id="8">8. 设计亮点与限制</h2>
+<h3 id="_2">亮点</h3>
+<ol>
+<li><strong>零依赖存储</strong>：SQLite + Git，无需数据库服务器</li>
+<li><strong>FTS5 搜索</strong>：开箱即用的全文检索，自动同步，查询语法丰富</li>
+<li><strong>WAL 并发</strong>：多进程安全，random jitter 避免 convoy effect</li>
+<li><strong>渐进迁移</strong>：schema 版本号 + JSONL 双写，无中断升级</li>
+<li><strong>PII 脱敏</strong>：gateway 层内置，按平台策略差异化处理</li>
+<li><strong>可撤销回滚</strong>：checkpoint restore 前自动快照，永不丢失数据</li>
+</ol>
+<h3 id="_3">限制</h3>
+<ol>
+<li><strong>单机限制</strong>：SQLite 不支持多机部署，无法水平扩展</li>
+<li><strong>无向量搜索</strong>：FTS5 仅支持关键词匹配，缺乏语义搜索能力</li>
+<li><strong>内存状态丢失</strong>：TodoStore 随进程退出丢失（无持久化）</li>
+<li><strong>无事务级 UoW</strong>：每次写操作独立事务，缺乏跨操作原子性</li>
+<li><strong>checkpoint 非增量</strong>：每次 <code>git add -A</code> 全量暂存，大目录性能受限</li>
+</ol>
+</body>
+</html>

@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>01-agent-loop</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1 id="hermes-agent-agent-loop">Hermes-Agent 的 Agent Loop 深度分析</h1>
+<h2 id="1">1. 架构设计</h2>
+<p>Hermes-Agent 的 Agent Loop 存在两个变体，服务于不同场景：</p>
+<table>
+<thead>
+<tr>
+<th>变体</th>
+<th>文件</th>
+<th>类</th>
+<th>场景</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>主循环（CLI/Gateway）</td>
+<td><code>run_agent.py</code></td>
+<td><code>AIAgent.run_conversation()</code></td>
+<td>交互式会话、网关调用</td>
+</tr>
+<tr>
+<td>RL 环境循环</td>
+<td><code>environments/agent_loop.py</code></td>
+<td><code>HermesAgentLoop.run()</code></td>
+<td>RL 训练/评估环境</td>
+</tr>
+</tbody>
+</table>
+<p><strong>共同设计原则：</strong> 两者均基于 OpenAI 标准的 tool_calls 协议，循环核心模式一致：调用 LLM -&gt; 检查 tool_calls -&gt; 分发工具执行 -&gt; 将结果追加到 messages -&gt; 重复。</p>
+<h3 id="11">1.1 依赖关系</h3>
+<div class="codehilite"><pre><span></span><code><span class="n">AIAgent</span><span class="o">.</span><span class="n">run_conversation</span><span class="p">()</span><span class="w"></span>
+<span class="w">    </span><span class="err">└──</span><span class="w"> </span><span class="n">handle_function_call</span><span class="p">()</span><span class="w">  </span><span class="p">[</span><span class="n">model_tools</span><span class="o">.</span><span class="n">py</span><span class="p">]</span><span class="w"></span>
+<span class="w">        </span><span class="err">└──</span><span class="w"> </span><span class="n">registry</span><span class="o">.</span><span class="n">dispatch</span><span class="p">()</span><span class="w">  </span><span class="p">[</span><span class="n">tools</span><span class="o">/</span><span class="n">registry</span><span class="o">.</span><span class="n">py</span><span class="p">]</span><span class="w"></span>
+
+<span class="n">HermesAgentLoop</span><span class="o">.</span><span class="n">run</span><span class="p">()</span><span class="w"></span>
+<span class="w">    </span><span class="err">└──</span><span class="w"> </span><span class="n">handle_function_call</span><span class="p">()</span><span class="w">  </span><span class="p">[</span><span class="n">model_tools</span><span class="o">.</span><span class="n">py</span><span class="err">，线程池内执行</span><span class="p">]</span><span class="w"></span>
+<span class="w">        </span><span class="err">└──</span><span class="w"> </span><span class="n">registry</span><span class="o">.</span><span class="n">dispatch</span><span class="p">()</span><span class="w"></span>
+</code></pre></div>
+
+<p>工具分发层 <code>model_tools.py</code> 是统一的薄调度层。它通过 <code>tools/registry.py</code> 注册表发现和调度工具，工具模块在 import 时自注册 schema 和 handler（<code>_discover_tools()</code> 函数，L132-167）。</p>
+<hr />
+<h2 id="2">2. 核心循环流程</h2>
+<h3 id="21-aiagentrun_conversation">2.1 AIAgent.run_conversation()（主循环）</h3>
+<p><strong>位置：</strong> <code>run_agent.py</code> L6921-L9198</p>
+<p><strong>循环结构（简化）：</strong></p>
+<div class="codehilite"><pre><span></span><code><span class="n">run_conversation</span><span class="p">(</span><span class="n">user_message</span><span class="p">):</span><span class="w"></span>
+<span class="w">    </span><span class="mf">1.</span><span class="w"> </span><span class="err">前置处理（系统提示构建、上下文预压缩、插件</span><span class="w"> </span><span class="n">hook</span><span class="err">）</span><span class="w"></span>
+<span class="w">    </span><span class="mf">2.</span><span class="w"> </span><span class="k">while</span><span class="w"> </span><span class="n">api_call_count</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">max_iterations</span><span class="w"> </span><span class="ow">and</span><span class="w"> </span><span class="n">budget</span><span class="o">.</span><span class="n">remaining</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">0</span><span class="p">:</span><span class="w"></span>
+<span class="w">        </span><span class="mf">2.1</span><span class="w"> </span><span class="err">检查中断</span><span class="w"></span>
+<span class="w">        </span><span class="mf">2.2</span><span class="w"> </span><span class="err">消费迭代预算</span><span class="w"></span>
+<span class="w">        </span><span class="mf">2.3</span><span class="w"> </span><span class="err">构建</span><span class="w"> </span><span class="n">api_messages</span><span class="err">（注入记忆、推理字段、缓存控制）</span><span class="w"></span>
+<span class="w">        </span><span class="mf">2.4</span><span class="w"> </span><span class="k">while</span><span class="w"> </span><span class="n">retry_count</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">max_retries</span><span class="p">:</span><span class="w">  </span><span class="c1"># 内层重试循环</span><span class="w"></span>
+<span class="w">            </span><span class="mf">2.4</span><span class="o">.</span><span class="mi">1</span><span class="w"> </span><span class="err">调用</span><span class="w"> </span><span class="n">LLM</span><span class="w"> </span><span class="n">API</span><span class="err">（优先</span><span class="w"> </span><span class="n">streaming</span><span class="err">）</span><span class="w"></span>
+<span class="w">            </span><span class="mf">2.4</span><span class="o">.</span><span class="mi">2</span><span class="w"> </span><span class="err">错误处理（</span><span class="n">rate</span><span class="w"> </span><span class="n">limit</span><span class="err">、</span><span class="n">context</span><span class="w"> </span><span class="n">overflow</span><span class="err">、</span><span class="n">auth</span><span class="w"> </span><span class="err">等）</span><span class="w"></span>
+<span class="w">            </span><span class="mf">2.4</span><span class="o">.</span><span class="mi">3</span><span class="w"> </span><span class="err">成功则</span><span class="w"> </span><span class="k">break</span><span class="w"></span>
+<span class="w">        </span><span class="mf">2.5</span><span class="w"> </span><span class="err">解析响应</span><span class="w"></span>
+<span class="w">        </span><span class="mf">2.6</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="n">tool_calls</span><span class="p">:</span><span class="w"></span>
+<span class="w">            </span><span class="mf">2.6</span><span class="o">.</span><span class="mi">1</span><span class="w"> </span><span class="err">验证工具名、</span><span class="n">JSON</span><span class="w"> </span><span class="err">参数</span><span class="w"></span>
+<span class="w">            </span><span class="mf">2.6</span><span class="o">.</span><span class="mi">2</span><span class="w"> </span><span class="err">执行工具（并行或串行）</span><span class="w"></span>
+<span class="w">            </span><span class="mf">2.6</span><span class="o">.</span><span class="mi">3</span><span class="w"> </span><span class="err">追加结果到</span><span class="w"> </span><span class="n">messages</span><span class="w"></span>
+<span class="w">            </span><span class="mf">2.6</span><span class="o">.</span><span class="mi">4</span><span class="w"> </span><span class="err">上下文压缩检查</span><span class="w"></span>
+<span class="w">            </span><span class="mf">2.6</span><span class="o">.</span><span class="mi">5</span><span class="w"> </span><span class="k">continue</span><span class="w"></span>
+<span class="w">        </span><span class="mf">2.7</span><span class="w"> </span><span class="k">else</span><span class="p">:</span><span class="w">  </span><span class="c1"># 最终响应</span><span class="w"></span>
+<span class="w">            </span><span class="mf">2.7</span><span class="o">.</span><span class="mi">1</span><span class="w"> </span><span class="err">处理空响应</span><span class="o">/</span><span class="n">thinking</span><span class="o">-</span><span class="n">only</span><span class="o">/</span><span class="n">length</span><span class="w"> </span><span class="err">截断</span><span class="w"></span>
+<span class="w">            </span><span class="mf">2.7</span><span class="o">.</span><span class="mi">2</span><span class="w"> </span><span class="k">break</span><span class="w"></span>
+<span class="w">    </span><span class="mf">3.</span><span class="w"> </span><span class="err">后置处理（保存会话、清理资源、记忆回顾）</span><span class="w"></span>
+</code></pre></div>
+
+<p><strong>关键特征：</strong></p>
+<ul>
+<li><strong>同步阻塞设计</strong>（L6921 <code>def run_conversation</code>，非 async）</li>
+<li><strong>双层循环</strong>：外层为工具调用迭代（max_iterations），内层为 API 调用重试（max_retries=3）</li>
+<li><strong>消息列表原地修改</strong>：<code>messages</code> 列表在循环中持续追加 assistant/tool 消息</li>
+</ul>
+<h3 id="22-hermesagentlooprunrl">2.2 HermesAgentLoop.run()（RL 循环）</h3>
+<p><strong>位置：</strong> <code>environments/agent_loop.py</code> L175-523</p>
+<p><strong>循环结构（简化）：</strong></p>
+<div class="codehilite"><pre><span></span><code><span class="n">async</span><span class="w"> </span><span class="n">run</span><span class="p">(</span><span class="n">messages</span><span class="p">):</span><span class="w"></span>
+<span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="n">turn</span><span class="w"> </span><span class="ow">in</span><span class="w"> </span><span class="nb">range</span><span class="p">(</span><span class="n">max_turns</span><span class="p">):</span><span class="w"></span>
+<span class="w">        </span><span class="mf">1.</span><span class="w"> </span><span class="err">构建</span><span class="w"> </span><span class="n">chat_kwargs</span><span class="w"></span>
+<span class="w">        </span><span class="mf">2.</span><span class="w"> </span><span class="n">response</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">await</span><span class="w"> </span><span class="n">server</span><span class="o">.</span><span class="n">chat_completion</span><span class="p">(</span><span class="o">**</span><span class="n">chat_kwargs</span><span class="p">)</span><span class="w"></span>
+<span class="w">        </span><span class="mf">3.</span><span class="w"> </span><span class="err">处理空响应</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">返回</span><span class="w"> </span><span class="n">AgentResult</span><span class="p">(</span><span class="n">finished_naturally</span><span class="o">=</span><span class="n">False</span><span class="p">)</span><span class="w"></span>
+<span class="w">        </span><span class="mf">4.</span><span class="w"> </span><span class="err">提取</span><span class="w"> </span><span class="n">reasoning</span><span class="w"></span>
+<span class="w">        </span><span class="mf">5.</span><span class="w"> </span><span class="err">回退解析（</span><span class="o">&lt;</span><span class="n">tool_call</span><span class="o">&gt;</span><span class="w"> </span><span class="err">标签</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">结构化</span><span class="w"> </span><span class="n">tool_calls</span><span class="err">）</span><span class="w"></span>
+<span class="w">        </span><span class="mf">6.</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="n">tool_calls</span><span class="p">:</span><span class="w"></span>
+<span class="w">            </span><span class="mf">6.1</span><span class="w"> </span><span class="err">规范化工具调用格式（</span><span class="n">object</span><span class="o">/</span><span class="n">dict</span><span class="w"> </span><span class="err">兼容）</span><span class="w"></span>
+<span class="w">            </span><span class="mf">6.2</span><span class="w"> </span><span class="err">追加</span><span class="w"> </span><span class="n">assistant</span><span class="w"> </span><span class="err">消息</span><span class="w"></span>
+<span class="w">            </span><span class="mf">6.3</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">each</span><span class="w"> </span><span class="n">tool_call</span><span class="p">:</span><span class="w"></span>
+<span class="w">                </span><span class="err">验证工具名</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">解析</span><span class="w"> </span><span class="n">JSON</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">分发执行（线程池）</span><span class="w"></span>
+<span class="w">            </span><span class="mf">6.4</span><span class="w"> </span><span class="err">追加</span><span class="w"> </span><span class="k">tool</span><span class="w"> </span><span class="err">结果消息</span><span class="w"></span>
+<span class="w">        </span><span class="mf">7.</span><span class="w"> </span><span class="k">else</span><span class="p">:</span><span class="w"></span>
+<span class="w">            </span><span class="err">追加</span><span class="w"> </span><span class="n">assistant</span><span class="w"> </span><span class="err">消息</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="err">返回</span><span class="w"> </span><span class="n">AgentResult</span><span class="p">(</span><span class="n">finished_naturally</span><span class="o">=</span><span class="n">True</span><span class="p">)</span><span class="w"></span>
+<span class="w">    </span><span class="err">返回</span><span class="w"> </span><span class="n">AgentResult</span><span class="p">(</span><span class="n">finished_naturally</span><span class="o">=</span><span class="n">False</span><span class="p">,</span><span class="w"> </span><span class="n">turns_used</span><span class="o">=</span><span class="n">max_turns</span><span class="p">)</span><span class="w"></span>
+</code></pre></div>
+
+<p><strong>关键特征：</strong></p>
+<ul>
+<li><strong>异步设计</strong>（<code>async def run</code>），适合 RL 框架的事件循环</li>
+<li><strong>单层循环</strong>：无内层重试，API 失败直接返回</li>
+<li><strong>线程池执行工具</strong>（L409，<code>run_in_executor</code>），避免同步工具阻塞事件循环</li>
+</ul>
+<hr />
+<h2 id="3">3. 迭代控制与终止条件</h2>
+<h3 id="31">3.1 主循环终止条件</h3>
+<table>
+<thead>
+<tr>
+<th>条件</th>
+<th>位置</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>api_call_count &gt;= max_iterations</code></td>
+<td>L7232</td>
+<td>默认 90 次</td>
+</tr>
+<tr>
+<td><code>iteration_budget.remaining &lt;= 0</code></td>
+<td>L7232</td>
+<td>线程安全预算（含子 agent 共享）</td>
+</tr>
+<tr>
+<td><code>_interrupt_requested</code></td>
+<td>L7237</td>
+<td>外部中断（用户发新消息）</td>
+</tr>
+<tr>
+<td>模型无 tool_calls</td>
+<td>L8997</td>
+<td>自然结束</td>
+</tr>
+<tr>
+<td>不可恢复错误</td>
+<td>L8370-8423</td>
+<td>4xx 客户端错误</td>
+</tr>
+<tr>
+<td>最大重试耗尽</td>
+<td>L8425</td>
+<td>API 重试 3 次后</td>
+</tr>
+<tr>
+<td>最大压缩次数达到</td>
+<td>L8299</td>
+<td>上下文压缩失败</td>
+</tr>
+<tr>
+<td>空响应最大重试</td>
+<td>L8610</td>
+<td>无效响应 3 次</td>
+</tr>
+<tr>
+<td>thinking 预算耗尽</td>
+<td>L7694</td>
+<td>推理用完所有 output tokens</td>
+</tr>
+</tbody>
+</table>
+<h3 id="32-rl">3.2 RL 循环终止条件</h3>
+<table>
+<thead>
+<tr>
+<th>条件</th>
+<th>位置</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>turn &gt;= max_turns</code></td>
+<td>L204</td>
+<td>默认 30 次</td>
+</tr>
+<tr>
+<td>API 异常</td>
+<td>L231-241</td>
+<td>直接返回</td>
+</tr>
+<tr>
+<td>空响应</td>
+<td>L244-254</td>
+<td>直接返回</td>
+</tr>
+<tr>
+<td>模型无 tool_calls</td>
+<td>L489-512</td>
+<td>自然结束</td>
+</tr>
+</tbody>
+</table>
+<h3 id="33-iterationbudget">3.3 IterationBudget</h3>
+<p><strong>位置：</strong> <code>run_agent.py</code> L168-209</p>
+<div class="codehilite"><pre><span></span><code><span class="k">class</span> <span class="nc">IterationBudget</span><span class="p">:</span>
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">max_total</span><span class="p">:</span> <span class="nb">int</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">max_total</span> <span class="o">=</span> <span class="n">max_total</span>  <span class="c1"># 默认 90</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_used</span> <span class="o">=</span> <span class="mi">0</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_lock</span> <span class="o">=</span> <span class="n">threading</span><span class="o">.</span><span class="n">Lock</span><span class="p">()</span>  <span class="c1"># 线程安全</span>
+
+    <span class="k">def</span> <span class="nf">consume</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span>  <span class="c1"># 尝试消费一次迭代</span>
+    <span class="k">def</span> <span class="nf">refund</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span>   <span class="c1"># 退还（execute_code 调用不计入预算）</span>
+</code></pre></div>
+
+<p><strong>设计亮点：</strong> execute_code 工具调用会退还迭代计数（L8941-8942），因为这些是廉价的程序式 RPC 调用，不应消耗预算。</p>
+<hr />
+<h2 id="4">4. 错误处理与重试</h2>
+<h3 id="41">4.1 主循环的多层错误处理</h3>
+<p>主循环拥有极其复杂的错误恢复机制（<code>run_agent.py</code> L7420-L8544）：</p>
+<p><strong>API 调用级重试（内层 while retry_count &lt; max_retries）：</strong></p>
+<ol>
+<li><strong>速率限制（429/529）：</strong> 指数退避 + 抖动，尊重 Retry-After 头（L8506-8516）</li>
+<li><strong>上下文溢出：</strong> 自动检测 -&gt; 降低上下文窗口 tier -&gt; 触发压缩 -&gt; 重试（L8270-8338）</li>
+<li><strong>认证刷新：</strong> Codex OAuth / Anthropic / Nous 的 401 自动重新认证（L7958-8003）</li>
+<li><strong>Thinking 签名修复：</strong> Anthropic 签名失效时剥离 reasoning_details（L8012-8030）</li>
+<li><strong>Surrogate 字符修复：</strong> 自动清理无效 Unicode 字符（L7938-7945）</li>
+<li><strong>连接恢复：</strong> 传输层故障时重建客户端（L8430-8435）</li>
+<li><strong>Fallback 链：</strong> 主模型失败时依次尝试备用模型（L7576-7580，L8437-8440）</li>
+</ol>
+<p><strong>工具执行级错误处理：</strong></p>
+<ul>
+<li>无效工具名：返回错误消息给 LLM 自纠（L8763-8800），最多 3 次</li>
+<li>无效 JSON 参数：先重试 API，3 次后注入 recovery tool results（L8806-8863）</li>
+<li>截断响应（finish_reason=length）：请求 continuation（L7728-7766），最多 3 次</li>
+</ul>
+<h3 id="42-rl">4.2 RL 循环的简化错误处理</h3>
+<p>RL 循环刻意简化：</p>
+<ul>
+<li><strong>API 异常：</strong> 直接返回 <code>AgentResult(finished_naturally=False)</code>（L231-241）</li>
+<li><strong>工具名无效：</strong> 返回 JSON 错误消息（L340-351）</li>
+<li><strong>JSON 解析失败：</strong> 返回错误消息（L362-374）</li>
+<li><strong>工具执行异常：</strong> 捕获并记录为 ToolError（L426-439）</li>
+<li><strong>无重试机制</strong>，无 fallback 链</li>
+</ul>
+<p><strong>设计意图：</strong> RL 环境追求确定性和快速反馈，而非生产环境的最大恢复能力。</p>
+<hr />
+<h2 id="5-vs">5. 同步 vs 异步设计</h2>
+<h3 id="51">5.1 主循环：同步 + 异步桥接</h3>
+<p><code>AIAgent.run_conversation()</code> 是同步方法（L6921），但其工具系统需要桥接异步：</p>
+<p><strong>model_tools.py 的 <code>_run_async()</code>（L81-125）：</strong></p>
+<div class="codehilite"><pre><span></span><code><span class="k">def</span> <span class="nf">_run_async</span><span class="p">(</span><span class="n">coro</span><span class="p">):</span>
+    <span class="c1"># 1. 如果当前线程有运行中的事件循环 -&gt; 新线程 + asyncio.run()</span>
+    <span class="c1"># 2. 如果是 worker 线程 -&gt; per-thread 持久事件循环</span>
+    <span class="c1"># 3. 如果是主线程 -&gt; 全局持久事件循环</span>
+</code></pre></div>
+
+<p><strong>关键设计决策：</strong></p>
+<ul>
+<li>使用持久事件循环（非 <code>asyncio.run()</code> 创建/销毁模式），防止 httpx/AsyncOpenAI 客户端的 "Event loop is closed" 错误</li>
+<li>worker 线程使用 thread-local 持久循环，避免与主线程争用</li>
+</ul>
+<h3 id="52-rl">5.2 RL 循环：原生异步</h3>
+<p><code>HermesAgentLoop.run()</code> 是 <code>async def</code>（L175），天然运行在事件循环中。</p>
+<p><strong>工具执行桥接（L406-416）：</strong></p>
+<div class="codehilite"><pre><span></span><code><span class="n">loop</span> <span class="o">=</span> <span class="n">asyncio</span><span class="o">.</span><span class="n">get_event_loop</span><span class="p">()</span>
+<span class="n">tool_result</span> <span class="o">=</span> <span class="k">await</span> <span class="n">loop</span><span class="o">.</span><span class="n">run_in_executor</span><span class="p">(</span>
+    <span class="n">_tool_executor</span><span class="p">,</span>  <span class="c1"># 全局线程池，默认 128 workers</span>
+    <span class="k">lambda</span><span class="p">:</span> <span class="n">handle_function_call</span><span class="p">(</span><span class="n">_tn</span><span class="p">,</span> <span class="n">_ta</span><span class="p">,</span> <span class="n">task_id</span><span class="o">=</span><span class="n">_tid</span><span class="p">)</span>
+<span class="p">)</span>
+</code></pre></div>
+
+<p><strong>线程池设计（L33-47）：</strong></p>
+<ul>
+<li>全局 <code>ThreadPoolExecutor(max_workers=128)</code></li>
+<li>可通过 <code>resize_tool_pool()</code> 运行时调整</li>
+<li>大尺寸防止 TB2 评估任务（89 个并行）的线程池饥饿</li>
+</ul>
+<h3 id="53">5.3 并行工具执行（主循环）</h3>
+<p><strong>位置：</strong> <code>run_agent.py</code> L265-L6073</p>
+<p>主循环支持条件并行执行工具：</p>
+<div class="codehilite"><pre><span></span><code><span class="k">def</span> <span class="nf">_should_parallelize_tool_batch</span><span class="p">(</span><span class="n">tool_calls</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+    <span class="c1"># 单工具 -&gt; 串行</span>
+    <span class="c1"># 含 _NEVER_PARALLEL_TOOLS (clarify) -&gt; 串行</span>
+    <span class="c1"># 全是 _PARALLEL_SAFE_TOOLS (read_file, web_search 等) -&gt; 并行</span>
+    <span class="c1"># 文件工具路径无重叠 -&gt; 并行</span>
+    <span class="c1"># 含破坏性 terminal 命令 -&gt; 串行</span>
+</code></pre></div>
+
+<hr />
+<h2 id="6-tool-call">6. Tool Call 处理流程</h2>
+<h3 id="61">6.1 工具分发层</h3>
+<p><strong>model_tools.py <code>handle_function_call()</code>（L459-548）：</strong></p>
+<div class="codehilite"><pre><span></span><code><span class="mf">1.</span><span class="w"> </span><span class="n">coerce_tool_args</span><span class="p">()</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">类型修正</span><span class="err">（</span><span class="s">&quot;42&quot;</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="mf">42</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;true&quot;</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">True</span><span class="err">）</span><span class="w"></span>
+<span class="mf">2.</span><span class="w"> </span><span class="ow">not</span><span class="kr">if</span><span class="n">y_other_tool_call</span><span class="p">()</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">重置连续读文件计数器</span><span class="w"></span>
+<span class="mf">3.</span><span class="w"> </span><span class="n">检查</span><span class="w"> </span><span class="n">_AGENT_LOOP_TOOLS</span><span class="w"> </span><span class="p">(</span><span class="kr">to</span><span class="n">do</span><span class="o">/</span><span class="n">memory</span><span class="o">/</span><span class="n">session_search</span><span class="o">/</span><span class="n">delegate_task</span><span class="p">)</span><span class="w"></span>
+<span class="mf">4.</span><span class="w"> </span><span class="n">pre_tool_call</span><span class="w"> </span><span class="n">插件</span><span class="w"> </span><span class="n">hook</span><span class="w"></span>
+<span class="mf">5.</span><span class="w"> </span><span class="n">registry</span><span class="mf">.</span><span class="n">dispatch</span><span class="p">()</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">注册表分发</span><span class="w"></span>
+<span class="mf">6.</span><span class="w"> </span><span class="nb">pos</span><span class="n">t_tool_call</span><span class="w"> </span><span class="n">插件</span><span class="w"> </span><span class="n">hook</span><span class="w"></span>
+</code></pre></div>
+
+<h3 id="62-agent">6.2 Agent 级工具拦截</h3>
+<p>部分工具需要 agent 级别状态，不走 registry 分发：</p>
+<table>
+<thead>
+<tr>
+<th>工具</th>
+<th>处理方式</th>
+<th>原因</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>todo</code></td>
+<td>agent 内联处理</td>
+<td>需要 per-loop TodoStore</td>
+</tr>
+<tr>
+<td><code>memory</code></td>
+<td>agent 内联处理</td>
+<td>需要 MemoryStore</td>
+</tr>
+<tr>
+<td><code>session_search</code></td>
+<td>agent 内联处理</td>
+<td>需要 SessionDB</td>
+</tr>
+<tr>
+<td><code>delegate_task</code></td>
+<td>agent 内联处理</td>
+<td>需要 parent_agent 引用</td>
+</tr>
+<tr>
+<td><code>clarify</code></td>
+<td>agent 内联处理</td>
+<td>需要 clarify_callback</td>
+</tr>
+</tbody>
+</table>
+<h3 id="63-rl">6.3 工具结果持久化（RL 循环）</h3>
+<p><strong>位置：</strong> <code>environments/agent_loop.py</code> L458-480</p>
+<div class="codehilite"><pre><span></span><code><span class="n">tool_result</span> <span class="o">=</span> <span class="n">maybe_persist_tool_result</span><span class="p">(</span>
+    <span class="n">content</span><span class="o">=</span><span class="n">tool_result</span><span class="p">,</span>
+    <span class="n">tool_name</span><span class="o">=</span><span class="n">tool_name</span><span class="p">,</span>
+    <span class="n">config</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">budget_config</span><span class="p">,</span>  <span class="c1"># 预算控制：per-tool 阈值、per-turn 总预算</span>
+<span class="p">)</span>
+<span class="n">enforce_turn_budget</span><span class="p">(</span><span class="n">messages</span><span class="p">[</span><span class="o">-</span><span class="n">num_tcs</span><span class="p">:],</span> <span class="n">config</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">budget_config</span><span class="p">)</span>
+</code></pre></div>
+
+<hr />
+<h2 id="7-rl">7. RL 环境中的变体</h2>
+<h3 id="71">7.1 设计差异</h3>
+<table>
+<thead>
+<tr>
+<th>特性</th>
+<th>主循环 (AIAgent)</th>
+<th>RL 循环 (HermesAgentLoop)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>同步/异步</td>
+<td>同步</td>
+<td>异步</td>
+</tr>
+<tr>
+<td>最大迭代</td>
+<td>90（可配置）</td>
+<td>30（可配置）</td>
+</tr>
+<tr>
+<td>API 重试</td>
+<td>3 次 + fallback</td>
+<td>无重试</td>
+</tr>
+<tr>
+<td>上下文压缩</td>
+<td>支持（多策略）</td>
+<td>不支持</td>
+</tr>
+<tr>
+<td>工具验证</td>
+<td>名称修复 + 多次重试</td>
+<td>简单拒绝</td>
+</tr>
+<tr>
+<td>会话持久化</td>
+<td>SQLite + session DB</td>
+<td>无</td>
+</tr>
+<tr>
+<td>中断机制</td>
+<td>支持（interrupt flag）</td>
+<td>不支持</td>
+</tr>
+<tr>
+<td>记忆系统</td>
+<td>支持（multi-provider）</td>
+<td>禁用</td>
+</tr>
+<tr>
+<td>推理提取</td>
+<td>多格式支持</td>
+<td>多格式支持</td>
+</tr>
+<tr>
+<td>Fallback 解析</td>
+<td>N/A</td>
+<td><code>&lt;tool_call&gt;</code> 标签回退解析</td>
+</tr>
+<tr>
+<td>结果持久化</td>
+<td>无</td>
+<td>BudgetConfig 控制</td>
+</tr>
+</tbody>
+</table>
+<h3 id="72-agentresult">7.2 AgentResult 数据结构</h3>
+<p><strong>位置：</strong> <code>environments/agent_loop.py</code> L63-78</p>
+<div class="codehilite"><pre><span></span><code><span class="nd">@dataclass</span>
+<span class="k">class</span> <span class="nc">AgentResult</span><span class="p">:</span>
+    <span class="n">messages</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]</span>       <span class="c1"># 完整对话历史</span>
+    <span class="n">managed_state</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">Dict</span><span class="p">]</span>         <span class="c1"># ManagedServer 状态（Phase 2）</span>
+    <span class="n">turns_used</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>                   <span class="c1"># LLM 调用次数</span>
+    <span class="n">finished_naturally</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>       <span class="c1"># 是否自然结束</span>
+    <span class="n">reasoning_per_turn</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]]</span>  <span class="c1"># 每轮推理内容</span>
+    <span class="n">tool_errors</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">ToolError</span><span class="p">]</span>          <span class="c1"># 工具错误记录</span>
+</code></pre></div>
+
+<h3 id="73-toolerror">7.3 ToolError 跟踪</h3>
+<p><strong>位置：</strong> <code>environments/agent_loop.py</code> L53-60</p>
+<p>RL 循环独有的错误追踪机制，记录每次工具错误的 turn/tool_name/arguments/error/tool_result，用于 RL 训练的奖励计算。</p>
+<hr />
+<h2 id="8">8. 设计优缺点</h2>
+<h3 id="81">8.1 优点</h3>
+<ol>
+<li><strong>极致的错误恢复能力（主循环）：</strong> 多层重试、自动压缩、fallback 链、认证刷新，覆盖了生产环境几乎所有故障模式</li>
+<li><strong>工具系统的高度可扩展性：</strong> 自注册机制 + 工具集管理 + MCP/插件支持</li>
+<li><strong>RL 循环的简洁性：</strong> 去除所有生产化逻辑，保持评估/训练场景的确定性和速度</li>
+<li><strong>智能并行执行：</strong> 基于工具特性和参数的并行安全性判断</li>
+<li><strong>迭代预算退还：</strong> execute_code 不消耗预算，避免程序式工具调用浪费</li>
+</ol>
+<h3 id="82">8.2 缺点</h3>
+<ol>
+<li><strong>主循环的极端复杂度：</strong> <code>run_conversation()</code> 方法跨越约 2300 行，包含深度嵌套的 while/try/except/if 结构，认知负荷极高</li>
+<li><strong>同步设计限制：</strong> 主循环的同步设计导致需要复杂的 async 桥接层（<code>_run_async()</code>），增加了线程安全问题</li>
+<li><strong>两套循环的维护成本：</strong> 主循环和 RL 循环共享 <code>handle_function_call()</code> 但各自维护工具验证/错误处理逻辑，存在行为不一致风险</li>
+<li><strong>缺乏结构化的状态管理：</strong> 主循环使用 plain list + 实例变量管理状态，无显式状态机——流程控制散布在 continue/break/return 中</li>
+<li><strong>无法暂停/恢复：</strong> 主循环无 checkpoint 机制，中断只能丢弃当前进度（RL 循环也没有）</li>
+<li><strong>上下文管理与循环耦合：</strong> 压缩/探测逻辑嵌入循环内部，而非独立的中间件/策略</li>
+</ol>
+</body>
+</html>

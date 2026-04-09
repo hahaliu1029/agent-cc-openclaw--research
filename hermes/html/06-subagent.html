@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>06-subagent</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1 id="hermes-agent-subagent">Hermes-Agent Subagent 机制深度分析</h1>
+<h2 id="1">1. 架构概览</h2>
+<p>Hermes-Agent 的子代理（Subagent）机制围绕三个核心模块构建：</p>
+<table>
+<thead>
+<tr>
+<th>模块</th>
+<th>文件</th>
+<th>职责</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Delegate Tool</td>
+<td><code>tools/delegate_tool.py</code></td>
+<td>单/批量子代理委派，隔离执行</td>
+</tr>
+<tr>
+<td>Mixture-of-Agents</td>
+<td><code>tools/mixture_of_agents_tool.py</code></td>
+<td>多 LLM 协同推理（MoA 架构）</td>
+</tr>
+<tr>
+<td>Batch Runner</td>
+<td><code>batch_runner.py</code></td>
+<td>数据集级别的多进程并行执行</td>
+</tr>
+</tbody>
+</table>
+<p>此外，<code>tools/send_message_tool.py</code> 提供跨平台消息发送能力，<code>acp_adapter/</code> 实现了 Agent Client Protocol (ACP) 适配层，使子代理可通过 ACP 子进程方式调用外部代理（如 Claude Code）。</p>
+<hr />
+<h2 id="2-delegate-tool">2. Delegate Tool 核心机制</h2>
+<h3 id="21">2.1 调用模式</h3>
+<p><code>delegate_task()</code> 支持两种模式（<code>tools/delegate_tool.py:510-527</code>）：</p>
+<ul>
+<li><strong>单任务模式</strong>：传入 <code>goal</code> + 可选 <code>context</code>/<code>toolsets</code>，生成单个子代理</li>
+<li><strong>批量模式</strong>：传入 <code>tasks</code> 数组（最多 3 个），所有子代理并行执行</li>
+</ul>
+<div class="codehilite"><pre><span></span><code><span class="c1"># 单任务</span>
+<span class="n">delegate_task</span><span class="p">(</span><span class="n">goal</span><span class="o">=</span><span class="s2">&quot;分析这段代码&quot;</span><span class="p">,</span> <span class="n">context</span><span class="o">=</span><span class="s2">&quot;文件路径: /src/main.py&quot;</span><span class="p">)</span>
+
+<span class="c1"># 批量并行</span>
+<span class="n">delegate_task</span><span class="p">(</span><span class="n">tasks</span><span class="o">=</span><span class="p">[</span>
+    <span class="p">{</span><span class="s2">&quot;goal&quot;</span><span class="p">:</span> <span class="s2">&quot;研究 API A&quot;</span><span class="p">,</span> <span class="s2">&quot;toolsets&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;web&quot;</span><span class="p">]},</span>
+    <span class="p">{</span><span class="s2">&quot;goal&quot;</span><span class="p">:</span> <span class="s2">&quot;审查代码 B&quot;</span><span class="p">,</span> <span class="s2">&quot;toolsets&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;terminal&quot;</span><span class="p">,</span> <span class="s2">&quot;file&quot;</span><span class="p">]},</span>
+    <span class="p">{</span><span class="s2">&quot;goal&quot;</span><span class="p">:</span> <span class="s2">&quot;搜索文档 C&quot;</span><span class="p">,</span> <span class="s2">&quot;toolsets&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;web&quot;</span><span class="p">]},</span>
+<span class="p">])</span>
+</code></pre></div>
+
+<h3 id="22">2.2 子代理隔离机制</h3>
+<p>每个子代理获得完全隔离的执行环境（<code>tools/delegate_tool.py:1-17</code>）：</p>
+<ol>
+<li><strong>全新会话</strong>：子代理不继承父代理的对话历史（<code>skip_context_files=True, skip_memory=True</code>，第 304-305 行）</li>
+<li><strong>独立 task_id</strong>：拥有独立的终端会话和文件操作缓存</li>
+<li><strong>受限工具集</strong>：通过 <code>DELEGATE_BLOCKED_TOOLS</code> 硬编码阻止以下工具（第 29-35 行）：</li>
+<li><code>delegate_task</code> — 禁止递归委派</li>
+<li><code>clarify</code> — 禁止用户交互</li>
+<li><code>memory</code> — 禁止写入共享 MEMORY.md</li>
+<li><code>send_message</code> — 禁止跨平台副作用</li>
+<li><code>execute_code</code> — 禁止脚本执行</li>
+<li><strong>独立系统提示</strong>：由 <code>_build_child_system_prompt()</code> 构建聚焦任务的系统提示（第 48-80 行）</li>
+</ol>
+<h3 id="23">2.3 深度限制</h3>
+<p>通过 <code>_delegate_depth</code> 属性实现层级控制（第 38 行）：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">MAX_DEPTH</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2</span><span class="w"></span>
+<span class="n">parent</span><span class="w"> </span><span class="p">(</span><span class="n">depth</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">child</span><span class="w"> </span><span class="p">(</span><span class="n">depth</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="n">grandchild</span><span class="w"> </span><span class="p">(</span><span class="n">depth</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="err">被拒绝</span><span class="p">)</span><span class="w"></span>
+</code></pre></div>
+
+<p>子代理的深度在构建时通过 <code>child._delegate_depth = parent._delegate_depth + 1</code> 递增（第 319 行）。</p>
+<h3 id="24">2.4 工具集继承与约束</h3>
+<p>工具集解析遵循严格的"只减不加"原则（第 224-249 行）：</p>
+<ol>
+<li>如果显式指定 <code>toolsets</code>：取指定值与父代理工具集的<strong>交集</strong></li>
+<li>如果未指定：继承父代理的已启用工具集</li>
+<li>最终剥离所有 blocked toolsets（<code>delegation</code>, <code>clarify</code>, <code>memory</code>, <code>code_execution</code>）</li>
+</ol>
+<h3 id="25">2.5 凭证解析与提供者路由</h3>
+<p>子代理支持灵活的凭证配置（<code>_resolve_delegation_credentials</code>，第 726-812 行）：</p>
+<ul>
+<li><strong>直接端点</strong>：配置 <code>delegation.base_url</code> 时使用该端点</li>
+<li><strong>Provider 解析</strong>：配置 <code>delegation.provider</code> 时，通过运行时 provider 系统解析完整凭证</li>
+<li><strong>父代理继承</strong>：均未配置时，继承父代理的凭证</li>
+</ul>
+<p>这使得父代理可以运行在 Nous Portal 上，而子代理被路由到更便宜的 OpenRouter 模型。</p>
+<h3 id="26">2.6 凭证池共享</h3>
+<p><code>_resolve_child_credential_pool()</code>（第 694-723 行）实现了凭证池管理：</p>
+<ul>
+<li>相同 provider 时：共享父代理的凭证池（同步冷却和轮转状态）</li>
+<li>不同 provider 时：加载该 provider 自身的凭证池</li>
+<li>无可用池时：使用继承的固定凭证</li>
+</ul>
+<h3 id="27-acp">2.7 ACP 子进程传输</h3>
+<p>子代理支持通过 ACP 子进程方式调用外部代理（Schema 第 937-953 行）：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">delegate_task</span><span class="p">(</span>
+    <span class="n">goal</span><span class="o">=</span><span class="s2">&quot;生成测试代码&quot;</span><span class="p">,</span>
+    <span class="n">acp_command</span><span class="o">=</span><span class="s2">&quot;claude&quot;</span><span class="p">,</span>
+    <span class="n">acp_args</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;--acp&quot;</span><span class="p">,</span> <span class="s2">&quot;--stdio&quot;</span><span class="p">,</span> <span class="s2">&quot;--model&quot;</span><span class="p">,</span> <span class="s2">&quot;claude-opus-4-6&quot;</span><span class="p">],</span>
+<span class="p">)</span>
+</code></pre></div>
+
+<p>这使得 Hermes Agent（无论从 Discord/Telegram/CLI 运行）可以将任务委派给 Claude Code 等 ACP 兼容代理。</p>
+<hr />
+<h2 id="3">3. 并行执行机制</h2>
+<h3 id="31-delegate-tool">3.1 Delegate Tool 的线程池并行</h3>
+<p>批量模式使用 <code>ThreadPoolExecutor</code>（第 619 行）：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">MAX_CONCURRENT_CHILDREN</span> <span class="o">=</span> <span class="mi">3</span>
+
+<span class="k">with</span> <span class="n">ThreadPoolExecutor</span><span class="p">(</span><span class="n">max_workers</span><span class="o">=</span><span class="n">MAX_CONCURRENT_CHILDREN</span><span class="p">)</span> <span class="k">as</span> <span class="n">executor</span><span class="p">:</span>
+    <span class="n">futures</span> <span class="o">=</span> <span class="p">{</span><span class="n">executor</span><span class="o">.</span><span class="n">submit</span><span class="p">(</span><span class="n">_run_single_child</span><span class="p">,</span> <span class="o">...</span><span class="p">):</span> <span class="n">i</span> <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">t</span><span class="p">,</span> <span class="n">child</span> <span class="ow">in</span> <span class="n">children</span><span class="p">}</span>
+    <span class="k">for</span> <span class="n">future</span> <span class="ow">in</span> <span class="n">as_completed</span><span class="p">(</span><span class="n">futures</span><span class="p">):</span>
+        <span class="n">entry</span> <span class="o">=</span> <span class="n">future</span><span class="o">.</span><span class="n">result</span><span class="p">()</span>
+</code></pre></div>
+
+<p>关键设计：
+- <strong>主线程构建</strong>：所有子代理在主线程上构建（<code>_build_child_agent</code>），然后提交到线程池运行
+- <strong>全局状态保护</strong>：构建前保存 <code>_last_resolved_tool_names</code>，构建后恢复（第 583-607 行），因为 <code>AIAgent()</code> 构造会覆盖全局工具名列表
+- <strong>单任务无线程池</strong>：只有 1 个任务时直接运行，避免线程池开销（第 609-613 行）</p>
+<h3 id="32-batch-runner">3.2 Batch Runner 的多进程并行</h3>
+<p><code>batch_runner.py</code> 使用 <code>multiprocessing.Pool</code> 实现数据集级别的并行（第 388-424 行）：</p>
+<ul>
+<li>将数据集分成批次（batch）</li>
+<li>每个批次在独立进程中处理</li>
+<li>每个 prompt 创建独立的 <code>AIAgent</code> 实例（第 314-334 行）</li>
+<li>支持检查点恢复（<code>--resume</code> 参数）</li>
+<li>每个 prompt 可指定不同的容器镜像（Docker/Modal/Singularity/Daytona）</li>
+</ul>
+<hr />
+<h2 id="4-mixture-of-agents-moa">4. Mixture-of-Agents (MoA) 机制</h2>
+<h3 id="41">4.1 架构设计</h3>
+<p>MoA 基于论文 "Mixture-of-Agents Enhances Large Language Model Capabilities"（arXiv:2406.04692），采用固定的两层架构（<code>tools/mixture_of_agents_tool.py</code>）：</p>
+<p><strong>Layer 1 — 参考模型（并行）</strong>：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">REFERENCE_MODELS</span> <span class="o">=</span> <span class="p">[</span>
+    <span class="s2">&quot;anthropic/claude-opus-4.6&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;google/gemini-3-pro-preview&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;openai/gpt-5.4-pro&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;deepseek/deepseek-v3.2&quot;</span><span class="p">,</span>
+<span class="p">]</span>
+<span class="n">REFERENCE_TEMPERATURE</span> <span class="o">=</span> <span class="mf">0.6</span>  <span class="c1"># 平衡创造性</span>
+</code></pre></div>
+
+<p><strong>Layer 2 — 聚合模型</strong>：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">AGGREGATOR_MODEL</span> <span class="o">=</span> <span class="s2">&quot;anthropic/claude-opus-4.6&quot;</span>
+<span class="n">AGGREGATOR_TEMPERATURE</span> <span class="o">=</span> <span class="mf">0.4</span>  <span class="c1"># 聚焦一致性</span>
+</code></pre></div>
+
+<h3 id="42">4.2 执行流程</h3>
+<ol>
+<li>4 个参考模型通过 <code>asyncio.gather()</code> 并行生成响应（第 311-313 行）</li>
+<li>每个模型支持最多 6 次重试，采用指数退避（2s, 4s, 8s, 16s, 32s, 60s）</li>
+<li>所有请求启用 <code>reasoning.effort = "xhigh"</code> 深度推理</li>
+<li>最少需要 1 个成功响应即可继续（<code>MIN_SUCCESSFUL_REFERENCES = 1</code>）</li>
+<li>聚合模型将所有参考响应合成为最终答案</li>
+</ol>
+<h3 id="43-delegate-tool">4.3 与 Delegate Tool 的区别</h3>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>Delegate Tool</th>
+<th>MoA</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>执行者</td>
+<td>完整 AIAgent（含工具调用）</td>
+<td>纯 LLM API 调用</td>
+</tr>
+<tr>
+<td>任务类型</td>
+<td>需要工具交互的任务</td>
+<td>纯推理任务</td>
+</tr>
+<tr>
+<td>上下文</td>
+<td>各自独立</td>
+<td>共享同一 user_prompt</td>
+</tr>
+<tr>
+<td>模型</td>
+<td>可配置单一模型</td>
+<td>多个不同模型</td>
+</tr>
+<tr>
+<td>结果</td>
+<td>各自独立摘要</td>
+<td>合成为单一输出</td>
+</tr>
+<tr>
+<td>运行方式</td>
+<td>ThreadPoolExecutor</td>
+<td>asyncio.gather</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="5">5. 进度反馈与中断传播</h2>
+<h3 id="51">5.1 进度回调</h3>
+<p><code>_build_child_progress_callback()</code>（第 116-193 行）实现双通道进度反馈：</p>
+<ul>
+<li><strong>CLI 通道</strong>：通过 spinner 的 <code>print_above()</code> 方法，以树形视图实时显示子代理工具调用</li>
+<li><strong>Gateway 通道</strong>：将工具名批量（每 5 个）中继到父代理的 progress callback</li>
+</ul>
+<p>批量模式下显示带编号前缀：</p>
+<div class="codehilite"><pre><span></span><code> [1] |-- search_files  &quot;config.yaml...&quot;
+ [1] |-- read_file  &quot;main.py...&quot;
+ [2] |-- terminal  &quot;git log...&quot;
+</code></pre></div>
+
+<h3 id="52">5.2 中断传播</h3>
+<p>子代理通过 <code>parent_agent._active_children</code> 列表注册（第 328-334 行），支持中断传播：
+- 构建时注册到父代理的 <code>_active_children</code> 列表
+- 完成后从列表中注销（第 498-508 行）
+- 父代理被中断时可遍历该列表传播中断信号</p>
+<h3 id="53">5.3 思考过程中继</h3>
+<p>子代理的 thinking callback 通过进度回调中继到父代理显示（第 266-276 行），以 <code>"_thinking"</code> 事件类型传递。</p>
+<hr />
+<h2 id="6">6. 结果收集与记忆</h2>
+<h3 id="61">6.1 结构化结果</h3>
+<p>每个子代理返回详细的结构化结果（第 450-467 行）：</p>
+<div class="codehilite"><pre><span></span><code><span class="p">{</span>
+    <span class="s2">&quot;task_index&quot;</span><span class="p">:</span> <span class="mi">0</span><span class="p">,</span>
+    <span class="s2">&quot;status&quot;</span><span class="p">:</span> <span class="s2">&quot;completed&quot;</span><span class="p">,</span>       <span class="c1"># completed/failed/interrupted/error</span>
+    <span class="s2">&quot;summary&quot;</span><span class="p">:</span> <span class="s2">&quot;...&quot;</span><span class="p">,</span>            <span class="c1"># 子代理的最终响应</span>
+    <span class="s2">&quot;api_calls&quot;</span><span class="p">:</span> <span class="mi">5</span><span class="p">,</span>
+    <span class="s2">&quot;duration_seconds&quot;</span><span class="p">:</span> <span class="mf">12.3</span><span class="p">,</span>
+    <span class="s2">&quot;model&quot;</span><span class="p">:</span> <span class="s2">&quot;deepseek/deepseek-chat&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;exit_reason&quot;</span><span class="p">:</span> <span class="s2">&quot;completed&quot;</span><span class="p">,</span>  <span class="c1"># completed/max_iterations/interrupted</span>
+    <span class="s2">&quot;tokens&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;input&quot;</span><span class="p">:</span> <span class="mi">5000</span><span class="p">,</span> <span class="s2">&quot;output&quot;</span><span class="p">:</span> <span class="mi">1200</span><span class="p">},</span>
+    <span class="s2">&quot;tool_trace&quot;</span><span class="p">:</span> <span class="p">[</span>              <span class="c1"># 工具调用追踪</span>
+        <span class="p">{</span><span class="s2">&quot;tool&quot;</span><span class="p">:</span> <span class="s2">&quot;terminal&quot;</span><span class="p">,</span> <span class="s2">&quot;args_bytes&quot;</span><span class="p">:</span> <span class="mi">45</span><span class="p">,</span> <span class="s2">&quot;result_bytes&quot;</span><span class="p">:</span> <span class="mi">200</span><span class="p">,</span> <span class="s2">&quot;status&quot;</span><span class="p">:</span> <span class="s2">&quot;ok&quot;</span><span class="p">},</span>
+    <span class="p">],</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<h3 id="62">6.2 记忆通知</h3>
+<p>委派完成后，通知父代理的记忆管理器（第 673-684 行）：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">parent_agent</span><span class="o">.</span><span class="n">_memory_manager</span><span class="o">.</span><span class="n">on_delegation</span><span class="p">(</span>
+    <span class="n">task</span><span class="o">=</span><span class="n">task_goal</span><span class="p">,</span>
+    <span class="n">result</span><span class="o">=</span><span class="n">summary</span><span class="p">,</span>
+    <span class="n">child_session_id</span><span class="o">=</span><span class="n">child</span><span class="o">.</span><span class="n">session_id</span><span class="p">,</span>
+<span class="p">)</span>
+</code></pre></div>
+
+<hr />
+<h2 id="7-send-message-tool">7. Send Message Tool</h2>
+<p><code>tools/send_message_tool.py</code> 提供跨平台消息发送能力，不是严格意义的"子代理"，而是一个工具调用：</p>
+<ul>
+<li>支持 Telegram、Discord、Slack、Signal、Feishu 等平台</li>
+<li>支持 <code>list</code>（列出可用目标）和 <code>send</code>（发送消息）两种操作</li>
+<li>自动解析人性化频道名到 ID</li>
+<li>内置敏感信息脱敏（<code>_sanitize_error_text</code>）</li>
+</ul>
+<hr />
+<h2 id="8">8. 关键设计决策总结</h2>
+<ol>
+<li><strong>完全隔离</strong>：子代理无法访问父代理的对话历史、记忆或上下文文件，保证安全性和可预测性</li>
+<li><strong>只减不加</strong>：子代理的工具集永远是父代理工具集的子集</li>
+<li><strong>层级限制</strong>：最大深度为 2，禁止无限递归委派</li>
+<li><strong>主线程构建+线程池运行</strong>：解决 AIAgent 构造时的全局状态竞争问题</li>
+<li><strong>灵活路由</strong>：支持将子代理路由到不同的模型/Provider/ACP 代理</li>
+<li><strong>双模 MoA</strong>：对纯推理任务提供多模型协同方案，补充 Delegate Tool 的工具执行能力</li>
+<li><strong>优雅降级</strong>：MoA 最少 1 个模型成功即可继续；子代理失败返回结构化错误而非崩溃</li>
+</ol>
+</body>
+</html>
