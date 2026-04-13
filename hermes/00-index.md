@@ -22,8 +22,9 @@
 | 14 | [14-sandbox.md](14-sandbox.md) | 沙箱机制、隔离执行与安全边界 | ~382 |
 | 15 | [15-skill-plugin-system.md](15-skill-plugin-system.md) | Skill/Plugin 生态、加载与扩展 | ~476 |
 | 16 | [16-multi-platform-gateway.md](16-multi-platform-gateway.md) | 多平台 Gateway、接入适配与路由 | ~478 |
+| 17 | [17-closed-learning-loop.md](17-closed-learning-loop.md) | Closed Learning Loop、RL 飞轮与 Agent 自调度 | ~587 |
 
-**总计**: ~4,870+ 行深度分析
+**总计**: ~5,450+ 行深度分析
 
 ## 建议阅读顺序
 
@@ -43,6 +44,7 @@
 14. `13-cost-management.md` — 成本控制与 Token 管理
 15. `15-skill-plugin-system.md` — Skill/Plugin 生态与扩展
 16. `16-multi-platform-gateway.md` — 多平台接入与 Gateway 路由
+17. `17-closed-learning-loop.md` — 闭环学习循环、RL 飞轮与 Agent 自调度训练
 
 ## 按主题阅读
 
@@ -54,3 +56,4 @@
 - **安全体系**: `07-permissions.md`, `11-safety.md`, `14-sandbox.md`
 - **输出与通信**: `09-sse-streaming.md`, `16-multi-platform-gateway.md`
 - **运维与成本**: `12-observability.md`, `13-cost-management.md`
+- **学习与训练**: `17-closed-learning-loop.md`

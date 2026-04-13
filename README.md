@@ -10,7 +10,7 @@
 
 ## 关于本仓库
 
-- 最后更新：2026-04-08
+- 最后更新：2026-04-13
 - 分析对象：cc-research 文档组对应的一套编码 Agent v2.1.88、OpenClaw 的若干核心子系统，以及 Hermes-Agent 的核心架构
 - 文档性质：个人研究整理，适合做设计拆解、运行时对照和实现思路参考
 - 使用提醒：如果上游实现已经发生变化，文中的结构、类型和调用链需要重新校验
@@ -48,7 +48,7 @@ repo/
 │       └── 00-11 对应 HTML 页面
 └── hermes/
     ├── 00-index.md
-    ├── 01-agent-loop.md ~ 16-multi-platform-gateway.md 共 16 篇专题
+    ├── 01-agent-loop.md ~ 17-closed-learning-loop.md 共 17 篇专题
     └── html/
         └── 00-index.html 及后续 HTML 页面
 ```
@@ -59,7 +59,7 @@ repo/
 |---|---|---|---|
 | 研究对象 | 一套编码 Agent v2.1.88 | OpenClaw 的多 Channel Agent / Gateway 体系 | Hermes-Agent 核心架构 |
 | 颗粒度 | 更偏源码级、运行时级拆解 | 更偏系统级、模块级和机制级拆解 | 系统级与机制级拆解 |
-| 典型主题 | Agent Loop、Prompt、Context、Memory、Tool Calling、MCP | Context Engine、Memory、Channel、Dreaming、Plugin SDK、Model Failover、Sandbox、Streaming、Queue | Agent Loop、System Prompt、Context、Memory、Tool Calling、Subagent、MCP、Permissions、Safety、Sandbox、Skill/Plugin、Multi-Platform Gateway |
+| 典型主题 | Agent Loop、Prompt、Context、Memory、Tool Calling、MCP | Context Engine、Memory、Channel、Dreaming、Plugin SDK、Model Failover、Sandbox、Streaming、Queue | Agent Loop、System Prompt、Context、Memory、Tool Calling、Subagent、MCP、Permissions、Safety、Sandbox、Skill/Plugin、Multi-Platform Gateway、Closed Learning Loop |
 | 适合读者 | 想理解这套编码 Agent 内部执行机制的人 | 想对比另一套 Agent 系统设计的人 | 想研究 Hermes-Agent 设计或做跨系统对照的人 |
 
 如果你的目标是理解 cc-research 对应运行时本身，从 cc-research 开始；如果你的目标是做架构对照或比较不同 Agent Runtime 的设计取舍，再把 openclaw 和 hermes 一起读。
@@ -194,7 +194,7 @@ HTML 镜像位于 [openclaw/html](openclaw/html)。推荐从 [openclaw/html/00-i
 
 ## Hermes-Agent 研究目录
 
-Hermes-Agent 部分聚焦另一套 Agent 系统的核心架构与子系统分析，当前包含 16 篇专题：
+Hermes-Agent 部分聚焦另一套 Agent 系统的核心架构与子系统分析，当前包含 17 篇专题：
 
 入口索引： [hermes/00-index.md](hermes/00-index.md)
 
@@ -216,6 +216,7 @@ Hermes-Agent 部分聚焦另一套 Agent 系统的核心架构与子系统分析
 - [hermes/14-sandbox.md](hermes/14-sandbox.md)：沙箱机制、隔离执行与安全边界
 - [hermes/15-skill-plugin-system.md](hermes/15-skill-plugin-system.md)：Skill/Plugin 生态、加载与扩展
 - [hermes/16-multi-platform-gateway.md](hermes/16-multi-platform-gateway.md)：多平台 Gateway、接入适配与路由
+- [hermes/17-closed-learning-loop.md](hermes/17-closed-learning-loop.md)：Closed Learning Loop、RL 飞轮与 Agent 自调度训练
 
 按主题导航：
 
@@ -233,6 +234,8 @@ Hermes-Agent 部分聚焦另一套 Agent 系统的核心架构与子系统分析
   [hermes/09-sse-streaming.md](hermes/09-sse-streaming.md)、[hermes/16-multi-platform-gateway.md](hermes/16-multi-platform-gateway.md)
 - 运维与成本：
   [hermes/12-observability.md](hermes/12-observability.md)、[hermes/13-cost-management.md](hermes/13-cost-management.md)
+- 学习与训练：
+  [hermes/17-closed-learning-loop.md](hermes/17-closed-learning-loop.md)
 
 HTML 镜像位于 [hermes/html](hermes/html)。推荐从 [hermes/html/00-index.html](hermes/html/00-index.html) 或 [hermes/00-index.md](hermes/00-index.md) 开始。
 

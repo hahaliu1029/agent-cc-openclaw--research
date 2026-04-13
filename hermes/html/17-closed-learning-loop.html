@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>17-closed-learning-loop</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 960px; margin: 0 auto; padding: 2rem; line-height: 1.6; color: #1a1a1a; background: #fff; }
+  h1 { border-bottom: 2px solid #e1e4e8; padding-bottom: 0.3em; }
+  h2 { border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; margin-top: 2em; }
+  h3 { margin-top: 1.5em; }
+  pre { background: #f6f8fa; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
+  code { background: #f0f2f5; padding: 0.2em 0.4em; border-radius: 3px; font-size: 85%; }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #f9fafb; }
+  blockquote { border-left: 4px solid #d0d7de; margin: 1em 0; padding: 0.5em 1em; color: #57606a; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  hr { border: none; border-top: 1px solid #d8dee4; margin: 2em 0; }
+  nav { background: #f6f8fa; padding: 1em; border-radius: 6px; margin-bottom: 2em; }
+  nav a { margin-right: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<nav><a href="00-index.html">← 索引</a></nav>
+<h1 id="hermes-agent-closed-learning-loop">Hermes-Agent 的 Closed Learning Loop 深度分析</h1>
+<blockquote>
+<p>本文分析 Hermes-Agent 如何把"线上 Agent 运行"与"离线 RL 训练"串成一条闭环数据与模型飞轮，覆盖从数据生成、环境回放、奖励计算、到权重更新的全链路实现。</p>
+</blockquote>
+<h2 id="1">1. 定义与范围</h2>
+<p><strong>Closed Learning Loop（闭环学习循环）</strong> 指 Agent 的运行轨迹可以被捕获、评估、转化为训练信号并回写到模型权重，使新一轮运行在同分布上表现更优的完整环路。根据信号强度可分为三层：</p>
+<table>
+<thead>
+<tr>
+<th>层级</th>
+<th>信号类型</th>
+<th>更新对象</th>
+<th>Hermes 对应</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>L1</td>
+<td>运行态日志</td>
+<td>只读的分析/仪表</td>
+<td><code>agent/insights.py</code>、usage 追踪</td>
+</tr>
+<tr>
+<td>L2</td>
+<td>结构化上下文记忆</td>
+<td>文件/卡片/外部向量库</td>
+<td><code>agent/memory_manager.py</code> + <code>MEMORY.md</code>/<code>USER.md</code>（可插拔外部 provider）</td>
+</tr>
+<tr>
+<td>L3</td>
+<td>轨迹 + 奖励 → 权重</td>
+<td>模型参数</td>
+<td><code>tinker-atropos</code> + <code>environments/</code> 全栈 RL</td>
+</tr>
+</tbody>
+</table>
+<p>L3 是本文的主角。Hermes 是少见地<strong>把 RL 训练当成一等公民内嵌到 Agent 代码库</strong>的项目——它不仅有 RL 环境，还有让 Agent <strong>自己</strong>去调度训练的 CLI 和工具链，构成"Agent 训练 Agent"的二阶闭环。</p>
+<hr>
+<h2 id="2">2. 整体架构</h2>
+<div class="codehilite"><pre><span></span><code>  ┌───────────────────────────────────────────────────────────┐
+  │                     线上 Agent（run_agent.py）               │
+  │  - 多平台网关（Telegram/Slack/飞书/Discord/Matrix/... ~15 个）│
+  │  - 轨迹持久化（hermes_state.py / SQLite）                    │
+  └───────────────────────────────────────────────────────────┘
+                             │
+                             │  用户会话 / Batch 运行
+                             ▼
+  ┌───────────────────────────────────────────────────────────┐
+  │              数据生成层（Data Generation）                    │
+  │  batch_runner.py        ── 并行跑 Agent over dataset       │
+  │  trajectory_compressor  ── 压缩到 15K token 训练目标         │
+  │  datagen-config-examples ── web_research / browser / ...   │
+  └───────────────────────────────────────────────────────────┘
+                             │
+                             │  JSONL（messages + scores）
+                             ▼
+  ┌───────────────────────────────────────────────────────────┐
+  │             环境回放层（Rollout Environments）                │
+  │  environments/hermes_base_env.py (HermesAgentBaseEnv)      │
+  │  environments/agent_loop.py      (HermesAgentLoop)         │
+  │  environments/agentic_opd_env.py (On-Policy Distillation)  │
+  │  environments/hermes_swe_env/    (SWE-Bench 风格)            │
+  │  environments/benchmarks/        (TerminalBench2, YCBench)  │
+  │  environments/web_research_env.py                          │
+  │  environments/terminal_test_env/                           │
+  └───────────────────────────────────────────────────────────┘
+                             │
+                             │  ScoredDataGroup (tokens/masks/scores)
+                             ▼
+  ┌───────────────────────────────────────────────────────────┐
+  │             RL 训练层（tinker-atropos 子模块）                 │
+  │  - Nous Research 的 Atropos 框架                            │
+  │  - Tinker 作为实际训练后端（Hermes 锁定 LoRA rank=32, lr=4e-5）│
+  │  - Server 类型按环境切换：sglang（普通训练）/ vllm（OPD 需 logprobs）│
+  │  - WandB metrics                                            │
+  └───────────────────────────────────────────────────────────┘
+                             │
+                             │  LoRA checkpoints
+                             ▼
+  ┌───────────────────────────────────────────────────────────┐
+  │                  Agent 训练调度层（Meta-loop）                  │
+  │  rl_cli.py                ── 专用 CLI，200 iterations       │
+  │  tools/rl_training_tool.py ── 10 个 RL 工具暴露给 Agent     │
+  │  skills/mlops/training/grpo-rl-training/ ── RL 知识卡片     │
+  └───────────────────────────────────────────────────────────┘
+</code></pre></div>
+
+<p>四层之间的粘合剂是<strong>共享的工具调度层</strong>——<code>model_tools.handle_function_call()</code> + <code>tools/registry.py</code>。线上的 <code>AIAgent.run_conversation()</code>（<code>run_agent.py</code>）和 RL 环境的 <code>HermesAgentLoop.run()</code>（<code>environments/agent_loop.py</code>）是<strong>两个并行的循环实现</strong>，核心逻辑"LLM 调用 → 解析 tool_calls → 派发工具 → 追加结果 → 继续" <strong>严格对齐</strong>（注释明写 "identical to hermes-agent's run_agent.py"），并共用同一套工具注册表。这种"<strong>同源的工具契约、不同的运行时</strong>"设计让线上行为与训练分布天然对齐，避免了 train/inference skew。</p>
+<hr>
+<h2 id="3">3. 数据生成层</h2>
+<h3 id="31-batch_runnerpy">3.1 <code>batch_runner.py</code>（并行数据采集）</h3>
+<p><code>batch_runner.py</code> 是离线批跑器，其设计目标是"<strong>以 multiprocessing pool 规模化地消费 HF 数据集，产出可训练的轨迹 JSONL</strong>"：</p>
+<ul>
+<li><strong>入口签名</strong>：<code>--dataset_file=data.jsonl --batch_size=10 --run_name=my_run [--distribution=image_gen] [--resume]</code></li>
+<li><strong>Worker 内核</strong>：每个进程实例化独立的 <code>AIAgent</code>（见 <code>run_agent.py</code>），跑完一整条 prompt 然后把 messages 写出</li>
+<li><strong>Toolset 分布采样</strong>：<code>sample_toolsets_from_distribution(distribution)</code> 让不同轨迹看到不同的工具子集，防止训练数据被少数工具垄断</li>
+<li><strong>Schema 归一化</strong>：<code>_normalize_tool_stats()</code> + <code>_normalize_tool_error_counts()</code> 把每条轨迹补齐 <code>ALL_POSSIBLE_TOOLS</code> 的零值字段，确保 Arrow/Parquet 可无缝加载到 HF Datasets</li>
+<li><strong>断点续传</strong>：<code>--resume</code> 通过 checkpoint 文件跳过已完成批次</li>
+</ul>
+<p>这相当于"<strong>用生产 Agent 对数据集跑一遍 ≈ 产出一批 SFT/RL 数据</strong>"，线上和线下共享 <code>AIAgent</code> 类，保证了数据分布一致性。</p>
+<h3 id="32-trajectory_compressorpy">3.2 <code>trajectory_compressor.py</code>（训练上下文预处理）</h3>
+<p>原始轨迹对训练往往过长，<code>trajectory_compressor.py</code> 实现"保护首尾、压缩中段"的对称裁剪策略：</p>
+<table>
+<thead>
+<tr>
+<th>配置项</th>
+<th>默认值</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>target_max_tokens</code></td>
+<td>15250</td>
+<td>单条轨迹目标 token 上限</td>
+</tr>
+<tr>
+<td><code>summary_target_tokens</code></td>
+<td>750</td>
+<td>压缩后的摘要段目标长度</td>
+</tr>
+<tr>
+<td><code>protect_first_{system,human,gpt,tool}</code></td>
+<td>True</td>
+<td>保护前 4 条关键 turn</td>
+</tr>
+<tr>
+<td><code>protect_last_n_turns</code></td>
+<td>4</td>
+<td>保护最后 4 个 turn（最终动作/结论）</td>
+</tr>
+<tr>
+<td><code>summarization_model</code></td>
+<td><code>google/gemini-3-flash-preview</code></td>
+<td>廉价 LLM 做摘要</td>
+</tr>
+<tr>
+<td><code>tokenizer_name</code></td>
+<td><code>moonshotai/Kimi-K2-Thinking</code></td>
+<td>用于 token 计数</td>
+</tr>
+</tbody>
+</table>
+<p><strong>关键洞察</strong>：被压缩的仅是中段的 tool call/result 序列，且会被替换为单条 human 摘要消息，剩余 tool call 保持完整——这样模型在 fine-tune 后仍能在摘要之后继续产出合法的 tool_calls，<strong>不会破坏 OpenAI tool-calling 协议的原子性</strong>。</p>
+<h3 id="33-datagen-config-examples">3.3 <code>datagen-config-examples/</code></h3>
+<p>包含两类示例——两个任务配方 + 一个压缩配置：</p>
+<ul>
+<li><strong>任务配方</strong></li>
+<li><code>web_research.yaml</code> — 让 Agent 在搜索引擎上做开放式研究（<code>batch_runner</code> 消费）</li>
+<li><code>example_browser_tasks.jsonl</code> + <code>run_browser_tasks.sh</code> — 浏览器自动化任务集及其运行脚本</li>
+<li><strong>压缩配置</strong></li>
+<li><code>trajectory_compression.yaml</code> — <code>trajectory_compressor.py</code> 的配置范例</li>
+</ul>
+<p>配合这些范例，可以串成"数据集 → <code>batch_runner</code> 采集 → <code>trajectory_compressor</code> 压缩 → 训练 JSONL"的一键流水线。</p>
+<hr>
+<h2 id="4">4. 环境回放层</h2>
+<h3 id="41-hermesagentbaseenvenvironmentshermes_base_envpy">4.1 <code>HermesAgentBaseEnv</code>（<code>environments/hermes_base_env.py</code>）</h3>
+<p>这是所有 RL 环境的抽象基类，继承自 Atropos 的 <code>BaseEnv</code>。它定义了 Hermes RL 的核心抽象：</p>
+<p><strong>4.1.1 配置模型 <code>HermesAgentEnvConfig</code></strong></p>
+<p>重点字段：</p>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>enabled_toolsets</code> / <code>distribution</code></td>
+<td>显式列表 或 分布采样，二选一</td>
+</tr>
+<tr>
+<td><code>max_agent_turns</code> (默认 30)</td>
+<td>每条 rollout 的最大 LLM 调用次数</td>
+</tr>
+<tr>
+<td><code>terminal_backend</code></td>
+<td><code>local/docker/modal/daytona/ssh/singularity</code> 六后端之一</td>
+</tr>
+<tr>
+<td><code>tool_pool_size</code> (默认 128)</td>
+<td>工具执行线程池大小</td>
+</tr>
+<tr>
+<td><code>tool_call_parser</code></td>
+<td>Phase 2 客户端解析器（hermes/mistral/llama3_json/qwen/...）</td>
+</tr>
+<tr>
+<td><code>default_result_size_chars</code> / <code>turn_budget_chars</code> / <code>preview_size_chars</code></td>
+<td>工具结果持久化预算</td>
+</tr>
+<tr>
+<td><code>extra_body</code></td>
+<td>透传给 OpenAI 客户端的 provider 偏好、transforms</td>
+</tr>
+</tbody>
+</table>
+<p>生产 RL 默认推荐 <code>modal</code> 或 <code>daytona</code> 后端，因为它们提供"每条 rollout 独立沙箱 + 自动回收"的隔离模型。</p>
+<p><strong>4.1.2 两模式服务器切换</strong></p>
+<p><code>_use_managed_server()</code> 根据 server 类型在两种训练模式间自动切换：</p>
+<ul>
+<li><strong>Phase 1（OpenAI server）</strong>：直接调 <code>server.chat_completion()</code>，server 原生解析 tool_calls。<code>DummyManagedServer</code> 提供占位 tokens。<strong>适合 SFT 数据生成、验证器调试、评估</strong></li>
+<li><strong>Phase 2（ManagedServer）</strong>：通过 <code>/generate</code> 拿到<strong>精确 token ids + logprobs</strong>，客户端 <code>ToolCallTranslator</code> 在"raw text ↔ tool_calls"之间双向翻译。<strong>完整 RL 训练能力</strong></li>
+</ul>
+<p>这种设计让同一套环境代码可以同时支持"快速迭代 reward 函数"和"正式 on-policy 训练"。</p>
+<p><strong>4.1.3 Rollout 流程 <code>collect_trajectory()</code></strong></p>
+<div class="codehilite"><pre><span></span><code><span class="k">async</span> <span class="k">def</span> <span class="nf">collect_trajectory</span><span class="p">(</span><span class="n">item</span><span class="p">):</span>
+    <span class="n">task_id</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">uuid</span><span class="o">.</span><span class="n">uuid4</span><span class="p">())</span>
+    <span class="n">tools</span><span class="p">,</span> <span class="n">valid_names</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_current_group_tools</span>  <span class="c1"># group 级共享</span>
+
+    <span class="n">messages</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">system_prompt</span><span class="p">:</span>
+        <span class="n">messages</span><span class="o">.</span><span class="n">append</span><span class="p">({</span><span class="s2">&quot;role&quot;</span><span class="p">:</span> <span class="s2">&quot;system&quot;</span><span class="p">,</span> <span class="s2">&quot;content&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">system_prompt</span><span class="p">})</span>
+    <span class="n">messages</span><span class="o">.</span><span class="n">append</span><span class="p">({</span><span class="s2">&quot;role&quot;</span><span class="p">:</span> <span class="s2">&quot;user&quot;</span><span class="p">,</span> <span class="s2">&quot;content&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">format_prompt</span><span class="p">(</span><span class="n">item</span><span class="p">)})</span>
+
+    <span class="c1"># 1. 运行 agent loop（Phase 1 或 Phase 2）</span>
+    <span class="n">agent</span> <span class="o">=</span> <span class="n">HermesAgentLoop</span><span class="p">(</span><span class="n">server</span><span class="p">,</span> <span class="n">tools</span><span class="p">,</span> <span class="n">valid_names</span><span class="p">,</span> <span class="n">max_turns</span><span class="p">,</span> <span class="n">task_id</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+    <span class="n">result</span><span class="p">:</span> <span class="n">AgentResult</span> <span class="o">=</span> <span class="k">await</span> <span class="n">agent</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">messages</span><span class="p">)</span>
+
+    <span class="c1"># 2. 计算 reward（子类实现 compute_reward）</span>
+    <span class="n">ctx</span> <span class="o">=</span> <span class="n">ToolContext</span><span class="p">(</span><span class="n">task_id</span><span class="p">)</span>  <span class="c1"># 🔑 verifier 拥有完整工具访问</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">reward</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">compute_reward</span><span class="p">(</span><span class="n">item</span><span class="p">,</span> <span class="n">result</span><span class="p">,</span> <span class="n">ctx</span><span class="p">)</span>
+    <span class="k">finally</span><span class="p">:</span>
+        <span class="n">ctx</span><span class="o">.</span><span class="n">cleanup</span><span class="p">()</span>
+
+    <span class="c1"># 3. 构建 ScoredDataItem</span>
+    <span class="n">nodes</span> <span class="o">=</span> <span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">managed_state</span> <span class="ow">or</span> <span class="p">{})</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;nodes&quot;</span><span class="p">,</span> <span class="p">[])</span>
+    <span class="k">if</span> <span class="n">nodes</span><span class="p">:</span>
+        <span class="n">node</span> <span class="o">=</span> <span class="n">nodes</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span>  <span class="c1"># 最后一个 SequenceNode = 完整轨迹</span>
+        <span class="c1"># Phase 2：真 tokens/masks/logprobs</span>
+        <span class="n">scored_item</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;tokens&quot;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">tokens</span><span class="p">,</span> <span class="s2">&quot;masks&quot;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">masked_tokens</span><span class="p">,</span> <span class="s2">&quot;scores&quot;</span><span class="p">:</span> <span class="n">reward</span><span class="p">}</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="c1"># Phase 1：占位 tokens，仅用于 SFT 数据 pipeline</span>
+        <span class="n">tokens</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">tokenizer</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="n">full_text</span><span class="p">,</span> <span class="n">add_special_tokens</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+        <span class="n">scored_item</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;tokens&quot;</span><span class="p">:</span> <span class="n">tokens</span><span class="p">,</span> <span class="s2">&quot;masks&quot;</span><span class="p">:</span> <span class="p">[</span><span class="o">-</span><span class="mi">100</span><span class="p">]</span> <span class="o">+</span> <span class="n">tokens</span><span class="p">[</span><span class="mi">1</span><span class="p">:],</span> <span class="s2">&quot;scores&quot;</span><span class="p">:</span> <span class="n">reward</span><span class="p">}</span>
+
+    <span class="n">scored_item</span><span class="p">[</span><span class="s2">&quot;messages&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">messages</span>
+    <span class="k">return</span> <span class="n">scored_item</span><span class="p">,</span> <span class="p">[]</span>
+</code></pre></div>
+
+<p><strong>关键创新点：<code>compute_reward()</code> 可访问 <code>ToolContext</code></strong>——它拿到的是与 rollout 本身共享的沙箱句柄，可以调任意 hermes 工具（terminal、file、web、browser、vision）去<strong>验证 Agent 的成果</strong>，例如跑测试用例、检查文件是否被正确修改、浏览结果页面。这比传统的"只比较最终字符串"的 verifier 强得多。</p>
+<p><strong>4.1.4 Per-group toolset 解析</strong></p>
+<p><code>collect_trajectories(item)</code> 先调 <code>_resolve_tools_for_group()</code> 一次，然后把结果缓存在 <code>self._current_group_tools</code>，供 group 内所有并行 rollout 共享。这保证了<strong>同一个 group 对比的是"相同工具子集下的不同尝试"</strong>，GRPO 的 within-group 比较才有意义。</p>
+<h3 id="42-hermesagentloopenvironmentsagent_looppy">4.2 <code>HermesAgentLoop</code>（<code>environments/agent_loop.py</code>）</h3>
+<p>抽出工具调用内核，只负责"LLM 调用 → 解析 tool_calls → 派发执行 → 追加结果 → 继续"的循环。核心要点：</p>
+<ul>
+<li><strong>Reasoning 提取</strong>：<code>_extract_reasoning_from_message()</code> 依次尝试三种字段——<code>message.reasoning_content</code>、<code>message.reasoning</code>、以及 OpenRouter 风格的 <code>message.reasoning_details[].text</code>（docstring 明确点名 OpenRouter style），用来兼容不同 provider 的推理字段约定</li>
+<li><strong>ToolError 记录</strong>：把失败的 tool 调用以 <code>(turn, tool_name, arguments, error, tool_result)</code> 结构化，挂在 <code>AgentResult.tool_errors</code> 上，随后在 <code>wandb_log()</code> 中以 <code>train/tool_errors_count</code> + <code>train/tool_error_details</code> 上报</li>
+<li><strong>共享线程池</strong>：全局 <code>_tool_executor = ThreadPoolExecutor(max_workers=128)</code> + <code>resize_tool_pool(n)</code> 在 <code>HermesAgentBaseEnv.__init__</code> 内按 <code>tool_pool_size</code> 重建。<strong>这是解决"Modal/Docker/Daytona 后端内部的 <code>asyncio.run()</code> 在 Atropos 事件循环里会死锁"的关键</strong> —— 所有同步工具调用被丢到独立线程，带上干净的 event loop 执行</li>
+<li><strong>turns_used / finished_naturally</strong> 区分"自然收敛"和"hit max_turns 截断"，供子类 <code>compute_reward()</code> 作为辅助判据使用（基类本身不自动加权）</li>
+</ul>
+<h3 id="43">4.3 专业环境一览</h3>
+<table>
+<thead>
+<tr>
+<th>环境</th>
+<th>文件</th>
+<th>任务</th>
+<th>信号来源</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>hermes-swe</strong></td>
+<td><code>environments/hermes_swe_env/hermes_swe_env.py</code></td>
+<td>SWE-Bench 风格的 issue 修复</td>
+<td>通过 <code>ctx.terminal()</code> 在沙箱内执行 <code>item["test"]</code>：exit 0 → 1.0，否则尝试检测新建 <code>.py</code> 文件给 0.1 部分分，都没有 → 0.0</td>
+</tr>
+<tr>
+<td><strong>agentic-opd</strong></td>
+<td><code>environments/agentic_opd_env.py</code></td>
+<td>工具调用任务的 On-Policy Distillation</td>
+<td>Hindsight 信号（见 §5）</td>
+</tr>
+<tr>
+<td><strong>terminalbench2</strong></td>
+<td><code>environments/benchmarks/terminalbench_2/</code></td>
+<td>TerminalBench 2</td>
+<td>任务完成判定</td>
+</tr>
+<tr>
+<td><strong>yc-bench</strong></td>
+<td><code>environments/benchmarks/yc_bench/</code></td>
+<td>YC 创业相关任务集</td>
+<td>自定义 verifier</td>
+</tr>
+<tr>
+<td><strong>web-research</strong></td>
+<td><code>environments/web_research_env.py</code></td>
+<td>开放网页研究</td>
+<td>LLM judge</td>
+</tr>
+<tr>
+<td><strong>terminal-test</strong></td>
+<td><code>environments/terminal_test_env/</code></td>
+<td>终端命令练习</td>
+<td>脚本断言</td>
+</tr>
+<tr>
+<td><strong>tblite</strong></td>
+<td><code>environments/benchmarks/tblite/</code></td>
+<td>TerminalBench lite 子集</td>
+<td>任务完成判定</td>
+</tr>
+</tbody>
+</table>
+<p>每个环境只需实现 <code>setup()</code> / <code>get_next_item()</code> / <code>format_prompt()</code> / <code>compute_reward()</code> / <code>evaluate()</code>，其余基类负责。</p>
+<hr>
+<h2 id="5-agentic-on-policy-distillation">5. 核心创新：Agentic On-Policy Distillation</h2>
+<p><code>environments/agentic_opd_env.py</code> 是整个闭环里技术含量最高的模块，它是 Atropos 框架里<strong>第一个填充 <code>distill_token_ids</code> / <code>distill_logprobs</code> 字段的环境</strong>，实现了工具调用任务的 on-policy distillation（OPD）。</p>
+<h3 id="51-openclaw-rlprinceton-2026">5.1 核心思想（来自 OpenClaw-RL，Princeton 2026）</h3>
+<blockquote>
+<p>每当 Agent 收到一个 next-state 信号（tool 结果、错误栈、测试判决），这个信号都蕴含着对 <strong>上一步响应可以如何改进</strong> 的 hindsight 信息。</p>
+</blockquote>
+<p>传统 RL 只用轨迹末尾的 scalar reward，信号稀疏；OPD 把每一个"动作 → 结果"过渡都转成 token 级的训练信号。</p>
+<h3 id="52">5.2 实现步骤（六步流水线）</h3>
+<ol>
+<li><strong>跑 rollout</strong>：标准 <code>HermesAgentLoop</code> 采样</li>
+<li><strong>walk conversation</strong>：遍历 messages，找到所有 <code>(assistant_turn_t, next_state_{t+1})</code> 对</li>
+<li><strong>judge 抽取 hint</strong>：用 LLM 判官（prompt 见下）判断 next_state 是否含有 hindsight 信息，若是则给出 <code>[HINT_START]...[HINT_END]</code> 的 1–3 句话提示</li>
+<li><strong>构建增强 prompt</strong>：把 hint 注入原 context，形成"<strong>知道未来的老师</strong>"版本的提示</li>
+<li><strong>打分学生 token</strong>：通过 VLLM 的 <code>prompt_logprobs</code> + Atropos 的 <code>get_logprobs</code> API，在增强分布下给<strong>学生原本产出的 tokens</strong> 计算 logprobs</li>
+<li><strong>打包 top-K</strong>：把老师的 top-K 预测作为 <code>distill_token_ids</code> / <code>distill_logprobs</code> 放进 ScoredDataGroup</li>
+</ol>
+<p>Trainer 最终在训练时计算：</p>
+<div class="codehilite"><pre><span></span><code>A_t = teacher_logprob(token_t) − student_logprob(token_t)
+  &gt; 0  → 老师认可该 token  → 上调概率
+  &lt; 0  → 老师否决该 token  → 下调概率
+</code></pre></div>
+
+<h3 id="53-hint-judge-prompt">5.3 Hint Judge Prompt 要点</h3>
+<p>判官系统 prompt（见 <code>_HINT_JUDGE_SYSTEM</code>）刻意区分 next_state 的 role：</p>
+<ul>
+<li><strong><code>role='user'</code></strong>：用户后续回复，可能是 correction；值得提炼</li>
+<li><strong><code>role='tool'</code></strong>：工具返回值，<strong>不是 Agent 本应已知的信息</strong>（这个内容是因为 Agent 主动调用才产生的），判官被显式要求"<strong>不要把成功的非错误 tool output 当作 Agent 应该预先知道的常识</strong>"——这一约束非常关键，否则 judge 会误把"工具说 build 成功"当成批评 Agent"你为什么不早知道 build 会成功"</li>
+</ul>
+<p>输出格式是强约束：<code>\boxed{1}</code> / <code>\boxed{-1}</code> 二元判决 + 当 <code>\boxed{1}</code> 时附带 <code>[HINT_START]...[HINT_END]</code>。</p>
+<h3 id="54">5.4 运行要求</h3>
+<p>OPD 环境<strong>只能在 Phase 2 运行</strong>——它需要 VLLM server 提供 <code>prompt_logprobs</code> 端点，也需要 <code>ManagedServer</code> 做 token 级别的追踪。<code>process</code> / <code>serve</code> / <code>evaluate</code> 三种子命令覆盖离线数据生成、在线训练连接、评估三种用法。</p>
+<hr>
+<h2 id="6-rl-tinker-atropos">6. RL 训练层：tinker-atropos 子模块集成</h2>
+<p><code>tinker-atropos</code> 是 git 子模块（URL: <code>https://github.com/nousresearch/tinker-atropos</code>），Hermes 不 fork 改动、而是作为黑盒依赖使用。<code>tools/rl_training_tool.py</code> 是 Hermes 端的粘合层。</p>
+<h3 id="61-locked-configuration">6.1 Locked Configuration（基础设施锁定字段）</h3>
+<p><code>LOCKED_FIELDS</code> 定义了<strong>模型自己无法修改</strong>的基础设施参数：</p>
+<div class="codehilite"><pre><span></span><code><span class="n">LOCKED_FIELDS</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s2">&quot;env&quot;</span><span class="p">:</span> <span class="p">{</span>
+        <span class="s2">&quot;tokenizer_name&quot;</span><span class="p">:</span> <span class="s2">&quot;Qwen/Qwen3-8B&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;rollout_server_url&quot;</span><span class="p">:</span> <span class="s2">&quot;http://localhost:8000&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;use_wandb&quot;</span><span class="p">:</span> <span class="kc">True</span><span class="p">,</span>
+        <span class="s2">&quot;max_token_length&quot;</span><span class="p">:</span> <span class="mi">8192</span><span class="p">,</span>
+        <span class="s2">&quot;max_num_workers&quot;</span><span class="p">:</span> <span class="mi">2048</span><span class="p">,</span>
+        <span class="s2">&quot;worker_timeout&quot;</span><span class="p">:</span> <span class="mi">3600</span><span class="p">,</span>
+        <span class="s2">&quot;total_steps&quot;</span><span class="p">:</span> <span class="mi">2500</span><span class="p">,</span>
+        <span class="s2">&quot;steps_per_eval&quot;</span><span class="p">:</span> <span class="mi">25</span><span class="p">,</span>
+        <span class="s2">&quot;max_batches_offpolicy&quot;</span><span class="p">:</span> <span class="mi">3</span><span class="p">,</span>
+        <span class="s2">&quot;inference_weight&quot;</span><span class="p">:</span> <span class="mf">1.0</span><span class="p">,</span>
+        <span class="s2">&quot;eval_limit_ratio&quot;</span><span class="p">:</span> <span class="mf">0.1</span><span class="p">,</span>
+    <span class="p">},</span>
+    <span class="s2">&quot;openai&quot;</span><span class="p">:</span> <span class="p">[{</span>
+        <span class="s2">&quot;model_name&quot;</span><span class="p">:</span> <span class="s2">&quot;Qwen/Qwen3-8B&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;base_url&quot;</span><span class="p">:</span> <span class="s2">&quot;http://localhost:8001/v1&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;api_key&quot;</span><span class="p">:</span> <span class="s2">&quot;x&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;weight&quot;</span><span class="p">:</span> <span class="mf">1.0</span><span class="p">,</span>
+        <span class="s2">&quot;num_requests_for_eval&quot;</span><span class="p">:</span> <span class="mi">256</span><span class="p">,</span>
+        <span class="s2">&quot;timeout&quot;</span><span class="p">:</span> <span class="mi">3600</span><span class="p">,</span>
+        <span class="s2">&quot;server_type&quot;</span><span class="p">:</span> <span class="s2">&quot;sglang&quot;</span><span class="p">,</span>  <span class="c1"># Tinker 用 sglang 做实际训练</span>
+    <span class="p">}],</span>
+    <span class="s2">&quot;tinker&quot;</span><span class="p">:</span> <span class="p">{</span>
+        <span class="s2">&quot;lora_rank&quot;</span><span class="p">:</span> <span class="mi">32</span><span class="p">,</span>
+        <span class="s2">&quot;learning_rate&quot;</span><span class="p">:</span> <span class="mf">0.00004</span><span class="p">,</span>
+        <span class="s2">&quot;max_token_trainer_length&quot;</span><span class="p">:</span> <span class="mi">9000</span><span class="p">,</span>
+        <span class="s2">&quot;checkpoint_dir&quot;</span><span class="p">:</span> <span class="s2">&quot;./temp/&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;save_checkpoint_interval&quot;</span><span class="p">:</span> <span class="mi">25</span><span class="p">,</span>
+    <span class="p">},</span>
+    <span class="s2">&quot;slurm&quot;</span><span class="p">:</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="s2">&quot;testing&quot;</span><span class="p">:</span> <span class="kc">False</span><span class="p">,</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p><strong>为什么要锁？</strong> 因为这套 CLI 是给 Agent（不是人）用的，需要防止 LLM 胡乱修改关键超参导致训练崩溃或者占用无上限资源。Agent 能编辑的只有 env 级任务字段（dataset、prompt、reward 权重等）。</p>
+<h3 id="62">6.2 生命周期管理</h3>
+<p><code>RunState</code> 数据类跟踪三个子进程：<code>api_process</code> / <code>trainer_process</code> / <code>env_process</code>。<code>_start_training_run()</code> 按 api → trainer → env 顺序拉起：</p>
+<ol>
+<li>拉起 API server</li>
+<li>拉起 tinker trainer</li>
+<li>拉起 Atropos env（对扫描得到的 <code>env_info.file_path</code> 执行 <code>subprocess.Popen([python, &lt;path&gt;, "serve", "--config", &lt;config&gt;.yaml], cwd=TINKER_ATROPOS_ROOT)</code>，配置 YAML 由 <code>copy.deepcopy(LOCKED_FIELDS)</code> + 非锁定字段覆盖写入 <code>configs/run_&lt;id&gt;.yaml</code>）</li>
+<li><code>await asyncio.sleep(10)</code> 等握手</li>
+<li><code>asyncio.create_task(_monitor_training_run(run_state))</code> 后台每 30 秒扫一次进程存活</li>
+</ol>
+<p><code>_stop_training_run()</code> 反向顺序停：env → trainer → api，每步带 <code>terminate()</code> + 10s 超时 → <code>kill()</code>，最后关闭所有被 subprocess stdout 持有的日志文件句柄（防泄漏）。</p>
+<h3 id="63-30">6.3 30 分钟速率限制</h3>
+<div class="codehilite"><pre><span></span><code><span class="n">MIN_STATUS_CHECK_INTERVAL</span> <span class="o">=</span> <span class="mi">30</span> <span class="o">*</span> <span class="mi">60</span>  <span class="c1"># 30 minutes</span>
+<span class="n">_last_status_check</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
+</code></pre></div>
+
+<p><code>rl_check_status</code> 工具被限制<strong>每 30 分钟才能查一次状态</strong>。这个看似奇怪的约束是给 Agent 看的——防止 LLM 进入"查状态 → 训练还在跑 → 查状态 → ..."的无限 loop 烧 context。状态更新通过 WandB 异步拉取即可。</p>
+<h3 id="64-ast">6.4 环境发现（AST 扫描）</h3>
+<p><code>_scan_environments()</code> 用 <code>ast.parse</code> 遍历 <code>tinker-atropos/tinker_atropos/environments/*.py</code>，寻找继承自 <code>BaseEnv</code> 的类，提取其 <code>name</code> 属性和 docstring。<strong>无需 import 就能发现环境</strong>，规避了有副作用的模块初始化。</p>
+<blockquote>
+<p><strong>重要澄清</strong>：这个扫描路径是 <strong>Atropos 子模块内部</strong> 的环境目录（存放 Atropos 官方附带的示例 env，如 <code>gsm8k_tinker.py</code>），<strong>不是</strong> Hermes 仓库根目录下的 <code>environments/</code> 文件夹。换句话说，Hermes 的闭环有两条入口：
+- <strong>开发者入口</strong>：直接 <code>python environments/hermes_swe_env/hermes_swe_env.py serve --config X.yaml</code> 驱动 Hermes 自有环境（hermes-swe、agentic-opd、web-research、terminalbench2、yc-bench、terminal-test、tblite）
+- <strong>Agent 入口</strong>：通过 <code>rl_cli.py</code> + <code>rl_list_environments</code> 驱动 tinker-atropos 子模块里的内置示例环境</p>
+<p>两者共享 Atropos/tinker 基础设施，但环境目录是分离的。rl_cli.py 的系统提示也明确让 Agent 去 <code>tinker-atropos/tinker_atropos/environments/</code> 读取和复制模板。如果要让 Agent 驱动 Hermes 自有环境，需要自行把文件复制或符号链接到 Atropos 子模块目录下（代码库未提供自动机制）。</p>
+</blockquote>
+<hr>
+<h2 id="7-agent-meta-loop">7. Agent 训练调度层：Meta-Loop</h2>
+<p>这是 Hermes 最独特的一层——<strong>让 Agent 自己去调度 RL 训练</strong>。</p>
+<h3 id="71-rl_clipyrl-cli">7.1 <code>rl_cli.py</code>：RL 专用 CLI</h3>
+<p>与标准 <code>cli.py</code> 区别：</p>
+<table>
+<thead>
+<tr>
+<th>差异点</th>
+<th>标准 CLI</th>
+<th>RL CLI</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>最大迭代数</td>
+<td><code>AIAgent.max_iterations</code> 默认 <strong>90</strong></td>
+<td><strong><code>RL_MAX_ITERATIONS = 200</code></strong></td>
+</tr>
+<tr>
+<td><code>TERMINAL_CWD</code></td>
+<td>项目根</td>
+<td><strong><code>tinker-atropos</code> 子模块</strong></td>
+</tr>
+<tr>
+<td>系统提示</td>
+<td>通用编程</td>
+<td><strong>"post-training engineer"</strong> 专属</td>
+</tr>
+<tr>
+<td>工具集</td>
+<td>全量</td>
+<td>包含 10 个 rl_* 工具</td>
+</tr>
+<tr>
+<td>默认模型</td>
+<td>由 <code>~/.hermes/config.yaml</code> 决定</td>
+<td><code>DEFAULT_MODEL = "anthropic/claude-opus-4.5"</code>（<code>config.yaml</code> 未覆盖时的回退值）</td>
+</tr>
+</tbody>
+</table>
+<p>系统提示明确告诉 Agent：<strong>"Training runs take hours — verify everything works first"</strong>，并给出 DISCOVER → INSPECT → INSPECT DATA → CREATE → CONFIGURE → TEST → TRAIN → EVALUATE 八步工作流。</p>
+<h3 id="72-agent-10-rl">7.2 暴露给 Agent 的 10 个 RL 工具</h3>
+<p>所有工具均通过 <code>tools/registry.py</code> 注册到 <code>toolset="rl"</code>（L1376–L1395），受 <code>check_rl_api_keys</code> 前置校验（要求 <code>TINKER_API_KEY</code> + <code>WANDB_API_KEY</code>）：</p>
+<table>
+<thead>
+<tr>
+<th>工具</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>rl_list_environments</code></td>
+<td>AST 扫描可用环境</td>
+</tr>
+<tr>
+<td><code>rl_select_environment</code></td>
+<td>选定环境，加载可配置字段</td>
+</tr>
+<tr>
+<td><code>rl_get_current_config</code></td>
+<td>展示当前可修改字段（group_size、max_token_length、total_steps、steps_per_eval、use_wandb、wandb_name、max_num_workers）</td>
+</tr>
+<tr>
+<td><code>rl_edit_config</code></td>
+<td>编辑上述字段</td>
+</tr>
+<tr>
+<td><code>rl_test_inference</code></td>
+<td>正式训练前做 sanity check</td>
+</tr>
+<tr>
+<td><code>rl_start_training</code></td>
+<td>启动训练（拉起 api/trainer/env 三进程）</td>
+</tr>
+<tr>
+<td><code>rl_list_runs</code></td>
+<td>列出所有训练任务（active + completed）及状态</td>
+</tr>
+<tr>
+<td><code>rl_check_status</code></td>
+<td>查看状态（<strong>schema 明确声明 RATE LIMITED：同一 run_id 间隔 30 分钟</strong>），返回 WandB 指标 step/state/reward_mean/loss/percent_correct</td>
+</tr>
+<tr>
+<td><code>rl_stop_training</code></td>
+<td>优雅停止（当指标不佳或配置需调整时）</td>
+</tr>
+<tr>
+<td><code>rl_get_results</code></td>
+<td>读取完成训练的最终指标和 checkpoint 路径</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>注意</strong>：<code>rl_get_current_config</code> 的 schema 描述字符串把 <code>total_steps</code> / <code>steps_per_eval</code> / <code>max_num_workers</code> 列在"可修改字段"里，但这些键<strong>同时出现在 <code>LOCKED_FIELDS["env"]</code></strong>，而 <code>rl_edit_config</code>（L690–694）会对 <code>field_info["locked"] == True</code> 的字段显式返回 "locked and cannot be changed"。实际的 <code>_start_training_run</code>（L760）也是 <code>run_config = copy.deepcopy(LOCKED_FIELDS)</code> 作为基线，然后只把非锁定字段从 <code>_current_config</code> 覆盖进去——<strong>所以 locked 值对正式训练是真正生效的</strong>，schema 描述字符串只是陈旧/误导性文档。唯一会被 Agent 临时覆盖这几个值的场景是 <code>rl_test_inference</code>（L1122），它在 process 模式下传 <code>--env.total_steps=num_steps</code> 做小规模 sanity check，这是测试专用路径，不影响正式训练。</p>
+</blockquote>
+<p>这让一段典型对话可以是：</p>
+<blockquote>
+<p>用户："Train a model on GSM8k for math reasoning"</p>
+<p>Agent：[<code>rl_list_environments</code>] → 看到 <code>gsm8k_tinker.py</code> → [<code>Read</code> file] → 理解 reward 逻辑 → [<code>rl_select_environment("gsm8k_tinker")</code>] → [<code>rl_edit_config(learning_rate_weight=...)</code>] → [<code>rl_test_inference</code>] → [<code>rl_start_training</code>] → 30 分钟后 → [<code>rl_check_status</code>] → ... → [<code>rl_get_results</code>]</p>
+</blockquote>
+<h3 id="73-skillsmlopstraininggrpo-rl-trainingskillmd">7.3 知识支撑：<code>skills/mlops/training/grpo-rl-training/SKILL.md</code></h3>
+<p>这是给 Agent 的<strong>可加载 RL 专家知识</strong>——575 行的 GRPO/TRL 指南，涵盖：</p>
+<ul>
+<li>何时用 GRPO（结构化输出、可验证任务、推理能力）vs 不要用（简单 SFT、有偏好对）</li>
+<li>Reward 函数的 4 类黄金法则 + 4 种类型（correctness 2.0 / format 0.5–1.0 / length 0.1–0.5 / style ±0.5）</li>
+<li>数据集准备 + 3 个 reward 模板（correctness、format、incremental format）</li>
+<li>内存优化 vs 高性能两套 <code>GRPOConfig</code></li>
+<li>标准 transformers + Unsloth 两种 model setup</li>
+<li>训练期望曲线（loss 起始近 0 并<strong>上升</strong>——这是 KL divergence 的期望行为）</li>
+<li>常见 pitfall 表格（mode collapse、no learning、OOM、slow、format ignored）</li>
+<li>多阶段训练 + Adaptive reward scaling 高级模式</li>
+</ul>
+<p>Hermes 的 Skill 本质是"<strong>纯 Markdown 指令</strong>"——被 Agent 按需读取后注入到 system/user prompt 里（<code>tools/skills_tool.py</code>）。这种单一运行时的设计依赖"渐进式披露"（progressive disclosure）优化 token 用量：SKILL.md 元数据先被加载，正文仅在 Agent 决定用时再读入，从而避免把 575 行指南常驻系统提示。</p>
+<hr>
+<h2 id="8-l1l2">8. 辅助学习机制（L1/L2）</h2>
+<h3 id="81-memory-systeml2">8.1 Memory System（L2）</h3>
+<p><code>agent/memory_manager.py</code> 实现"<strong>内置 provider + 至多 1 个外部 provider</strong>"的策略：</p>
+<ul>
+<li><strong>BuiltinMemoryProvider</strong>（<code>agent/builtin_memory_provider.py</code>）<strong>是 <code>MemoryStore</code> 的薄适配层，本身不做向量检索</strong>：</li>
+<li><code>MemoryStore</code>（<code>tools/memory_tool.py</code>）管理两个纯文本 Markdown 文件：<code>MEMORY.md</code>（Agent 个人笔记）和 <code>USER.md</code>（关于用户的信息）</li>
+<li>条目以 <code>\n§\n</code> 分隔，容量限制 MEMORY=2200 字符 / USER=1375 字符</li>
+<li>原子写入（<code>tempfile.mkstemp</code> + <code>os.replace</code>）+ <code>fcntl.flock</code> 文件锁</li>
+<li>系统提示注入的是<strong>加载时冻结快照</strong>，保持 prompt cache 稳定</li>
+<li><code>prefetch()</code> 返回空字符串（不做查询式检索）、<code>sync_turn()</code> 为空操作——memory 工具由 <code>run_agent.py</code> 直接拦截处理</li>
+<li><strong>外部 provider</strong>（如 Honcho、Mem0 等文档提到的插件选项）至多一个，第二个会被拒绝并 warning；外部 provider 可选择实现向量检索等高级能力</li>
+<li><strong>Context fencing</strong>：<code>build_memory_context_block()</code> 把召回的 memory 用 <code>&lt;memory-context&gt;</code> 标签包裹，显式告诉模型"这是系统注入的背景数据，不是新用户输入"</li>
+<li><strong>Fence 转义防御</strong>：<code>sanitize_context()</code> 剥除 provider 输出中可能的 <code>&lt;/memory-context&gt;</code> 标签，防止 memory 内容逃逸边界</li>
+</ul>
+<p>这是一个<strong>持续学习</strong>机制，但<strong>不会更新模型权重</strong>，只是让模型在 inference 时看到更多相关过去经验。注意内置版本是"增量编辑 Markdown 文件"式的长期记忆，并非检索增强（RAG）——检索增强需要装载外部 provider。</p>
+<h3 id="82-insights-enginel1">8.2 Insights Engine（L1）</h3>
+<p><code>agent/insights.py</code> 的 <code>InsightsEngine</code> 直接查 SQLite state 库，按天/周聚合：</p>
+<ul>
+<li>Token 消耗、cost 估算（含 cache read/write）</li>
+<li>工具使用模式</li>
+<li>活动趋势</li>
+<li>模型/平台分布</li>
+<li>会话指标</li>
+</ul>
+<p>这是<strong>只读的分析</strong>，不影响训练，但帮助运营发现"哪些任务总是失败"、"哪些工具从不被用"，为下一轮 RL 数据生成提供 dataset 来源。</p>
+<h3 id="83-manual-compression-feedback">8.3 Manual Compression Feedback</h3>
+<p><code>agent/manual_compression_feedback.py</code> 是极小的 utility，只做"<strong>压缩前后 message/token 差异</strong>"的用户反馈信息（<code>noop / headline / token_line / note</code>）。它不是学习信号，而是<strong>人机交互反馈</strong>——当用户手动触发压缩时，告诉用户"原来 X 条消息变成 Y 条"、"估算 token 从 X 变成 Y"。</p>
+<p>严格来说，"manual_compression_feedback" 不是 closed learning loop 的一部分，但它体现了 Hermes "所有重要动作都要有反馈回路"的设计哲学。</p>
+<hr>
+<h2 id="9">9. 闭环的完整路径与缺口</h2>
+<h3 id="91-swe">9.1 完整闭环案例（以 SWE 为例）</h3>
+<div class="codehilite"><pre><span></span><code>  用户问题             HF 数据集（swebench）
+      │                       │
+      ▼                       ▼
+  ┌──────────────────────────────────┐
+  │  batch_runner.py 跑 1000 条 SWE  │
+  │  → trajectories.jsonl           │
+  └──────────────────────────────────┘
+      │
+      ▼
+  trajectory_compressor.py 裁剪到 15K tokens
+      │
+      ▼
+  ┌──────────────────────────────────┐
+  │  hermes_swe_env 训练             │
+  │  reward = 1.0（测试全绿）/        │
+  │         0.1（有新文件）/ 0.0     │
+  │  ManagedServer → 精确 logprobs  │
+  │  tinker trainer（GRPO）         │
+  └──────────────────────────────────┘
+      │
+      ▼
+  LoRA checkpoint（Qwen/Qwen3-8B）
+      │
+      ▼
+  部署回 AIAgent → 下一轮用户问题
+</code></pre></div>
+
+<p>全链路<strong>每一步都在 hermes-agent 仓库内有对应代码</strong>，这在开源 Agent 项目里非常罕见。</p>
+<h3 id="92">9.2 已闭合的环节 ✅</h3>
+<ol>
+<li><strong>轨迹捕获</strong>：<code>hermes_state.py</code> + SQLite 持久化所有会话</li>
+<li><strong>离线重放</strong>：<code>batch_runner.py</code> 可以把任何数据集跑成训练语料</li>
+<li><strong>In-loop 训练</strong>：<code>environments/*.py</code> + <code>tinker-atropos</code> 完整可跑</li>
+<li><strong>Reward 验证</strong>：<code>ToolContext</code> 让 verifier 有完整工具访问</li>
+<li><strong>Token 级信号</strong>：<code>agentic_opd_env</code> 实现 OPD，跳出了 scalar reward 的稀疏陷阱</li>
+<li><strong>Agent 自调度</strong>：<code>rl_cli.py</code> + 10 个 rl_tool 允许 LLM 发起训练</li>
+<li><strong>Skill 知识支撑</strong>：<code>grpo-rl-training</code> skill 作为可加载专家知识</li>
+</ol>
+<h3 id="93">9.3 开放的/弱闭合环节 ⚠️</h3>
+<ol>
+<li><strong>线上反馈 → 训练</strong> 的直连缺失</li>
+<li>没有自动把"线上失败 turn"标记为训练数据的 pipeline</li>
+<li><code>insights.py</code> 是只读的，没有反向触发训练的 hook</li>
+<li>
+<p>建议：加一个 <code>insights_to_dataset.py</code> 脚本，把 <code>tool_errors &gt; 0 and user_rating &lt; 3</code> 的会话导出成 JSONL，喂给 <code>trajectory_compressor.py</code></p>
+</li>
+<li>
+<p><strong>无在线 RLHF / DPO</strong></p>
+</li>
+<li><code>skills/.../grpo-rl-training/SKILL.md</code> 明确说"有偏好对时用 DPO/PPO"，但 Hermes 本体没有 DPO 环境</li>
+<li>
+<p>无用户偏好采集 UI（thumbs up/down），用户交互只有显式命令</p>
+</li>
+<li>
+<p><strong>训练后的部署回路半自动</strong></p>
+</li>
+<li>LoRA checkpoint 保存到 <code>./temp/</code>，但没有自动灌回 <code>AIAgent</code> 的机制</li>
+<li>
+<p>部署需要人工把 checkpoint 路径指给推理 server</p>
+</li>
+<li>
+<p><strong>Memory 与 RL 之间无通道</strong></p>
+</li>
+<li><code>MEMORY.md</code> / <code>USER.md</code> 内容只进 system prompt，不参与 reward 计算</li>
+<li>外部 provider 即便有向量检索，也没有把"命中率"反哺到训练的钩子</li>
+<li>
+<p>建议：一条"memory hit 率"metric 可以作为辅助 reward</p>
+</li>
+<li>
+<p><strong>Phase 1 → Phase 2 迁移有门槛</strong></p>
+</li>
+<li>Phase 1（OpenAI server）可以跑 OpenRouter 等任意后端，但 Phase 2 要求本地 VLLM/SGLang</li>
+<li>对资源受限的用户，OPD 等最强功能可望而不可即</li>
+</ol>
+<h3 id="94-30">9.4 细节观察：30 分钟节流的哲学含义</h3>
+<p><code>MIN_STATUS_CHECK_INTERVAL = 30 * 60</code> 这一个常量体现了 Hermes 在 <strong>人机协同 RL</strong> 上的深度思考：</p>
+<p>当一个循环的<strong>执行者是 LLM Agent</strong> 时，我们不能让它像人一样"每分钟刷一次 WandB"——这会让它陷入"查状态 → 看到还在跑 → 查状态"的死循环烧掉整个 context window。<strong>30 分钟的强制节流，本质是把"等待"这个人类的 implicit skill 编码成了显式约束</strong>。</p>
+<p>这种"为 LLM 设计的 API 约束"在整个 <code>tools/rl_training_tool.py</code> 里随处可见：locked fields、AST-based discovery（避免副作用 import）、JSON 结构化输出带 <code>tips[]</code>（在工具返回值里主动引导下一步）。这不是为"人用"设计的 API，而是<strong>为 Agent 用设计的 API</strong>。</p>
+<hr>
+<h2 id="10-actus">10. 对 Actus 项目的借鉴启示</h2>
+<p>如果要在 Actus（LangGraph 双层图架构）上复用 Hermes 的 closed learning loop，按复杂度分层：</p>
+<h3 id="101-1">10.1 低成本快速上手（1 周内）</h3>
+<ul>
+<li>移植 <code>batch_runner.py</code> 的并行跑批 + checkpoint 模式</li>
+<li>移植 <code>trajectory_compressor.py</code> 的"保护首尾、压缩中段"策略</li>
+<li>搭建 <code>grpo-rl-training</code> skill 的知识卡片（Actus 自己的 SKILL.md 格式）</li>
+</ul>
+<h3 id="102-24">10.2 中等成本（2–4 周）</h3>
+<ul>
+<li>参考 <code>HermesAgentBaseEnv</code> 为 Actus 设计 Atropos 适配层</li>
+<li>核心改造点：Actus 的 <code>react_graph</code> 替换 <code>HermesAgentLoop</code>，<code>PlannerReActFlow</code> 的 reward 来源是 <code>interrupt()</code> 的用户选择 + 终态 verdict</li>
+<li>用 <code>ToolContext</code> 类似的模式让 verifier 共享 sandbox</li>
+</ul>
+<h3 id="103-13">10.3 高成本但高收益（1–3 月）</h3>
+<ul>
+<li>实现 agentic OPD 风格的 hindsight 学习</li>
+<li>Actus 的 checkpointer 天然保存每个 turn 的完整 state，walk conversation 比 Hermes 更容易</li>
+<li><code>interrupt()</code> + <code>Command(resume=...)</code> 恰好是 "next-state 信号"的最佳载体</li>
+<li>把 Actus 的 insights 层扩展为"失败会话自动进训练队列"的反向通路</li>
+<li>在 Actus 的 SSE event 系统里加 <code>TrainingEvent</code>，让前端能观察训练进度</li>
+</ul>
+<h3 id="104-agent">10.4 "Agent 自调度训练"的可行性</h3>
+<p>Actus 因为有 A2A 协议 + Skill 三运行时，<strong>本来就比 Hermes 更适合做 meta-loop</strong> ——可以把 Hermes 的 <code>rl_*</code> 工具改造成 A2A Skill，让一个"Training Coordinator Agent"远程调度。这会形成 "<strong>Actus 的 Planner Agent → 发现训练机会 → A2A 召唤 Training Agent → Training Agent 起 GRPO job → 回写 checkpoint</strong>" 的分布式闭环，是 Hermes 单进程调度所没有的。</p>
+<hr>
+<h2 id="11">11. 结论</h2>
+<p>Hermes-Agent 的 closed learning loop 是目前开源 Agent 项目中最完整的 RL 飞轮实现之一。它的核心特征是：</p>
+<ol>
+<li><strong>线上 agent loop 与训练 rollout loop 共享工具契约</strong>（<code>model_tools.handle_function_call</code> + <code>tools/registry.py</code>），<code>AIAgent.run_conversation()</code> 与 <code>HermesAgentLoop.run()</code> 并行实现但逻辑严格对齐，避免 train/inference skew</li>
+<li><strong>Reward 验证器拥有完整工具访问</strong>（<code>ToolContext</code>），支持任意复杂度的结果校验</li>
+<li><strong>Token 级 hindsight 信号</strong>（Agentic OPD），跳出稀疏 reward 的桎梏</li>
+<li><strong>RL 作为 Agent 自己可调用的能力</strong>（<code>rl_cli.py</code> + 10 个 rl_tool），形成"Agent 训练 Agent"的 meta-loop</li>
+<li><strong>为 LLM 设计的 API 约束</strong>（locked fields、30 分钟节流、AST discovery），承认 LLM 与人的操作习惯不同</li>
+</ol>
+<p>它的开放环节集中在：<strong>"线上失败 → 训练数据"的自动通路</strong>、<strong>在线偏好采集</strong>、<strong>checkpoint 自动部署</strong>。这些正好是 Actus 等带 human-in-the-loop 能力的框架可以补足的地方——Actus 的 <code>interrupt()</code> + LangGraph checkpointer 恰好提供了 Hermes 所缺的 "<strong>暂停、采集用户判决、恢复</strong>" 的原生机制，两边有强互补性。</p>
+<hr>
+<h2 id="a">附录 A：关键文件路径速查</h2>
+<table>
+<thead>
+<tr>
+<th>模块</th>
+<th>路径</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>RL CLI 入口</td>
+<td><code>rl_cli.py</code></td>
+</tr>
+<tr>
+<td>RL 工具实现</td>
+<td><code>tools/rl_training_tool.py</code></td>
+</tr>
+<tr>
+<td>环境基类</td>
+<td><code>environments/hermes_base_env.py</code></td>
+</tr>
+<tr>
+<td>Agent loop 内核</td>
+<td><code>environments/agent_loop.py</code></td>
+</tr>
+<tr>
+<td>OPD 环境</td>
+<td><code>environments/agentic_opd_env.py</code></td>
+</tr>
+<tr>
+<td>SWE 环境</td>
+<td><code>environments/hermes_swe_env/hermes_swe_env.py</code></td>
+</tr>
+<tr>
+<td>数据批跑</td>
+<td><code>batch_runner.py</code></td>
+</tr>
+<tr>
+<td>轨迹压缩</td>
+<td><code>trajectory_compressor.py</code></td>
+</tr>
+<tr>
+<td>记忆编排</td>
+<td><code>agent/memory_manager.py</code></td>
+</tr>
+<tr>
+<td>记忆 Provider ABC</td>
+<td><code>agent/memory_provider.py</code></td>
+</tr>
+<tr>
+<td>内置记忆 Provider</td>
+<td><code>agent/builtin_memory_provider.py</code></td>
+</tr>
+<tr>
+<td>MemoryStore（文件引擎）</td>
+<td><code>tools/memory_tool.py</code></td>
+</tr>
+<tr>
+<td>Insights</td>
+<td><code>agent/insights.py</code></td>
+</tr>
+<tr>
+<td>压缩反馈</td>
+<td><code>agent/manual_compression_feedback.py</code></td>
+</tr>
+<tr>
+<td>RL skill 知识</td>
+<td><code>skills/mlops/training/grpo-rl-training/SKILL.md</code></td>
+</tr>
+<tr>
+<td>Atropos 子模块</td>
+<td><code>tinker-atropos/</code>（<code>.gitmodules</code> 指向 nousresearch/tinker-atropos）</td>
+</tr>
+<tr>
+<td>数据配方示例</td>
+<td><code>datagen-config-examples/</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="b">附录 B：关键数据类型速查</h2>
+<table>
+<thead>
+<tr>
+<th>类型</th>
+<th>文件</th>
+<th>字段</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>HermesAgentEnvConfig</code></td>
+<td><code>environments/hermes_base_env.py</code></td>
+<td>enabled_toolsets/disabled_toolsets/distribution、max_agent_turns（默认 30）、system_prompt、agent_temperature、terminal_backend（默认 local）、terminal_timeout（默认 120s）、terminal_lifetime（默认 3600s）、dataset_name/dataset_split/prompt_field、tool_pool_size（默认 128）、tool_call_parser（默认 hermes）、default_result_size_chars/turn_budget_chars/preview_size_chars/tool_result_overrides、extra_body</td>
+</tr>
+<tr>
+<td><code>AgentResult</code></td>
+<td><code>environments/agent_loop.py</code></td>
+<td>messages、managed_state、turns_used、finished_naturally、reasoning_per_turn、tool_errors</td>
+</tr>
+<tr>
+<td><code>ToolError</code></td>
+<td><code>environments/agent_loop.py</code></td>
+<td>turn、tool_name、arguments、error、tool_result</td>
+</tr>
+<tr>
+<td><code>ScoredDataItem</code></td>
+<td>atroposlib（OPD 扩展字段由 <code>agentic_opd_env.py</code> 填充）</td>
+<td>tokens、masks、scores、messages、distill_token_ids、distill_logprobs</td>
+</tr>
+<tr>
+<td><code>RunState</code></td>
+<td><code>tools/rl_training_tool.py</code></td>
+<td>run_id、environment、config、status、error_message、wandb_project、wandb_run_name、start_time、api_process、trainer_process、env_process</td>
+</tr>
+<tr>
+<td><code>EnvironmentInfo</code></td>
+<td><code>tools/rl_training_tool.py</code></td>
+<td>name、class_name、file_path、description、config_class</td>
+</tr>
+<tr>
+<td><code>LOCKED_FIELDS</code></td>
+<td><code>tools/rl_training_tool.py</code></td>
+<td>三段核心配置（env / openai / tinker）+ 两个布尔开关（slurm=False / testing=False）</td>
+</tr>
+<tr>
+<td><code>CompressionConfig</code></td>
+<td><code>trajectory_compressor.py</code></td>
+<td>target_max_tokens=15250、summary_target_tokens=750、protect_first_{system,human,gpt,tool}=True、protect_last_n_turns=4、summarization_model=<code>google/gemini-3-flash-preview</code>、tokenizer_name=<code>moonshotai/Kimi-K2-Thinking</code>、temperature=0.3、max_retries=3</td>
+</tr>
+</tbody>
+</table>
+</body>
+</html>
